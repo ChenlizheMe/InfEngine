@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import time
 import uuid
 from typing import Iterable, Mapping
 
 from packaging.utils import canonicalize_name
 
+from Infernux.core.document_store import write_document_text
 from Infernux.engine.path_utils import resolved_path
 
 from .content import normalize_locale, normalize_page_descriptor
@@ -76,22 +76,13 @@ class PluginRegistry:
         self._validate_installed(document["installed"])
         _validate_python_dependencies(document["python_dependencies"])
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        fd, temporary = tempfile.mkstemp(
-            prefix="InxPlugins.json.tmp.", dir=os.path.dirname(self.path)
+        # Registry readers include the UI, script scanner and preload workers.
+        # Use the shared IO service's durable publication and Windows sharing
+        # semantics instead of a separate, immediate os.replace implementation.
+        write_document_text(
+            self.path, json.dumps(document, indent=2, ensure_ascii=False) + "\n"
         )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-                json.dump(document, stream, indent=2, ensure_ascii=False)
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-            self._write_lock(document)
-        finally:
-            try:
-                os.remove(temporary)
-            except FileNotFoundError:
-                pass
+        self._write_lock(document)
 
     def available(self) -> tuple[dict[str, object], ...]:
         return tuple(
@@ -582,22 +573,9 @@ class PluginRegistry:
             ),
         }
         os.makedirs(os.path.dirname(self.lock_path), exist_ok=True)
-        fd, temporary = tempfile.mkstemp(
-            prefix="InxPackages.lock.json.tmp.",
-            dir=os.path.dirname(self.lock_path),
+        write_document_text(
+            self.lock_path, json.dumps(document, indent=2, ensure_ascii=False) + "\n"
         )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-                json.dump(document, stream, indent=2, ensure_ascii=False)
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.lock_path)
-        finally:
-            try:
-                os.remove(temporary)
-            except FileNotFoundError:
-                pass
 
 
 def _normalize_python_requirements(
