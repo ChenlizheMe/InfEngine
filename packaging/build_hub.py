@@ -10,12 +10,12 @@ import re
 import shutil
 import subprocess
 import sys
-import tomllib
 import zipfile
 from pathlib import Path
 from typing import Mapping
 
 from installer.payload import HUB_PAYLOAD_ARCHIVE, create_payload_archive
+from hub_release import host_platform_id, project_version as _project_version
 from private_python_runtime import PYTHON_VERSION, runtime_archive_for_machine
 from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 
@@ -49,7 +49,7 @@ def _validate_runtime_bundle(bundle_path: Path) -> None:
                 raise RuntimeError(
                     "The private Python runtime bundle contains files outside the "
                     f"default Python {DEFAULT_PYTHON_RUNTIME.series} runtime. "
-                    "Clear out/package/runtime and rebuild "
+                    "Clear the preset staging runtime directory and rebuild "
                     "prepare_bundled_python_runtime."
                 )
             marker = json.loads(bundle.read(marker_name))
@@ -231,13 +231,6 @@ def _msvc_build_environment() -> tuple[dict[str, str], dict[str, str]]:
                 f"{tools[executable]}"
             )
     return env, tools
-
-
-def _project_version(source_root: Path) -> str:
-    project = tomllib.loads(
-        (source_root / "pyproject.toml").read_text(encoding="utf-8")
-    )
-    return str(project["project"]["version"])
 
 
 def _windows_file_version(version: str) -> str:
@@ -548,6 +541,7 @@ def _build_installer(
     build_dir: Path,
     package_dir: Path,
     *,
+    release_dir: Path,
     build_env: Mapping[str, str] | None,
 ) -> None:
     packaging_dir = source_root / "packaging"
@@ -591,14 +585,14 @@ def _build_installer(
     produced = output_dir / filename
     if not produced.is_file():
         raise RuntimeError(f"Nuitka did not produce the Hub installer at {produced}")
-    destination_dir = package_dir / "installer"
-    shutil.rmtree(destination_dir, ignore_errors=True)
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(produced, destination_dir / filename)
     if os.name == "nt":
         assert build_env is not None
-        _sign_windows_binary(destination_dir / filename, build_env)
-        _validate_windows_pe(destination_dir / filename, build_env)
+        _sign_windows_binary(produced, build_env)
+        _validate_windows_pe(produced, build_env)
+    release_dir.mkdir(parents=True, exist_ok=True)
+    suffix = ".exe" if os.name == "nt" else ""
+    release_name = f"InfernuxHubInstaller-{_project_version(source_root)}-{host_platform_id()}{suffix}"
+    shutil.copy2(produced, release_dir / release_name)
 
 
 def main() -> int:
@@ -607,8 +601,11 @@ def main() -> int:
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--build-dir", required=True)
     parser.add_argument("--package-dir", required=True)
+    parser.add_argument("--release-dir")
     parser.add_argument("--cmake-generator", default="")
     args = parser.parse_args()
+    if args.target == "installer" and not args.release_dir:
+        parser.error("--release-dir is required for the installer target")
 
     source_root = Path(args.source_root).resolve()
     build_dir = Path(args.build_dir).resolve()
@@ -636,6 +633,7 @@ def main() -> int:
             source_root,
             build_dir,
             package_dir,
+            release_dir=Path(args.release_dir).resolve(),
             build_env=build_env,
         )
     return 0

@@ -27,6 +27,38 @@ mingw_mode=False
 """
 
 
+def test_installer_publishes_only_its_versioned_file(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text('[project]\nversion = "0.4.0"\n')
+    stage = tmp_path / "stage"
+    (stage / "hub").mkdir(parents=True)
+    hub_executable = "Infernux Hub.exe" if sys.platform == "win32" else "Infernux Hub"
+    (stage / "hub" / hub_executable).write_bytes(b"Hub payload")
+    build = tmp_path / "build"
+    release = tmp_path / "dist/releases/0.4.0"
+    release.mkdir(parents=True)
+    sibling = release / "other-platform.bin"
+    sibling.write_bytes(b"keep")
+    filename = "InfernuxHubInstaller.exe" if sys.platform == "win32" else "InfernuxHubInstaller"
+
+    def compile_installer(command, **kwargs):
+        (build / "nuitka" / filename).write_bytes(b"compiled installer")
+
+    monkeypatch.setattr(build_hub, "_common_nuitka_command", lambda *a, **kw: ["nuitka"])
+    monkeypatch.setattr(build_hub, "_run", compile_installer)
+    monkeypatch.setattr(build_hub, "_validate_msvc_reports", lambda *a: [])
+    monkeypatch.setattr(build_hub, "_sign_windows_binary", lambda *a: None)
+    monkeypatch.setattr(build_hub, "_validate_windows_pe", lambda *a: None)
+    build_hub._build_installer(source, build, stage, release_dir=release, build_env={})
+    suffix = ".exe" if sys.platform == "win32" else ""
+    artifact = release / f"InfernuxHubInstaller-0.4.0-{build_hub.host_platform_id()}{suffix}"
+    assert artifact.read_bytes() == b"compiled installer"
+    assert sibling.read_bytes() == b"keep"
+    assert set(release.iterdir()) == {artifact, sibling}
+    assert not (stage / "installer").exists()
+
+
 def test_msbuild_generator_is_required_on_windows(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(build_hub.os, "name", "nt")
 

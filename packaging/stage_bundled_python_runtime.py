@@ -554,7 +554,7 @@ def main() -> int:
         return 0
 
     raise SystemExit(
-        f"Unable to prepare a usable bundled Python {_TARGET_VERSION} runtime under out/package/runtime/{_TARGET_DIRECTORY}."
+        f"Unable to prepare a usable bundled Python {_TARGET_VERSION} runtime in the preset staging tree."
     )
 
 

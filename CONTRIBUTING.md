@@ -38,7 +38,7 @@ python packaging/launcher.py
 Generated files have one canonical home:
 
 - `out/build/<preset>/` contains CMake configure and build trees.
-- `out/package/` contains disposable Hub and installer staging output.
+- `out/stage/<preset>/` contains disposable wheel and Hub assembly trees; verified wheels, Hub update archives, and installers are written to `dist/releases/<version>/`.
 - `dist/releases/<version>/` contains final, upload-ready release assets only.
 - `dev/` contains private plans and drafts; it is not a build-output directory.
 

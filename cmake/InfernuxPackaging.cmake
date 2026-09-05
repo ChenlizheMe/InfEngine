@@ -1,7 +1,7 @@
 # Python wheel staging, packaging, and optional environment installation.
 
-set(INFERNUX_PYTHON_STAGE_DIR "${CMAKE_BINARY_DIR}/stage/python-wheel-source")
-set(INFERNUX_PYTHON_WHEEL_DIR "${CMAKE_BINARY_DIR}/python-wheel")
+set(INFERNUX_PYTHON_STAGE_DIR "${INFERNUX_STAGE_DIR}/python-wheel-source")
+set(INFERNUX_PYTHON_WHEEL_DIR "${INFERNUX_STAGE_DIR}/wheels")
 
 add_custom_target(stage_python_package
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}"
@@ -38,6 +38,9 @@ add_custom_target(package_python
         -DINFERNUX_SOURCE_DIR=${INFERNUX_PYTHON_STAGE_DIR}
         -DINFERNUX_WHEEL_DIR=${INFERNUX_PYTHON_WHEEL_DIR}
         -P "${CMAKE_SOURCE_DIR}/cmake/verify_python_wheel.cmake"
+
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${INFERNUX_PYTHON_WHEEL_DIR}" "${INFERNUX_RELEASE_DIR}"
 
     DEPENDS stage_python_package
     COMMENT "Building and verifying the Infernux Python wheel"

@@ -20,6 +20,7 @@ set(PYTHON_TARGET_DIR "${INFERNUX_PYTHON_SYNC_DIR}")
 
 set(PYBIND11_FINDPYTHON ON)
 include("${CMAKE_SOURCE_DIR}/cmake/InfernuxPython.cmake")
+include("${CMAKE_SOURCE_DIR}/cmake/InfernuxOutputPaths.cmake")
 find_package(Vulkan REQUIRED)
 
 option(INFERNUX_BUILD_PLAYER_HOST

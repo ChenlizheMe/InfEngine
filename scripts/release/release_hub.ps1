@@ -35,7 +35,9 @@ $CurrentReleaseNotes = [regex]::Split($UpdateLogText, '(?m)^\s*---\s*$')[0].Trim
 if (-not $CurrentReleaseNotes.StartsWith("# Infernux v$Version", [StringComparison]::Ordinal)) {
     throw "The first UpdateLog.md release block must describe Infernux v$Version."
 }
-$ReleaseNotesFile = Join-Path ([IO.Path]::GetTempPath()) "infernux-release-notes-$Version.md"
+$ReleaseNotesDir = Join-Path $Root 'out\stage\windows-msvc-release'
+New-Item -ItemType Directory -Path $ReleaseNotesDir -Force | Out-Null
+$ReleaseNotesFile = Join-Path $ReleaseNotesDir "release-notes-$Version.md"
 [IO.File]::WriteAllText($ReleaseNotesFile, "$CurrentReleaseNotes`n", [Text.UTF8Encoding]::new($false))
 
 function Test-TrustedSignature([string]$Path) {
@@ -101,9 +103,8 @@ if ($UploadOnly) {
     }
     Write-Host "Reusing locally built release assets from $ReleaseDir" -ForegroundColor Cyan
 } else {
-    if (Test-Path -LiteralPath $ReleaseDir) {
-        Remove-Item -LiteralPath $ReleaseDir -Recurse -Force
-    }
+    # Each producer replaces only its own platform artifact. Preserve Linux
+    # artifacts already assembled for this version.
     New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 
 Write-Host "[1/5] Configuring the release preset..." -ForegroundColor Cyan
@@ -113,22 +114,17 @@ if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
 Write-Host "[2/5] Building the staged Release wheel..." -ForegroundColor Cyan
 & cmake --build --preset windows-msvc-wheel --parallel
 if ($LASTEXITCODE -ne 0) { throw 'Release wheel build failed.' }
-$WheelDir = Join-Path $Root 'out\build\windows-msvc-release\python-wheel'
-$Wheels = @(Get-ChildItem -LiteralPath $WheelDir -Filter '*.whl' -File)
+$WheelDir = $ReleaseDir
+$Wheels = @(Get-ChildItem -LiteralPath $WheelDir -Filter '*-win_amd64.whl' -File)
 if ($Wheels.Count -ne 1) { throw "Expected one wheel in $WheelDir, found $($Wheels.Count)." }
-Copy-Item -LiteralPath $Wheels[0].FullName -Destination $ReleaseDir
 
 Write-Host "[3/5] Building the Hub, update assets, and installer..." -ForegroundColor Cyan
 & cmake --build --preset windows-hub-installer
 if ($LASTEXITCODE -ne 0) { throw 'Hub release build failed.' }
-$HubDir = Join-Path $Root 'out\package\hub'
+$HubDir = Join-Path $Root 'out\stage\windows-msvc-release\hub'
 if (-not (Test-Path -LiteralPath $HubDir -PathType Container)) { throw "Hub output not found: $HubDir" }
-$Installer = Join-Path $Root 'out\package\installer\InfernuxHubInstaller.exe'
+$Installer = Join-Path $ReleaseDir "InfernuxHubInstaller-$Version-windows-x64.exe"
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { throw "Installer output not found: $Installer" }
-Copy-Item -LiteralPath $Installer -Destination (Join-Path $ReleaseDir "InfernuxHubInstaller-$Version-windows-x64.exe")
-$HubReleaseDir = Join-Path $Root 'out\package\hub-release'
-Copy-Item -LiteralPath (Join-Path $HubReleaseDir "InfernuxHub-$Version-windows-x64-full.zip") -Destination $ReleaseDir
-Copy-Item -LiteralPath (Join-Path $HubReleaseDir 'InfernuxHub-windows-x64-manifest.json') -Destination $ReleaseDir
 
 Write-Host "[4/5] Release assets are ready:" -ForegroundColor Green
 Get-ChildItem -LiteralPath $ReleaseDir -File | Sort-Object Name | ForEach-Object {

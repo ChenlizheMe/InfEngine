@@ -139,10 +139,10 @@ jobs:
         with:
           name: windows-desktop-distribution-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            out/build/windows-msvc-release/python-wheel/*.whl
-            out/package/installer/InfernuxHubInstaller.exe
-            out/package/hub-release/InfernuxHub-*-windows-x64-full.zip
-            out/package/hub-release/InfernuxHub-windows-x64-manifest.json
+            dist/releases/*/*-win_amd64.whl
+            dist/releases/*/InfernuxHubInstaller-*-windows-x64.exe
+            dist/releases/*/InfernuxHub-*-windows-x64-full.zip
+            dist/releases/*/InfernuxHub-windows-x64-manifest.json
           if-no-files-found: error
 
       - name: Upload Windows test evidence
@@ -221,10 +221,11 @@ jobs:
         with:
           name: linux-desktop-distribution-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            out/build/linux-clang-release/python-wheel/*.whl
-            out/package/installer/InfernuxHubInstaller
-            out/package/hub-release/InfernuxHub-*-linux-x64-full.zip
-            out/package/hub-release/InfernuxHub-linux-x64-manifest.json
+            dist/releases/*/*-manylinux*.whl
+            dist/releases/*/*-linux_x86_64.whl
+            dist/releases/*/InfernuxHubInstaller-*-linux-x64
+            dist/releases/*/InfernuxHub-*-linux-x64-full.zip
+            dist/releases/*/InfernuxHub-linux-x64-manifest.json
           if-no-files-found: error
 
       - name: Upload Linux test evidence
