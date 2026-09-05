@@ -30,6 +30,8 @@ abc/
 
 The manifest does not currently declare `requirements` or `dependencies`. An optional `requirements.txt` is recognized by its fixed filename.
 
+Exporting multiple files or folders selected in File Manager preserves their paths relative to their common parent. Ordinary content is imported directly under `Assets/Plugins`, without adding a directory named after the package. Selecting `materials/` and `web/`, for example, produces `Assets/Plugins/materials/` and `Assets/Plugins/web/`.
+
 ## Git repository layout
 
 A repository adds exactly one wrapper:
@@ -62,7 +64,7 @@ Run `python package.py [destination.inxpkg]` from any working directory. The scr
 | `requirements.txt` | `Packages/<reference>/requirements.txt` | excluded |
 | everything else | `Assets/Plugins/...` | included |
 
-The lowercase names `runtime`, `editor`, and `plugin_pages` are exact. Files are tracked by GUID, so uninstall removes only unedited files owned by that package.
+The lowercase names `runtime`, `editor`, and `plugin_pages` are exact. Uninstall follows GUID ownership: moving or editing a file does not prevent removal while the package still owns it. Shared files whose ownership has transferred to another package are preserved.
 
 ## Plugin pages
 
@@ -74,10 +76,18 @@ Subclass `InxPreload` for lifecycle work. Use explicit relative imports for pack
 
 No include/exclude fallback list exists. A `.pyd` or `.wasm` under `runtime/` is runtime-owned; the same file under `editor/` is Editor-only. Materials, shaders, HTML, and other ordinary assets are imported under `Assets/Plugins` and included in the Player through the normal asset pipeline.
 
+## Read assets by authored path
+
+`inx.Application.asset_path("Assets/Data/message.txt")` and `inx.Application.asset_path("Packages/studio/server/runtime/config.json")` use the same general asset lookup API, without a language-specific or `Resources` directory restriction. The Editor resolves author files under `Assets` or `Packages`. The Player resolves the build-frozen binding between the authored path, GUID, and cooked artifact. A missing binding fails explicitly; loose files are not scanned to fill the gap.
+
+The result is a filesystem path that can be passed to readers such as `Path(...).read_text(encoding="utf-8")`. The Player prepares this asset catalog before calling plugin `preload()`, so preloads can read cooked assets too. The authored path is a lookup key; the author directory need not exist beside the distribution.
+
 ## Raw runtime resources
 
 Place content that must remain a raw file for an external runtime or library under `runtime/`, such as JARs, JSON, Wasm, vocabularies, or a complete directory tree with relative `include` statements. Player builds preserve this tree byte-for-byte and keep its relative layout. Do not depend on the process working directory or infer the installed location from a lifecycle script's `__file__`.
 
-Gameplay code resolves a real read-only path with `inx.Application.package_path("studio/server", "runtime/server.jar")`. Inside `InxPreload.preload(context)`, use `context.package_path("runtime/server.jar")` without repeating the package reference. Windows and Linux return a path under the Player data directory, Android returns the validated path extracted into the app-private content directory, and Web returns a path in the Emscripten virtual filesystem. Libraries that accept a filesystem path can therefore continue to resolve sibling imports against the preserved directory.
+Gameplay code resolves a real read-only path with `inx.Application.package_path("studio/server", "runtime/server.jar")`. Inside `InxPreload.preload(context)`, use `context.package_path("runtime/server.jar")` without repeating the package reference. Windows, Linux, and Android prepare a product-private runtime content directory from the sealed archive; Web uses the Emscripten virtual filesystem. The returned path is not guaranteed to live beside the distribution. Libraries that accept filesystem paths can resolve sibling imports against the preserved package layout. Resolving a path does not grant execution support on the target: Web, for example, cannot launch Java or a native exe by its file path.
+
+The final Player distributes project content in binary archives such as `Content.inxpkg`, without loose `Assets`, `Library`, or `Packages` directories beside the executable. This is content packaging, not a promise of irreversible encryption; runtimes that require a filesystem prepare content in a product-private location.
 
 `package_path` resolves only installed package content that was included in the current Player. It rejects absolute paths, drive-qualified paths, and `..` traversal, and fails explicitly when content is missing. Treat the result as immutable release content; write generated or mutable state under `inx.Application.persistent_data_path()`.

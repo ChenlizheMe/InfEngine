@@ -8,6 +8,10 @@ the standard gameplay ActionMap to apply force to a rendered Rigidbody and
 records its world-space motion with a LineRenderer. It also resolves a verbatim
 TXT payload from an installed package through ``Application.package_path()``,
 reads it after Player export, and presents the exact value through ``UIText``.
+The package preload also reads ``Assets/Data/preload_message.txt`` through
+``Application.asset_path()`` before the scene starts. Its ready marker requires
+both reads to succeed, exercising the frozen path-to-GUID binding during
+plugin startup on every Player target.
 
 The interactive Balance project remains the functional acceptance project for
 physics, animation, particles, LineRenderer, authored materials, and shared

@@ -30,6 +30,8 @@ abc/
 
 manifest 目前不声明 `requirements` 或 `dependencies`。可选的 `requirements.txt` 只按固定文件名识别。
 
+在 File Manager 中多选文件或目录后导出，会保留选中项相对于共同父目录的路径。普通内容导入时直接在 `Assets/Plugins` 下展开，不会按包名额外套一层目录。例如同时选择 `materials/` 和 `web/`，导入结果就是 `Assets/Plugins/materials/` 和 `Assets/Plugins/web/`。
+
 ## Git 仓库结构
 
 Git 仓库只比本地包根多一层：
@@ -62,7 +64,7 @@ vfx-kit/
 | `requirements.txt` | `Packages/<reference>/requirements.txt` | 不进入 |
 | 其它所有内容 | `Assets/Plugins/...` | 进入 |
 
-`runtime`、`editor`、`plugin_pages` 必须精确小写。文件靠 GUID 识别，卸载时只删除属于该包且用户没有修改的文件。
+`runtime`、`editor`、`plugin_pages` 必须精确小写。卸载按 GUID 追踪包拥有的文件，即使用户移动或修改了文件，只要所有权仍属于该包，卸载仍会删除它；已转移给其它包的共享文件会保留。
 
 ## 插件说明页
 
@@ -74,10 +76,18 @@ vfx-kit/
 
 这里没有 include/exclude fallback 清单。`.pyd` 或 `.wasm` 放在 `runtime/` 就属于运行时，放在 `editor/` 就只属于编辑器。材质、Shader、HTML 和其它普通资产安装到 `Assets/Plugins`，再通过正常资产管线进入 Player。
 
+## 按作者路径读取资产
+
+`inx.Application.asset_path("Assets/Data/message.txt")` 和 `inx.Application.asset_path("Packages/studio/server/runtime/config.json")` 使用同一个通用资产读取入口，不限于某种语言或 `Resources` 目录。Editor 解析 `Assets` 或 `Packages` 中的作者文件；Player 通过构建时冻结的作者路径、GUID 和 Cook 产物绑定解析，找不到绑定会明确失败，不会扫描松散文件来补齐。
+
+这个入口返回实际文件路径，可交给 `Path(...).read_text(encoding="utf-8")` 等读取函数。插件的 `preload()` 执行前，Player 已准备好这份资产目录，因此预载代码也可以读取 Cook 后的资产。路径只是查找键，作者目录不必原样存在于发行包旁边。
+
 ## 运行时原始资源
 
 需要以原始文件形式交给外部运行时或库的内容放在 `runtime/`，例如 JAR、JSON、Wasm、词表或一整棵带相对 `include` 的目录。构建 Player 时会逐字节保留这棵目录及其相对结构；不要依赖当前工作目录，也不要从生命周期脚本的 `__file__` 推断安装位置。
 
-普通玩法脚本通过 `inx.Application.package_path("studio/server", "runtime/server.jar")` 取得当前目标上的真实只读路径。`InxPreload.preload(context)` 内可用 `context.package_path("runtime/server.jar")`，不必重复 package reference。Windows/Linux 返回 Player 数据目录中的路径，Android 返回校验后解包到应用私有内容目录的路径，Web 返回 Emscripten 虚拟文件系统中的路径；因此接收文件路径并自行解析相对导入的库可以继续使用同一目录结构。
+普通玩法脚本通过 `inx.Application.package_path("studio/server", "runtime/server.jar")` 取得当前目标上的真实只读路径。`InxPreload.preload(context)` 内可用 `context.package_path("runtime/server.jar")`，不必重复 package reference。Windows/Linux/Android 从密封内容包准备产品私有的运行内容目录，Web 使用 Emscripten 虚拟文件系统；返回路径不承诺位于发行包旁边。接收文件路径并自行解析相对导入的库可以使用保留的包内目录结构。取得路径不代表目标平台能执行该文件：例如 Web 不能通过文件路径启动 Java 或原生 exe。
+
+最终 Player 以 `Content.inxpkg` 等二进制包交付项目内容，不直接在发行目录中展开 `Assets`、`Library` 或 `Packages`。这是内容封装，并不承诺不可逆加密；需要文件系统的运行时会在产品私有位置准备内容。
 
 `package_path` 只解析当前已安装且已进入 Player 的包内容，并拒绝绝对路径、盘符和 `..` 越界；资源缺失会明确失败。该路径是只读发布内容，运行时生成或修改的数据应写入 `inx.Application.persistent_data_path()`。

@@ -568,13 +568,13 @@ def _prepare_player_runtime() -> None:
     from Infernux.lib import SceneManager
     from Infernux.plugins import PluginManager
 
-    _player_plugin_manager = PluginManager.startup(
-        _runtime_data_root,
-        runtime=True,
-    )
     session = PlayerRuntimeSession(asset_database=_player_asset_database)
     session.configure_runtime_contract(
         _player_runtime_manifest, _player_runtime_catalog
+    )
+    _player_plugin_manager = PluginManager.startup(
+        _runtime_data_root,
+        runtime=True,
     )
     scene_manager = SceneManager.instance()
     _install_runtime_lifecycle_bridge(scene_manager, session.execution_scheduler)
