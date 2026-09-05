@@ -194,6 +194,10 @@ def merge_child_env_utf8(extra: dict[str, str] | None = None) -> dict[str, str]:
         "INFERNUX_PACKAGE_CACHE_ROOT",
         os.path.join(merged["INFERNUX_SHARED_DATA_ROOT"], "Library", "Plugins"),
     )
+    if not merged.get("PIP_CACHE_DIR", "").strip():
+        merged["PIP_CACHE_DIR"] = os.path.join(
+            merged["INFERNUX_SHARED_DATA_ROOT"], "Cache", "Python", "Pip"
+        )
     if sys.platform == "win32":
         merged.setdefault("PYTHONUTF8", "1")
         merged.setdefault("PYTHONIOENCODING", "utf-8")

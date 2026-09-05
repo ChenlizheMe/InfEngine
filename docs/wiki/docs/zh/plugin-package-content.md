@@ -76,6 +76,8 @@ vfx-kit/
 
 ## Hub 共享存储
 
+插件安装使用的 pip 下载/构建缓存默认位于 Hub Shared 下的 `Cache/Python/Pip/`；源码启动 Hub 同样适用。直接启动 Editor、未指定 Hub Shared 时，该缓存位于当前项目的 `Cache/Python/Pip/`。显式 `PIP_CACHE_DIR` 保持有效，不修改用户的全局 pip 配置，也不自动搬移或清除已有系统缓存。pip 临时构建文件和生成的 requirements 文件属于当前项目的 `Cache/Plugins/.staging/`，安装结束（包括失败）即清理；不会改变 Editor 进程本身的临时目录。
+
 Hub 管理的插件库、Android Kit、Python 运行时、引擎版本和下载内容默认位于安装目录的 `InfernuxHubData/Shared/`。源码运行 `packaging/launcher.py` 时，位置为仓库内的 `packaging/InfernuxHubData/Shared/`，不取决于当前工作目录。`INFERNUX_SHARED_DATA_ROOT` 可显式指定共享位置，Hub 会将其传给启动的 Editor；`INFERNUX_PACKAGE_CACHE_ROOT` 仍可单独指定插件缓存。
 
 项目记录和编辑器偏好仍属于小体积用户状态，使用 `INFERNUX_DATA_ROOT`；项目缓存留在项目内。安装器升级和失败回滚保留 Shared，更新包不会拥有其中的内容。Windows 安装器只为安装账户授予 Shared 的可继承修改权限，不放宽程序目录权限。

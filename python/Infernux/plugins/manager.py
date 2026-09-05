@@ -11,9 +11,9 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import uuid
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -1027,14 +1027,10 @@ class PluginManager:
         values = tuple(str(line) for line in lines)
         executable = self._project_python_executable()
         before = self._python_environment_snapshot(executable)
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".txt", encoding="utf-8", delete=False
-        ) as stream:
-            stream.writelines(values)
-            filtered = stream.name
         try:
-            command = (executable, "-m", "pip", "install", "-r", filtered)
-            result = self._run_process(list(command), cwd=self.project_root)
+            with self._pip_requirement_file(values) as filtered:
+                command = (executable, "-m", "pip", "install", "-r", filtered)
+                result = self._run_process(list(command), cwd=self.project_root)
             after = self._python_environment_snapshot(executable)
             requirements = _pip_requirement_targets(values)
             self._activate_installed_python_paths(before, after, executable=executable)
@@ -1054,11 +1050,6 @@ class PluginManager:
                     f"rollback was incomplete: {rollback_error}"
                 ) from install_error
             raise
-        finally:
-            try:
-                os.remove(filtered)
-            except FileNotFoundError:
-                pass
 
     def _activate_installed_python_paths(
         self,
@@ -1242,22 +1233,21 @@ class PluginManager:
     def _run_pip_requirement_file(
         self, requirements: Iterable[str], *, executable: str
     ) -> None:
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".txt", encoding="utf-8", delete=False
-        ) as stream:
-            for requirement in requirements:
-                stream.write(str(requirement).rstrip("\r\n") + "\n")
-            path = stream.name
-        try:
+        with self._pip_requirement_file(requirements) as path:
             self._run_process(
                 [executable, "-m", "pip", "install", "-r", path],
                 cwd=self.project_root,
             )
-        finally:
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
+
+    @contextmanager
+    def _pip_requirement_file(self, requirements: Iterable[str]):
+        with self._package_cache().workspace("requirements") as workspace:
+            path = Path(workspace) / "requirements.txt"
+            path.write_text(
+                "".join(str(value).rstrip("\r\n") + "\n" for value in requirements),
+                encoding="utf-8",
+            )
+            yield str(path)
 
     def set_enabled(self, reference: str, enabled: bool) -> PluginState:
         reference = validate_reference(reference)
@@ -2042,19 +2032,38 @@ class PluginManager:
         descriptor["location"] = location
         return descriptor
 
-    @staticmethod
     def _run_process(
-        command: list[str], *, cwd: str | None = None
+        self, command: list[str], *, cwd: str | None = None
     ) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
+        is_pip = command[1:3] == ["-m", "pip"]
+        workspace_scope = (
+            self._package_cache().workspace("pip") if is_pip else nullcontext(None)
         )
+        with workspace_scope as workspace:
+            env = None
+            if is_pip:
+                env = dict(os.environ)
+                shared = env.get("INFERNUX_SHARED_DATA_ROOT", "").strip()
+                cache_root = (
+                    resolved_path(os.path.expandvars(os.path.expanduser(shared)))
+                    if shared else self.project_root
+                )
+                if not env.get("PIP_CACHE_DIR", "").strip():
+                    env["PIP_CACHE_DIR"] = os.path.join(cache_root, "Cache", "Python", "Pip")
+                # pip and its build subprocesses own no system-temp residue.
+                # Only this invocation sees these paths; the Editor's process
+                # environment and unrelated subprocesses remain untouched.
+                env.update(TMPDIR=workspace, TEMP=workspace, TMP=workspace)
+            result = subprocess.run(
+                command,
+                cwd=cwd,
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=False,
+            )
         if result.returncode:
             detail = (result.stderr or result.stdout).strip()
             raise RuntimeError(

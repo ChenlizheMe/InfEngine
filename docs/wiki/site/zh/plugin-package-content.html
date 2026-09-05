@@ -284,6 +284,7 @@
 <h2 id="_4">插件说明页<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
 <p>只有 <code>plugin_pages/</code> 下的 markdown 或文本会成为插件窗口内容。仓库根部 README 和许可证只是仓库文档，不再被读取成插件页面。中文文件在扩展名前加 <code>.zh-CN</code>，例如 <code>guide.zh-CN.md</code>；图片使用相对路径并留在包根内。</p>
 <h2 id="hub">Hub 共享存储<a class="headerlink" href="#hub" title="Permanent link">&para;</a></h2>
+<p>插件安装使用的 pip 下载/构建缓存默认位于 Hub Shared 下的 <code>Cache/Python/Pip/</code>；源码启动 Hub 同样适用。直接启动 Editor、未指定 Hub Shared 时，该缓存位于当前项目的 <code>Cache/Python/Pip/</code>。显式 <code>PIP_CACHE_DIR</code> 保持有效，不修改用户的全局 pip 配置，也不自动搬移或清除已有系统缓存。pip 临时构建文件和生成的 requirements 文件属于当前项目的 <code>Cache/Plugins/.staging/</code>，安装结束（包括失败）即清理；不会改变 Editor 进程本身的临时目录。</p>
 <p>Hub 管理的插件库、Android Kit、Python 运行时、引擎版本和下载内容默认位于安装目录的 <code>InfernuxHubData/Shared/</code>。源码运行 <code>packaging/launcher.py</code> 时，位置为仓库内的 <code>packaging/InfernuxHubData/Shared/</code>，不取决于当前工作目录。<code>INFERNUX_SHARED_DATA_ROOT</code> 可显式指定共享位置，Hub 会将其传给启动的 Editor；<code>INFERNUX_PACKAGE_CACHE_ROOT</code> 仍可单独指定插件缓存。</p>
 <p>项目记录和编辑器偏好仍属于小体积用户状态，使用 <code>INFERNUX_DATA_ROOT</code>；项目缓存留在项目内。安装器升级和失败回滚保留 Shared，更新包不会拥有其中的内容。Windows 安装器只为安装账户授予 Shared 的可继承修改权限，不放宽程序目录权限。</p>
 <p>旧用户数据目录不会自动搬移或删除。已有部署在完成迁移前，可显式将 <code>INFERNUX_SHARED_DATA_ROOT</code> 指向原先存放 <code>Library</code>、<code>PlatformKits</code>、<code>Runtimes</code>、<code>Engines</code> 的根目录；这不是运行失败后的自动回退。直接启动、没有 Hub 环境的独立 Editor 仍可使用原有用户数据根。</p>

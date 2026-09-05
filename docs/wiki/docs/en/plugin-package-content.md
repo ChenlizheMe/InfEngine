@@ -76,6 +76,8 @@ Only markdown or text under `plugin_pages/` becomes Plugins-window content. Root
 
 ## Hub shared storage
 
+Plugin pip download/build caches default to `Cache/Python/Pip/` under Hub Shared, including source Hub launches. When starting the Editor directly without a Hub Shared location, the cache stays in the project's `Cache/Python/Pip/`. An explicit `PIP_CACHE_DIR` remains effective. The engine neither edits global pip configuration nor moves or deletes existing system caches. Temporary pip build files and generated requirements files belong to the project's `Cache/Plugins/.staging/` and are removed when the operation ends, including failure; the Editor process's own temporary directory is unchanged.
+
 Hub-managed plugins, Android kits, Python runtimes, engine versions, and downloads default to `InfernuxHubData/Shared/` beside the installed Hub. Source runs of `packaging/launcher.py` use `packaging/InfernuxHubData/Shared/` in the repository, independently of the working directory. Set `INFERNUX_SHARED_DATA_ROOT` to choose an explicit shared location; Hub passes it to launched Editors. `INFERNUX_PACKAGE_CACHE_ROOT` remains a separate plugin-cache override.
 
 Small user state, including project records and Editor preferences, still uses `INFERNUX_DATA_ROOT`; project caches stay in the project. Installer replacement and rollback preserve Shared, and application updates do not own its content. On Windows, the installer grants the installing account inherited Modify access to Shared only, not to the application directory.

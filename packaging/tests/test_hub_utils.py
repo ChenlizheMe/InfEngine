@@ -54,6 +54,34 @@ def test_explicit_package_cache_override_survives_hub_launch(monkeypatch, tmp_pa
     assert merged["INFERNUX_PACKAGE_CACHE_ROOT"] == explicit
 
 
+@pytest.mark.parametrize("frozen", [False, True])
+def test_pip_cache_is_shared_by_source_and_installed_hub(monkeypatch, tmp_path, frozen):
+    monkeypatch.setattr(hub_utils, "is_frozen", lambda: frozen)
+    monkeypatch.setattr(hub_utils, "__file__", str(tmp_path / "source/packaging/hub_utils.py"))
+    monkeypatch.setattr(hub_utils.sys, "executable", str(tmp_path / "installed/Hub.exe"))
+    monkeypatch.delenv("PIP_CACHE_DIR", raising=False)
+    monkeypatch.delenv("INFERNUX_SHARED_DATA_ROOT", raising=False)
+    expected = tmp_path / ("installed" if frozen else "source/packaging")
+
+    merged = hub_utils.merge_child_env_utf8()
+
+    assert merged["PIP_CACHE_DIR"] == os.path.join(str(expected), "InfernuxHubData", "Shared", "Cache", "Python", "Pip")
+    assert "PIP_CACHE_DIR" not in os.environ
+
+
+def test_explicit_pip_cache_is_preserved(monkeypatch, tmp_path):
+    explicit = str(tmp_path / "pip-cache")
+    monkeypatch.setenv("PIP_CACHE_DIR", explicit)
+    assert hub_utils.merge_child_env_utf8()["PIP_CACHE_DIR"] == explicit
+
+
+def test_empty_pip_cache_does_not_restore_system_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("PIP_CACHE_DIR", "")
+    shared = str(tmp_path / "Shared")
+    merged = hub_utils.merge_child_env_utf8({"INFERNUX_SHARED_DATA_ROOT": shared})
+    assert merged["PIP_CACHE_DIR"] == os.path.join(shared, "Cache", "Python", "Pip")
+
+
 def test_windows_hub_user_data_uses_local_app_data(monkeypatch, tmp_path):
     monkeypatch.setattr(hub_utils.sys, "platform", "win32")
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
