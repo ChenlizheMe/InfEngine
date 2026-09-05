@@ -54,6 +54,11 @@ if [[ "$mode" == "build" || "$mode" == "all" ]]; then
     mkdir -p out/ci-projects/android out/test-results
     cp -a tests/fixtures/multiplatform_player/. out/ci-projects/android/
 
+    # Player and instrumentation are one signing unit. Keep their shared debug
+    # key outside disposable caches and pass the same owner to both builds.
+    export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$PWD/out/cache/gradle}"
+    export ANDROID_USER_HOME="${ANDROID_USER_HOME:-$PWD/out/state/android}"
+
     "$python_executable" scripts/acceptance/build_player.py \
         out/ci-projects/android android-x64-emulator out/acceptance/android \
         --report out/test-results/android-player-build.json \

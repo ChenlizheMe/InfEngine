@@ -478,9 +478,9 @@ jobs:
             out/cache/android-python
             out/cache/android-player
             out/build/linux-clang-headless
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: android-player-${{ runner.os }}-${{ hashFiles('scripts/setup/build_android_python_runtime.sh', 'scripts/setup/android_python_runtime.py', 'scripts/setup/android_numpy_cross.ini', 'external/plugins/infernux_android/**', 'cmake/**', 'CMakeLists.txt', 'cpp/**') }}
+            out/cache/gradle/caches
+            out/cache/gradle/wrapper
+          key: android-player-${{ runner.os }}-${{ hashFiles('scripts/acceptance/android_emulator_ci.sh', 'scripts/setup/build_android_python_runtime.sh', 'scripts/setup/android_python_runtime.py', 'scripts/setup/android_numpy_cross.ini', 'external/plugins/infernux_android/**', 'cmake/**', 'CMakeLists.txt', 'cpp/**') }}
           restore-keys: |
             android-player-${{ runner.os }}-
 
@@ -528,8 +528,8 @@ jobs:
             out/cache/android-python
             out/cache/android-player
             out/build/linux-clang-headless
-            ~/.gradle/caches
-            ~/.gradle/wrapper
+            out/cache/gradle/caches
+            out/cache/gradle/wrapper
           key: ${{ steps.android-build-cache.outputs.cache-primary-key }}
 
       - name: Validate Android Player on API 36
