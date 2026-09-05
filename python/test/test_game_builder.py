@@ -1570,6 +1570,43 @@ def test_python_bootstrap_runtime_accepts_standalone_libffi_name(tmp_path, monke
     assert resolved_encodings == encodings
 
 
+@pytest.mark.parametrize("builtin_ctypes", [True, False])
+def test_linux_bootstrap_runtime_uses_the_interpreter_ctypes_layout(tmp_path, monkeypatch, builtin_ctypes):
+    python_root = tmp_path / "python313"
+    (python_root / "bin").mkdir(parents=True)
+    library = python_root / "lib"
+    encodings = library / "python3.13" / "encodings"
+    encodings.mkdir(parents=True)
+    python_library = library / "libpython3.13.so.1.0"
+    python_library.write_bytes(b"python ABI")
+    ctypes_module = library / "_ctypes.cpython-313-x86_64-linux-gnu.so"
+    ffi = library / "libffi.so.8"
+    if not builtin_ctypes:
+        ctypes_module.write_bytes(b"ctypes ABI")
+        ffi.write_bytes(b"ffi ABI")
+
+    def find_spec(name):
+        if name == "_ctypes":
+            return SimpleNamespace(origin="built-in" if builtin_ctypes else str(ctypes_module))
+        if name == "encodings":
+            return SimpleNamespace(submodule_search_locations=[str(encodings)])
+        return None
+
+    monkeypatch.setattr(nuitka_builder_module.sys, "platform", "linux")
+    monkeypatch.setattr(nuitka_builder_module.sys, "stdlib_module_names", frozenset())
+    monkeypatch.setattr(nuitka_builder_module.importlib.util, "find_spec", find_spec)
+    builder = object.__new__(NuitkaBuilder)
+    builder._builder_python = str(python_root / "bin" / "python")
+
+    sources, resolved_encodings = builder._python_bootstrap_runtime_sources()
+
+    expected = {python_library.name: python_library}
+    if not builtin_ctypes:
+        expected.update({ctypes_module.name: ctypes_module, ffi.name: ffi})
+    assert sources == expected
+    assert resolved_encodings == encodings
+
+
 def test_python_bootstrap_runtime_follows_venv_base_prefix(tmp_path, monkeypatch):
     venv_root = tmp_path / "project" / ".venv"
     scripts_root = venv_root / "Scripts"
@@ -1942,7 +1979,10 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     assert not (final_dir / "Infernux").exists()
 
 
-def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path):
+@pytest.mark.parametrize("builtin_ctypes", [False, True])
+def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path, builtin_ctypes):
+    if builtin_ctypes and sys.platform == "win32":
+        pytest.skip("Windows runtime ships external _ctypes")
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"
     data_root = final_dir / "TestGame_Data"
@@ -1969,6 +2009,11 @@ def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path):
         bootstrap_module_name = "_InfernuxBootstrap.cpython-312-x86_64-linux-gnu.so"
         module_name = "_InfernuxPlayer.cpython-312-x86_64-linux-gnu.so"
         foundation_name = "libInfernuxFoundation.so"
+    if builtin_ctypes:
+        python_bootstrap_files = tuple(
+            name for name in python_bootstrap_files
+            if not name.startswith(("_ctypes", "libffi"))
+        )
     for filename in (*python_bootstrap_files, bootstrap_module_name):
         (final_dir / filename).write_bytes(filename.encode("ascii"))
     (final_dir / game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_FILENAME).write_text(

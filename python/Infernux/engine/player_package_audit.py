@@ -974,8 +974,6 @@ def audit_player_package(
             f"CPython {PYTHON_VERSION} shared library": lambda name: name.startswith(
                 LINUX_PYTHON_SHARED_PREFIX
             ),
-            "_ctypes extension module": lambda name: name.startswith("_ctypes.") and name.endswith(".so"),
-            "libffi shared library": lambda name: name.startswith("libffi.so"),
             "_InfernuxBootstrap module": lambda name: name.startswith("_InfernuxBootstrap")
             and name.endswith(".so"),
         }

@@ -936,8 +936,26 @@ def test_audit_requires_ctypes_abi_startup_closure(tmp_path: Path, required_name
     write_pack(source_files, bootstrap)
     _write_catalog(root)
 
-    with pytest.raises(RuntimeError, match="bootstrap archive file"):
+    with pytest.raises(RuntimeError, match="missing declared bootstrap native file"):
         audit_player_package(root, write_manifest=False)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Linux standalone CPython layout")
+def test_audit_accepts_ctypes_built_into_libpython(tmp_path, monkeypatch):
+    native_files, payloads = _bootstrap_native_fixture()
+    external_ctypes = {f"_ctypes{_EXTENSION_SUFFIX}", "libffi.so.8"}
+    monkeypatch.setattr(
+        sys.modules[__name__], "_bootstrap_native_fixture",
+        lambda: (
+            tuple(name for name in native_files if name not in external_ctypes),
+            tuple(item for item in payloads if item[0] not in external_ctypes),
+        ),
+    )
+    root = _valid_player(tmp_path)
+
+    manifest = audit_player_package(root, write_manifest=False)
+
+    assert manifest["audit"]["bootstrap_payload_gaps"] == []
 
 
 def test_audit_tracks_zlib_only_when_present_in_runtime_closure(tmp_path: Path):

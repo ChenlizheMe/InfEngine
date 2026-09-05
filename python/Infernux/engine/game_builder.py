@@ -3454,18 +3454,11 @@ finally:
                     f"Bootstrap.inxrt requires the CPython {PYTHON_VERSION} "
                     "shared library"
                 )
-            ctypes_module = require_unique("_ctypes.*.so", "_ctypes extension module")
-            ffi_libraries = sorted(
-                path for path in Path(final_dir).glob("libffi.so*") if path.is_file()
-            )
-            if not ffi_libraries:
-                raise RuntimeError("Bootstrap.inxrt requires the libffi shared library")
             bootstrap_module = require_unique(
                 "_InfernuxBootstrap*.so", "_InfernuxBootstrap module"
             )
             foundation = Path(final_dir) / "Infernux" / "lib" / "libInfernuxFoundation.so"
             required.update({
-                ctypes_module.name: str(ctypes_module),
                 bootstrap_module.name: str(bootstrap_module),
                 player_module.name: str(player_module),
                 # _InfernuxBootstrap is linked with RUNPATH=$ORIGIN. Keep its
@@ -3474,7 +3467,7 @@ finally:
                 "libInfernuxFoundation.so": str(foundation),
             })
             required.update(
-                {path.name: str(path) for path in (*python_libraries, *ffi_libraries)}
+                {path.name: str(path) for path in python_libraries}
             )
         else:
             raise RuntimeError(

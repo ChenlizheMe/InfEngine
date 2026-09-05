@@ -2740,7 +2740,11 @@ print(json.dumps({{
         if encodings_spec is None or not encodings_spec.submodule_search_locations:
             raise RuntimeError("Builder Python has no encodings package")
 
-        ctypes_path = Path(resolved_path(ctypes_spec.origin))
+        # Standalone CPython can link _ctypes into libpython itself.
+        ctypes_path = (
+            None if ctypes_spec.origin == "built-in"
+            else Path(resolved_path(ctypes_spec.origin))
+        )
         environment_root = python_root.parent
         environment_roots: list[Path] = []
         environment_root_keys: set[str] = set()
@@ -2765,7 +2769,9 @@ print(json.dumps({{
             environment_root_keys.add(key)
             environment_roots.append(candidate)
 
-        search_roots_list = [python_root, ctypes_path.parent]
+        search_roots_list = [python_root]
+        if ctypes_path is not None:
+            search_roots_list.append(ctypes_path.parent)
         for root in environment_roots:
             search_roots_list.extend(
                 (
@@ -2789,6 +2795,8 @@ print(json.dumps({{
             return None
 
         if sys.platform == "win32":
+            if ctypes_path is None:
+                raise RuntimeError("Windows PlayerHost requires an external _ctypes module")
             sources: dict[str, Path] = {
                 WINDOWS_PYTHON_DLL: find_runtime_file(
                     WINDOWS_PYTHON_DLL, required=True
@@ -2841,14 +2849,15 @@ print(json.dumps({{
                 for candidate in (root / "lib").glob("libffi.so*")
                 if candidate.is_file()
             )
-            if not ffi_candidates:
+            if ctypes_path is not None and not ffi_candidates:
                 raise RuntimeError(
                     "Builder Python bootstrap dependency is missing: libffi.so"
                 )
             sources = {
                 python_library.name: python_library,
-                ctypes_path.name: ctypes_path,
             }
+            if ctypes_path is not None:
+                sources[ctypes_path.name] = ctypes_path
             for source in ffi_candidates:
                 sources.setdefault(source.name, source)
         else:
