@@ -83,6 +83,8 @@ def test_linux_ci_reuses_the_repository_dependency_installer() -> None:
         "xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb PYTHONPATH=packaging "
         "python -m pytest packaging/tests"
     ) in linux_job
+    assert linux_job.index("name: Run Hub tests") < linux_job.index("name: Configure Linux release preset")
+    assert "pytest packaging/tests -q -s --junitxml" in linux_job
     assert 'conda install --yes --channel conda-forge "libpython-static=3.13.15"' in linux_job
 
 

@@ -183,6 +183,12 @@ jobs:
           conda install --yes --channel conda-forge "libpython-static=3.13.15"
           python -m pip install --disable-pip-version-check -r requirements.txt
 
+      - name: Run Hub tests
+        run: |
+          conda activate infernux
+          mkdir -p out/test-results
+          xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb PYTHONPATH=packaging python -m pytest packaging/tests -q -s --junitxml out/test-results/pytest-hub-linux.xml
+
       - name: Configure Linux release preset
         run: |
           conda activate infernux
@@ -203,11 +209,6 @@ jobs:
         run: |
           conda activate infernux
           xvfb-run --auto-servernum python -m pytest python/test -q --junitxml out/test-results/pytest-linux.xml
-
-      - name: Run Hub tests
-        run: |
-          conda activate infernux
-          xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb PYTHONPATH=packaging python -m pytest packaging/tests -q --junitxml out/test-results/pytest-hub-linux.xml
 
       - name: Build Linux editor wheel and Hub distribution
         run: |
