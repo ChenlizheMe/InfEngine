@@ -470,6 +470,7 @@ jobs:
             "ndk;29.0.14206865"
 
       - name: Restore Android Python runtime and build intermediates
+        if: github.event_name != 'schedule'
         id: android-build-cache
         uses: actions/cache/restore@v4
         with:
@@ -520,7 +521,7 @@ jobs:
             "$CONDA/envs/infernux/bin/python" build
 
       - name: Save Android Python runtime and build intermediates
-        if: steps.android-build-cache.outputs.cache-hit != 'true'
+        if: github.event_name != 'schedule' && steps.android-build-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |

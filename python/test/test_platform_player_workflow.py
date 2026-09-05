@@ -73,6 +73,16 @@ def test_android_ci_caches_the_managed_gradle_location():
     assert "~/.gradle" not in text
 
 
+def test_scheduled_android_acceptance_does_not_restore_build_intermediates():
+    workflow = _text()
+    restore = workflow[workflow.index("- name: Restore Android Python runtime and build intermediates") :]
+    restore = restore[:restore.index("- name: Install Linux host dependencies")]
+    assert "if: github.event_name != 'schedule'" in restore
+    save = workflow[workflow.index("- name: Save Android Python runtime and build intermediates") :]
+    save = save[:save.index("- name: Validate Android Player on API 36")]
+    assert "if: github.event_name != 'schedule' && steps.android-build-cache.outputs.cache-hit != 'true'" in save
+
+
 def test_platform_workflow_reuses_repository_build_and_acceptance_entry_points():
     text = _text() + "\n" + _android_driver_text()
 
