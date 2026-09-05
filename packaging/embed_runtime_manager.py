@@ -78,10 +78,6 @@ def _run_command(args: list[str], *, timeout: int, raise_on_error: bool = False)
 
     try:
         return subprocess.run(args, timeout=timeout, check=raise_on_error, **kwargs)
-    except FileNotFoundError as exc:
-        if not raise_on_error:
-            return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr=str(exc))
-        raise PythonRuntimeError(str(exc)) from exc
     except OSError as exc:
         if not raise_on_error:
             return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr=str(exc))
@@ -108,14 +104,6 @@ def _find_python_in_root(root: str) -> Optional[str]:
         if os.path.isfile(candidate):
             return candidate
 
-    for current_root, _dirs, files in os.walk(root):
-        for filename in files:
-            if sys.platform == "win32":
-                if filename.lower() != "python.exe":
-                    continue
-            elif filename != "python":
-                continue
-            return os.path.join(current_root, filename)
     return None
 
 

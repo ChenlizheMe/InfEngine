@@ -39,6 +39,26 @@ def _archive_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize("module", [embed_runtime_manager, stage_bundled_python_runtime])
+@pytest.mark.parametrize("nested", [False, True])
+def test_runtime_discovery_only_uses_supported_root_layouts(
+    tmp_path, monkeypatch, module, nested
+):
+    relative = Path("python.exe") if sys.platform == "win32" else Path("bin/python")
+    executable = tmp_path / ("unrelated/tool" if nested else "") / relative
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    executable.write_bytes(b"test interpreter")
+    monkeypatch.setattr(
+        stage_bundled_python_runtime,
+        "_is_target_python",
+        lambda path: Path(path).is_file(),
+    )
+
+    assert module._find_python_in_root(str(tmp_path)) == (
+        None if nested else str(executable)
+    )
+
+
 def test_runtime_and_bootstrap_staging_share_the_hub_data_root(tmp_path, monkeypatch):
     root = tmp_path / "HubData"
     monkeypatch.setattr(

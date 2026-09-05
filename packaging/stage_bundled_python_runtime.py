@@ -94,17 +94,6 @@ def _find_python_in_root(root: str) -> str | None:
         if _is_target_python(candidate):
             return candidate
 
-    exe_name = "python.exe" if sys.platform == "win32" else "python3"
-    for current_root, _dirs, files in os.walk(root):
-        for filename in files:
-            if sys.platform == "win32":
-                if filename.lower() != "python.exe":
-                    continue
-            elif filename not in (f"python{_TARGET_VERSION}", "python3", "python"):
-                continue
-            candidate = os.path.join(current_root, filename)
-            if _is_target_python(candidate):
-                return candidate
     return None
 
 
