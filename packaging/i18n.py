@@ -7,6 +7,13 @@ import sys
 
 
 _ZH = {
+    "Migrate Legacy Resources": "迁移旧版共享资源",
+    "Shared resources: {path}": "共享资源目录：{path}",
+    "Moving resources. Keep Hub open until this finishes.": "正在移动资源，请保持 Hub 打开直至完成。",
+    "Move:": "将迁移：",
+    "Keep at old location (target exists):": "保留在旧位置（目标已存在）：",
+    "Move {count} complete resources from {source} to {destination}?\nClose all Editors, builds and downloads first. Existing targets ({conflicts}) will be skipped and retained at the old location. Projects, settings and unfinished downloads are not moved. See details for the exact list.": "将 {count} 项完整资源从 {source} 迁移到 {destination}？\n请先关闭所有编辑器、构建和下载。目标已存在的 {conflicts} 项将跳过并保留在旧位置。不移动项目、设置或未完成的下载。展开详情可查看完整清单。",
+    "Moved {count} resources. {conflicts} existing targets were skipped; their old copies have not been deleted.": "已迁移 {count} 项资源。跳过 {conflicts} 项已存在的目标，其旧副本未被删除。",
     "Projects": "项目",
     "Installs": "安装",
     "Settings": "设置",

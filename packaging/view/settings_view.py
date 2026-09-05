@@ -16,6 +16,9 @@ from about_content import ABOUT_DESCRIPTION, ABOUT_TITLE
 from hub_updater import current_hub_version
 from i18n import current_language, detect_system_locale, tr
 from plugin_library import inspect_plugin_library, prune_unreferenced_packages
+from hub_utils import get_hub_shared_data_dir
+from shared_storage_migration import inspect_legacy_storage
+from view.storage_migration_dialog import StorageMigrationDialog
 from view.sidebar_view import ToggleSwitch, apply_theme
 from view.hover_widgets import AnimatedSurfaceFrame
 
@@ -116,6 +119,20 @@ class SettingsView(QWidget):
         storage_layout.addWidget(self.clean_plugins_button)
         layout.addWidget(storage_card)
         self._refresh_plugin_library()
+
+        migration_card = AnimatedSurfaceFrame("settingsCard")
+        migration_layout = QVBoxLayout(migration_card)
+        migration_layout.setContentsMargins(20, 18, 20, 18)
+        shared_path = QLabel(tr("Shared resources: {path}", path=get_hub_shared_data_dir()))
+        shared_path.setWordWrap(True)
+        shared_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        migration_layout.addWidget(shared_path)
+        self.migrate_storage_button = QPushButton(tr("Migrate Legacy Resources"))
+        self.migrate_storage_button.setObjectName("normalBtn")
+        self.migrate_storage_button.setFixedHeight(34)
+        self.migrate_storage_button.clicked.connect(self._migrate_legacy_storage)
+        migration_layout.addWidget(self.migrate_storage_button, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(migration_card)
 
         update_card = AnimatedSurfaceFrame("settingsCard")
         update_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -245,6 +262,45 @@ class SettingsView(QWidget):
             prune_unreferenced_packages(self._project_roots())
         except (OSError, RuntimeError, ValueError) as exc:
             QMessageBox.critical(self, tr("Plugin Library"), str(exc))
+        self._refresh_plugin_library()
+
+    def _migrate_legacy_storage(self):
+        try:
+            plan = inspect_legacy_storage()
+        except (OSError, RuntimeError, ValueError) as exc:
+            QMessageBox.critical(self, tr("Migrate Legacy Resources"), str(exc))
+            return
+        preview = QMessageBox(self)
+        preview.setWindowTitle(tr("Migrate Legacy Resources"))
+        preview.setText(tr(
+            "Move {count} complete resources from {source} to {destination}?\n"
+            "Close all Editors, builds and downloads first. Existing targets ({conflicts}) "
+            "will be skipped and retained at the old location. Projects, settings and "
+            "unfinished downloads are not moved. See details for the exact list.",
+            count=len(plan.items), source=str(plan.source), destination=str(plan.destination),
+            conflicts=len(plan.conflicts),
+        ))
+        preview.setDetailedText(
+            tr("Move:") + "\n" + "\n".join(path.as_posix() for path in plan.items)
+            + "\n\n" + tr("Keep at old location (target exists):") + "\n"
+            + "\n".join(path.as_posix() for path in plan.conflicts)
+        )
+        preview.setStandardButtons(
+            QMessageBox.Yes | QMessageBox.No if plan.items else QMessageBox.Ok
+        )
+        preview.setDefaultButton(QMessageBox.No if plan.items else QMessageBox.Ok)
+        if preview.exec() != QMessageBox.Yes or not plan.items:
+            return
+        dialog = StorageMigrationDialog(plan, self._project_roots(), self)
+        dialog.exec()
+        if dialog.worker.error:
+            QMessageBox.critical(self, tr("Migrate Legacy Resources"), dialog.worker.error)
+        else:
+            QMessageBox.information(self, tr("Migrate Legacy Resources"), tr(
+                "Moved {count} resources. {conflicts} existing targets were skipped; "
+                "their old copies have not been deleted.",
+                count=len(dialog.worker.result), conflicts=len(plan.conflicts),
+            ))
         self._refresh_plugin_library()
 
 

@@ -78,6 +78,8 @@ Small user state, including project records and Editor preferences, still uses `
 
 Existing user-data directories are not moved or deleted automatically. Until migration is complete, existing deployments can explicitly point `INFERNUX_SHARED_DATA_ROOT` at the previous root containing `Library`, `PlatformKits`, `Runtimes`, and `Engines`. This is configuration, not a failure fallback. A standalone Editor launched without Hub's environment can still use its existing user-data root.
 
+Hub Settings offers **Migrate Legacy Resources**. It previews the source, destination, and exact items before moving complete Python runtimes, Android kits, engine versions, plugin packages, and completed Python download archives in a background worker. Close Editors, builds, and downloads first; an open registered project blocks migration. Existing targets are skipped as whole units, with old copies retained—never merged or overwritten. Cross-volume copying finishes before the original is removed. Copy failures retain the original and report the error; completed moves remain at the destination. Projects, user state, unfinished downloads, and update staging are excluded. An explicit plugin-cache override excludes that cache from migration. Relative package-cache references remain unchanged, so project registries are not rewritten.
+
 Uninstall removes Hub application files while preserving Shared and project records. On Windows, a separate system PowerShell process waits for Hub to exit before removal. Errors are reported rather than presented as successful deletion. The retained installation marker lets a reinstall reuse the existing shared resources.
 
 ## Code and Player builds
