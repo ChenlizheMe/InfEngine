@@ -35,6 +35,7 @@ from Infernux.engine.build import (
 from Infernux.engine.build.source_library import GitSource, acquire_git_source
 
 from .doctor import (
+    ANDROID_BUILD_TOOLS,
     ANDROID_CMAKE,
     ANDROID_GRADLE_PLUGIN,
     ANDROID_NDK,
@@ -725,6 +726,7 @@ def _configure_project(
     replacements = {
         "@INFERNUX_SOURCE_ROOT@": source_root.as_posix(),
         "@ANDROID_ABI@": abi,
+        "@ANDROID_BUILD_TOOLS_VERSION@": ANDROID_BUILD_TOOLS,
         "@ANDROID_NDK_VERSION@": ANDROID_NDK,
         "@ANDROID_CMAKE_VERSION@": ANDROID_CMAKE,
         "@ANDROID_GRADLE_PLUGIN_VERSION@": ANDROID_GRADLE_PLUGIN,

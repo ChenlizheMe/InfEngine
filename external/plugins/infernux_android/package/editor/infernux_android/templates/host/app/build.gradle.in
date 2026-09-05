@@ -16,6 +16,7 @@ def infernuxReleaseSigningReady = [
 android {
     namespace "com.infernux.bootstrap"
     compileSdk 36
+    buildToolsVersion "@ANDROID_BUILD_TOOLS_VERSION@"
     ndkVersion "@ANDROID_NDK_VERSION@"
 
     defaultConfig {

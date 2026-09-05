@@ -455,6 +455,8 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
         encoding="utf-8"
     )
     gradle = (project / "app/build.gradle").read_text(encoding="utf-8")
+    doctor = importlib.import_module("infernux_android.doctor")
+    assert f'buildToolsVersion "{doctor.ANDROID_BUILD_TOOLS}"' in gradle
     root_gradle = (project / "build.gradle").read_text(encoding="utf-8")
     host_source = (project / "app/src/main/cpp/main.cpp").read_text(encoding="utf-8")
     activity = (
