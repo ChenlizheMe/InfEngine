@@ -77,6 +77,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def(py::init<>())
         .def("initialize", &AssetDatabase::Initialize, py::arg("project_root"),
              "Initialize asset database with project root")
+        .def("is_owner_thread", &AssetDatabase::IsOwnerThread,
+             "Whether the caller owns this initialized asset database")
         .def("refresh", &AssetDatabase::Refresh, "Refresh assets by scanning Assets folder")
         .def("begin_refresh", &AssetDatabase::BeginRefresh,
              "Schedule filesystem scan and fingerprint collection on the engine JobSystem")

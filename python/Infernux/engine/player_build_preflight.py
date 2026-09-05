@@ -60,7 +60,17 @@ def publish_player_asset_catalog_for_host(project_root: str) -> dict[str, Any]:
     if active_database is not None:
         active_root = str(getattr(active_database, "project_root", "") or "")
         if active_root and same_path(active_root, root):
-            return publish_player_asset_catalog(root, active_database)
+            if active_database.is_owner_thread():
+                return publish_player_asset_catalog(root, active_database)
+            from Infernux.host.commands import MainThreadCommandQueue
+
+            # Background builds consume a snapshot; only its authoring
+            # publication runs on the engine owner. Compilation stays on the
+            # calling worker and never borrows the mutable AssetDatabase.
+            return MainThreadCommandQueue.instance().run_sync(
+                "player.build.publish_asset_catalog",
+                lambda: publish_player_asset_catalog(root, active_database),
+            )
         if active_root:
             raise RuntimeError(
                 "The active AssetDatabase belongs to another project; run this build "
