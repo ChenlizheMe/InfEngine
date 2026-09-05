@@ -54,6 +54,11 @@ This development tree targets **0.4.0**. Windows x64 remains the released platfo
 | Android arm64/x86_64 | No | APK/AAB | Vulkan | Emulator and physical-device validation in progress |
 | Web | No | HTML/JS/WASM | WebGPU | Desktop and mobile-browser validation in progress |
 
+This table follows the [auditable support matrix](docs/platform-support.json).
+[Evidence and release boundaries](SUPPORT.md#platform-support) distinguish CI
+acceptance from the remaining device and installation gates. macOS and native
+iOS are not supported targets.
+
 Android and Web exporters are official InxPackages; their SDKs, templates, and target runtimes are not bundled into the core engine wheel. OpenGL, OpenGL ES, and WebGL are not fallback product paths.
 
 MCP is no longer welded into the engine. It is the official default plugin `infernux/mcp`. New projects include it. Turn it off or uninstall it if you do not want it.

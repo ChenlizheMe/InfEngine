@@ -54,6 +54,10 @@
 | Android arm64/x86_64 | 无 | APK/AAB | Vulkan | 模拟器与真机验收中 |
 | Web | 无 | HTML/JS/WASM | WebGPU | 桌面与移动浏览器验收中 |
 
+此表遵循[可审计的支持矩阵](docs/platform-support.json)。
+[证据与发布边界](SUPPORT.md#platform-support)区分 CI 验收与尚未完成的设备、安装门禁。
+macOS 和原生 iOS 不属于受支持目标。
+
 Android 和 Web exporter 是官方 InxPackage；SDK、模板和目标运行时不会塞进核心引擎 wheel。OpenGL、OpenGL ES 和 WebGL 都不是产品 fallback。
 
 MCP 不再焊在引擎里。它是官方默认插件 `infernux/mcp`。新项目会带上，不想用就关掉或卸掉。
@@ -64,16 +68,22 @@ MCP 不再焊在引擎里。它是官方默认插件 `infernux/mcp`。新项目�
 
 插件就是一个 InxPackage。丢 `.inxpkg`、选本地目录、贴 GitHub 地址，或从官方列表里装。
 
-```
-MyPlugin/
-  InxPackage.json
-  README.md
-  Runtime/          # 进游戏
-  Editor/           # 只在编辑器里
-  InxPluginPages/   # 插件窗口里的额外页
+```text
+MyPluginRepository/
+  README.md          # 仅供仓库展示
+  package.py         # 独立打包脚本
+  package/
+    inx_package.json # 可选，覆盖默认元数据
+    runtime/         # 进游戏
+    editor/          # 只在编辑器里
+    plugin_pages/    # 插件窗口里的额外页
 ```
 
-`Runtime` 和普通资源会进 Player。编辑器脚本留在编辑器。
+本地作者选中的文件夹本身就是包根目录，不要求再套 `package/` 或手写 manifest。
+未填写元数据时，输出 `.inxpkg` 的文件名决定默认 name 和 reference。
+Git 仓库只打包 `package/`，CMake、Gradle、Cargo、README 和临时构建产物都留在外层。
+
+`runtime` 和普通资源会进 Player。编辑器脚本留在编辑器。
 
 [插件说明](https://infernux-engine.com/wiki/site/zh/plugin-package-content.html)
 
