@@ -21,7 +21,7 @@ from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 from runtime_requirements import runtime_modules, runtime_packages
 import logging
 
-from hub_utils import get_hub_shared_data_dir
+from hub_utils import get_hub_shared_data_dir, merge_child_env_utf8
 
 _RUNTIME_PACKAGES = runtime_packages()
 _RUNTIME_MODULES = runtime_modules()
@@ -32,11 +32,7 @@ _TARGET_DIRECTORY = _TARGET_RUNTIME.directory_name
 
 
 def _child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    env = {**os.environ, **(extra or {})}
-    if sys.platform == "win32":
-        env.setdefault("PYTHONUTF8", "1")
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-    return env
+    return merge_child_env_utf8(extra)
 _RUNTIME_PRUNE_DIR_NAMES = {"__pycache__", ".pytest_cache", "test", "tests"}
 _RUNTIME_PRUNE_FILE_SUFFIXES = (".pyc", ".pyo")
 
@@ -319,7 +315,6 @@ def _ensure_builder_packages(root: str) -> None:
         "--no-input",
         "--prefer-binary",
         "--no-compile",
-        "--no-cache-dir",
         "--upgrade",
         *_RUNTIME_PACKAGES,
     ], timeout=1800)

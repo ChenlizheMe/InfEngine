@@ -916,7 +916,6 @@ class PythonRuntimeManager:
             "--no-input",
             "--prefer-binary",
             "--no-compile",
-            "--no-cache-dir",
             "--upgrade",
             "--target",
             _site_packages_root(os.path.dirname(python_exe), runtime_id),
