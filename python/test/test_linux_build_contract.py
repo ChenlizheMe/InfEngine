@@ -48,6 +48,7 @@ def test_linux_setup_installs_and_checks_the_native_toolchain() -> None:
         "libegl1",
         "libgl1",
         "libxcb-cursor0",
+        "libx11-xcb1",
         "libxcb-icccm4",
         "libxcb-image0",
         "libxcb-keysyms1",
@@ -80,7 +81,7 @@ def test_linux_ci_reuses_the_repository_dependency_installer() -> None:
     assert "VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json" in linux_job
     assert "xvfb-run --auto-servernum python -m pytest python/test" in linux_job
     assert (
-        "xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb PYTHONPATH=packaging "
+        "xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb QT_DEBUG_PLUGINS=1 PYTHONPATH=packaging "
         "python -m pytest packaging/tests"
     ) in linux_job
     assert linux_job.index("name: Run Hub tests") < linux_job.index("name: Configure Linux release preset")

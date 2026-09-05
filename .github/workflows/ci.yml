@@ -187,7 +187,7 @@ jobs:
         run: |
           conda activate infernux
           mkdir -p out/test-results
-          xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb PYTHONPATH=packaging python -m pytest packaging/tests -q -s --junitxml out/test-results/pytest-hub-linux.xml
+          xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb QT_DEBUG_PLUGINS=1 PYTHONPATH=packaging python -m pytest packaging/tests -q -s --junitxml out/test-results/pytest-hub-linux.xml
 
       - name: Configure Linux release preset
         run: |

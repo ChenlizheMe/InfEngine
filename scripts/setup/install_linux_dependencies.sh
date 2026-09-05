@@ -28,6 +28,7 @@ sudo apt-get install --yes --no-install-recommends \
     libvulkan-dev \
     libwayland-dev \
     libx11-dev \
+    libx11-xcb1 \
     libxcb-cursor0 \
     libxcb-icccm4 \
     libxcb-image0 \
