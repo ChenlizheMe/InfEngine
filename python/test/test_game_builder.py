@@ -4070,13 +4070,13 @@ def test_player_runtime_and_content_archives_share_build_profile(
     runtime_source.write_bytes(b"runtime")
     content_source.write_text("{}", encoding="utf-8")
     observed: dict[str, str] = {}
-    native_write_pack = game_builder_module.write_pack
+    native_write_pack = game_builder_module.write_pack_isolated
 
     def record_profile(files, destination, **kwargs):
         observed[Path(destination).name] = kwargs.get("profile", "development")
         return native_write_pack(files, destination, **kwargs)
 
-    monkeypatch.setattr(game_builder_module, "write_pack", record_profile)
+    monkeypatch.setattr(game_builder_module, "write_pack_isolated", record_profile)
 
     builder._pack_core_runtime_archive(str(final_dir))
     builder._pack_content_archive(str(final_dir))

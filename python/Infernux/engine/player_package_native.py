@@ -102,7 +102,11 @@ def write_pack_isolated(
 
     destination_text = os.fspath(destination)
     source_pairs = [(str(path), os.fspath(source)) for path, source in files]
-    with tempfile.TemporaryDirectory(prefix="infernux-inxpack-worker-") as workspace:
+    output_directory = os.path.dirname(os.path.abspath(destination_text))
+    os.makedirs(output_directory, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".infernux-inxpack-worker-", dir=output_directory
+    ) as workspace:
         request_path = os.path.join(workspace, "request.json")
         response_path = os.path.join(workspace, "response.json")
         stderr_path = os.path.join(workspace, "stderr.log")

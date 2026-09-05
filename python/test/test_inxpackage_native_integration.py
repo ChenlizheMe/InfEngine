@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -35,6 +36,50 @@ def _native_available() -> bool:
         return not player_package_native.using_test_backend()
     except Exception:
         return False
+
+
+@pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
+def test_export_uses_writer_manifest_without_reading_its_own_package(tmp_path):
+    import Infernux.plugins.package as package_module
+
+    source = tmp_path / "author"
+    source.mkdir()
+    (source / "message.txt").write_text("exported text", encoding="utf-8")
+    with (
+        patch.object(package_module, "read_manifest", wraps=package_module.read_manifest) as manifests,
+        patch.object(package_module, "read_entry", wraps=package_module.read_entry) as entries,
+    ):
+        preview = InxPackage.export(
+            str(source), [str(source)], str(tmp_path / "Output.inxpkg")
+        )
+        assert (manifests.call_count, entries.call_count) == (0, 0)
+    assert preview == InxPackage.inspect(preview.package_path)
+
+
+@pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
+@pytest.mark.parametrize("worker", [False, True])
+def test_package_temporary_workspace_belongs_to_output(tmp_path, monkeypatch, worker):
+    import tempfile
+
+    source = tmp_path / "message.txt"
+    source.write_text("owned temporary data", encoding="utf-8")
+    destination = tmp_path / "output" / "probe.inxpkg"
+    workspaces = []
+    create = tempfile.TemporaryDirectory
+
+    def temporary_directory(*args, **kwargs):
+        workspace = create(*args, **kwargs)
+        workspaces.append(Path(workspace.name))
+        return workspace
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", temporary_directory)
+    if worker:
+        player_package_native.write_pack_isolated([("message.txt", source)], destination)
+    else:
+        InxPackage.export(str(tmp_path), [str(source)], str(destination))
+    assert workspaces
+    assert all(path.parent == destination.parent for path in workspaces)
+    assert all(not path.exists() for path in workspaces)
 
 
 def _source(path: Path, reference: str) -> Path:

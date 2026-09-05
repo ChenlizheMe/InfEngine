@@ -176,7 +176,9 @@ class InxPackage:
         }
         InxPackage.validate_metadata(document)
         os.makedirs(os.path.dirname(destination), exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="infernux-inxpackage-") as workspace:
+        with tempfile.TemporaryDirectory(
+            prefix=".infernux-inxpackage-", dir=os.path.dirname(destination)
+        ) as workspace:
             manifest_path = os.path.join(workspace, PACKAGE_MANIFEST)
             with open(manifest_path, "w", encoding="utf-8", newline="\n") as stream:
                 json.dump(document, stream, indent=2, ensure_ascii=False)
@@ -190,8 +192,8 @@ class InxPackage:
                     stream.write(meta_payload)
                 native_sources.append((archive_path, source))
                 native_sources.append((archive_path + ".meta", meta_path))
-            write_pack(native_sources, destination, profile=profile)
-        return InxPackage.inspect(destination)
+            native_manifest = write_pack(native_sources, destination, profile=profile)
+        return InxPackagePreview(destination, document, tuple(native_manifest["files"]))
 
     @staticmethod
     def export_source(

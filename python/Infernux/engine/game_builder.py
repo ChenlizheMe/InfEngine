@@ -50,8 +50,6 @@ from Infernux.engine.player_package_native import (
     extract_pack,
     read_entry,
     read_manifest,
-    using_test_backend,
-    write_pack,
     write_pack_isolated,
 )
 from Infernux.engine.path_utils import (
@@ -3859,12 +3857,6 @@ finally:
     ) -> dict[str, object]:
         """Write one Finalize container without monopolizing Editor Python."""
 
-        if using_test_backend():
-            return write_pack(
-                files,
-                destination,
-                profile=self._player_inxpack_profile(),
-            )
         return write_pack_isolated(
             files,
             destination,
