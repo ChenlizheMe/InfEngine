@@ -15,7 +15,7 @@ from typing import Callable, Optional
 from hub_utils import (
     get_bundle_dir,
     get_hub_data_dir,
-    get_hub_user_data_dir,
+    get_hub_shared_data_dir,
     is_frozen,
     merge_child_env_utf8,
 )
@@ -58,7 +58,7 @@ class PythonRuntimeError(RuntimeError):
 
 
 def _default_runtime_dir() -> str:
-    return os.path.join(get_hub_user_data_dir(), "Runtimes")
+    return os.path.join(get_hub_shared_data_dir(), "Runtimes")
 
 
 def _emit_status(callback: Optional[Callable[[str], None]], message: str) -> None:

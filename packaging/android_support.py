@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping
 
-from hub_utils import get_hub_user_data_dir
+from hub_utils import get_hub_shared_data_dir
 
 
 ANDROID_SUPPORT_SCHEMA = "infernux.android_support"
@@ -77,7 +77,7 @@ def archive_name() -> str:
 
 def default_android_support_root() -> Path:
     return (
-        Path(get_hub_user_data_dir())
+        Path(get_hub_shared_data_dir())
         / "PlatformKits"
         / "android"
         / ANDROID_SUPPORT_VERSION

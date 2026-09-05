@@ -6,6 +6,7 @@
 /dev/
 /tests/fixtures/*/Cache/
 /packaging/runtime/
+/packaging/InfernuxHubData/Shared/
 /mcp_captures/
 /python/_mcp_*.py
 /python/_repro_*.py

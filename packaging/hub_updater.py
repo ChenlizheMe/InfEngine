@@ -293,9 +293,9 @@ def stage_update(
     update: HubUpdate,
     progress: Callable[[int, int], None] | None = None,
 ) -> Path:
-    from hub_utils import get_hub_user_data_dir
+    from hub_utils import get_hub_shared_data_dir
 
-    base = Path(get_hub_user_data_dir()) / "Updates" / update.target_version
+    base = Path(get_hub_shared_data_dir()) / "Updates" / update.target_version
     if base.exists():
         shutil.rmtree(base)
     stage = base / "stage"

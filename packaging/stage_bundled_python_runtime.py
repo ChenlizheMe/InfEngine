@@ -21,7 +21,7 @@ from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 from runtime_requirements import runtime_modules, runtime_packages
 import logging
 
-from hub_utils import get_hub_user_data_dir
+from hub_utils import get_hub_shared_data_dir
 
 _RUNTIME_PACKAGES = runtime_packages()
 _RUNTIME_MODULES = runtime_modules()
@@ -42,7 +42,7 @@ _RUNTIME_PRUNE_FILE_SUFFIXES = (".pyc", ".pyo")
 
 
 def _bootstrap_root() -> str:
-    return os.path.join(get_hub_user_data_dir(), "Downloads", "RuntimeBootstrap")
+    return os.path.join(get_hub_shared_data_dir(), "Downloads", "RuntimeBootstrap")
 
 
 def _runtime_lib_names() -> list[str]:
@@ -452,7 +452,7 @@ def _candidate_python_paths() -> list[str]:
 
         candidates.append(
             os.path.join(
-                get_hub_user_data_dir(),
+                get_hub_shared_data_dir(),
                 "Runtimes",
                 _TARGET_DIRECTORY,
                 "python.exe",

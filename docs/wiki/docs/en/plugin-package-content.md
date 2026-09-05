@@ -70,6 +70,14 @@ The lowercase names `runtime`, `editor`, and `plugin_pages` are exact. Uninstall
 
 Only markdown or text under `plugin_pages/` becomes Plugins-window content. Root README and license files are repository documentation and are not read as plugin pages. Chinese content inserts `.zh-CN` before the extension, such as `guide.zh-CN.md`. Images use relative paths and stay under the package root.
 
+## Hub shared storage
+
+Hub-managed plugins, Android kits, Python runtimes, engine versions, and downloads default to `InfernuxHubData/Shared/` beside the installed Hub. Source runs of `packaging/launcher.py` use `packaging/InfernuxHubData/Shared/` in the repository, independently of the working directory. Set `INFERNUX_SHARED_DATA_ROOT` to choose an explicit shared location; Hub passes it to launched Editors. `INFERNUX_PACKAGE_CACHE_ROOT` remains a separate plugin-cache override.
+
+Small user state, including project records and Editor preferences, still uses `INFERNUX_DATA_ROOT`; project caches stay in the project. Installer replacement and rollback preserve Shared, and application updates do not own its content. On Windows, the installer grants the installing account inherited Modify access to Shared only, not to the application directory.
+
+Existing user-data directories are not moved or deleted automatically. Until migration is complete, existing deployments can explicitly point `INFERNUX_SHARED_DATA_ROOT` at the previous root containing `Library`, `PlatformKits`, `Runtimes`, and `Engines`. This is configuration, not a failure fallback. A standalone Editor launched without Hub's environment can still use its existing user-data root.
+
 ## Code and Player builds
 
 Subclass `InxPreload` for lifecycle work. Use explicit relative imports for package-local Python code. Every installed package receives an isolated deterministic module namespace. `runtime/` participates in gameplay component loading and hot refresh; `editor/` is loaded only by the Editor lifecycle.

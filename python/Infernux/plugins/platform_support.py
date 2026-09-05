@@ -40,7 +40,9 @@ def android_support_root(
     explicit = str(values.get("INFERNUX_ANDROID_SUPPORT_ROOT", "") or "").strip()
     if explicit:
         return Path(resolved_path(os.path.expandvars(os.path.expanduser(explicit))))
-    data_root = str(values.get("INFERNUX_DATA_ROOT", "") or "").strip()
+    data_root = str(values.get("INFERNUX_SHARED_DATA_ROOT", "") or "").strip()
+    if not data_root:
+        data_root = str(values.get("INFERNUX_DATA_ROOT", "") or "").strip()
     if data_root:
         base = Path(resolved_path(os.path.expandvars(os.path.expanduser(data_root))))
     elif os.name == "nt":

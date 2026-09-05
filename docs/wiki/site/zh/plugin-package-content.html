@@ -281,6 +281,10 @@
 <p><code>runtime</code>、<code>editor</code>、<code>plugin_pages</code> 必须精确小写。卸载按 GUID 追踪包拥有的文件，即使用户移动或修改了文件，只要所有权仍属于该包，卸载仍会删除它；已转移给其它包的共享文件会保留。</p>
 <h2 id="_4">插件说明页<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
 <p>只有 <code>plugin_pages/</code> 下的 markdown 或文本会成为插件窗口内容。仓库根部 README 和许可证只是仓库文档，不再被读取成插件页面。中文文件在扩展名前加 <code>.zh-CN</code>，例如 <code>guide.zh-CN.md</code>；图片使用相对路径并留在包根内。</p>
+<h2 id="hub">Hub 共享存储<a class="headerlink" href="#hub" title="Permanent link">&para;</a></h2>
+<p>Hub 管理的插件库、Android Kit、Python 运行时、引擎版本和下载内容默认位于安装目录的 <code>InfernuxHubData/Shared/</code>。源码运行 <code>packaging/launcher.py</code> 时，位置为仓库内的 <code>packaging/InfernuxHubData/Shared/</code>，不取决于当前工作目录。<code>INFERNUX_SHARED_DATA_ROOT</code> 可显式指定共享位置，Hub 会将其传给启动的 Editor；<code>INFERNUX_PACKAGE_CACHE_ROOT</code> 仍可单独指定插件缓存。</p>
+<p>项目记录和编辑器偏好仍属于小体积用户状态，使用 <code>INFERNUX_DATA_ROOT</code>；项目缓存留在项目内。安装器升级和失败回滚保留 Shared，更新包不会拥有其中的内容。Windows 安装器只为安装账户授予 Shared 的可继承修改权限，不放宽程序目录权限。</p>
+<p>旧用户数据目录不会自动搬移或删除。已有部署在完成迁移前，可显式将 <code>INFERNUX_SHARED_DATA_ROOT</code> 指向原先存放 <code>Library</code>、<code>PlatformKits</code>、<code>Runtimes</code>、<code>Engines</code> 的根目录；这不是运行失败后的自动回退。直接启动、没有 Hub 环境的独立 Editor 仍可使用原有用户数据根。</p>
 <h2 id="player">代码与 Player<a class="headerlink" href="#player" title="Permanent link">&para;</a></h2>
 <p>生命周期代码继承 <code>InxPreload</code>。包内 Python 使用显式相对导入，每个已安装插件拥有隔离且确定的模块命名空间。<code>runtime/</code> 参与玩法组件加载和热刷新；<code>editor/</code> 只由 Editor 生命周期加载。</p>
 <p>直接在 <code>Packages/&lt;name&gt;/runtime/</code> 编写本地包，不需要先安装自己才能构建 Player。构建会包含当前已索引的 runtime 文件及编译后的预载脚本，不会改写项目的安装所有权记录。简单包可以不写 manifest；<code>Packages/studio/tool/</code> 这样的命名空间目录需用 <code>inx_package.json</code> 明确包边界。即使 manifest 为未来分发 <code>.inxpkg</code> 指定了不同 reference，Player 仍保持当前项目目录对应的模块身份。</p>

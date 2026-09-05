@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Iterable
-from hub_utils import get_hub_user_data_dir
+from hub_utils import get_hub_shared_data_dir
 
 
 PACKAGE_CACHE_ROOT_ENV = "INFERNUX_PACKAGE_CACHE_ROOT"
@@ -20,7 +20,7 @@ def plugin_library_root() -> Path:
     configured = os.environ.get(PACKAGE_CACHE_ROOT_ENV, "").strip()
     if configured:
         return Path(os.path.expandvars(os.path.expanduser(configured))).resolve()
-    return (Path(get_hub_user_data_dir()) / "Library" / "Plugins").resolve()
+    return (Path(get_hub_shared_data_dir()) / "Library" / "Plugins").resolve()
 
 
 def _cache_location(value: object) -> str:

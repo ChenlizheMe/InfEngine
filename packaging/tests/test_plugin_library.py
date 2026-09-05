@@ -119,7 +119,7 @@ def test_default_library_path_is_owned_by_hub_data(tmp_path, monkeypatch):
     monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
     monkeypatch.setattr(
         plugin_library,
-        "get_hub_user_data_dir",
+        "get_hub_shared_data_dir",
         lambda: str(tmp_path / "HubData"),
     )
 

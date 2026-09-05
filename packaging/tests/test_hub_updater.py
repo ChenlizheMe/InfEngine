@@ -299,6 +299,7 @@ def test_stage_update_uses_the_archive_and_current_manifests(
         platform=platform,
     )
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("INFERNUX_SHARED_DATA_ROOT", str(installed / "InfernuxHubData/Shared"))
     monkeypatch.setattr(hub_updater, "get_app_dir", lambda: str(installed))
     monkeypatch.setattr(
         hub_updater,
@@ -361,6 +362,7 @@ def test_stage_update_rejects_an_unowned_archive_member(tmp_path: Path, monkeypa
     )
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
     monkeypatch.setattr(hub_updater, "get_app_dir", lambda: str(installed))
+    monkeypatch.setenv("INFERNUX_SHARED_DATA_ROOT", str(installed / "InfernuxHubData/Shared"))
     monkeypatch.setattr(
         hub_updater,
         "_download",

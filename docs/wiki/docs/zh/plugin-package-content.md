@@ -70,6 +70,14 @@ vfx-kit/
 
 只有 `plugin_pages/` 下的 markdown 或文本会成为插件窗口内容。仓库根部 README 和许可证只是仓库文档，不再被读取成插件页面。中文文件在扩展名前加 `.zh-CN`，例如 `guide.zh-CN.md`；图片使用相对路径并留在包根内。
 
+## Hub 共享存储
+
+Hub 管理的插件库、Android Kit、Python 运行时、引擎版本和下载内容默认位于安装目录的 `InfernuxHubData/Shared/`。源码运行 `packaging/launcher.py` 时，位置为仓库内的 `packaging/InfernuxHubData/Shared/`，不取决于当前工作目录。`INFERNUX_SHARED_DATA_ROOT` 可显式指定共享位置，Hub 会将其传给启动的 Editor；`INFERNUX_PACKAGE_CACHE_ROOT` 仍可单独指定插件缓存。
+
+项目记录和编辑器偏好仍属于小体积用户状态，使用 `INFERNUX_DATA_ROOT`；项目缓存留在项目内。安装器升级和失败回滚保留 Shared，更新包不会拥有其中的内容。Windows 安装器只为安装账户授予 Shared 的可继承修改权限，不放宽程序目录权限。
+
+旧用户数据目录不会自动搬移或删除。已有部署在完成迁移前，可显式将 `INFERNUX_SHARED_DATA_ROOT` 指向原先存放 `Library`、`PlatformKits`、`Runtimes`、`Engines` 的根目录；这不是运行失败后的自动回退。直接启动、没有 Hub 环境的独立 Editor 仍可使用原有用户数据根。
+
 ## 代码与 Player
 
 生命周期代码继承 `InxPreload`。包内 Python 使用显式相对导入，每个已安装插件拥有隔离且确定的模块命名空间。`runtime/` 参与玩法组件加载和热刷新；`editor/` 只由 Editor 生命周期加载。

@@ -78,6 +78,19 @@ def test_android_plugin_is_blocked_before_hub_support_is_installed(tmp_path: Pat
         require_plugin_support("infernux/platform-android", environment)
 
 
+def test_editor_uses_hub_shared_storage_separately_from_preferences(tmp_path, monkeypatch):
+    from Infernux.plugins.cache import package_cache_root
+    from Infernux.plugins.platform_support import android_support_root
+
+    shared = tmp_path / "Hub/InfernuxHubData/Shared"
+    monkeypatch.setenv("INFERNUX_SHARED_DATA_ROOT", str(shared))
+    monkeypatch.setenv("INFERNUX_DATA_ROOT", str(tmp_path / "preferences"))
+    monkeypatch.delenv("INFERNUX_ANDROID_SUPPORT_ROOT", raising=False)
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
+    assert Path(package_cache_root()) == shared / "Library/Plugins"
+    assert android_support_root() == shared / "PlatformKits/android/0.1.0" / _host_id()
+
+
 def test_android_plugin_is_unblocked_only_by_a_complete_hub_support_root(
     tmp_path: Path,
 ) -> None:

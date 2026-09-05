@@ -212,6 +212,7 @@ def test_fresh_installer_deploys_only_the_default_python_runtime(
 
     assert result.endswith(str(Path("python313") / "python.exe"))
     assert observed["constructor"] == {
+        "runtime_dir": str(tmp_path / "hub/InfernuxHubData/Shared/Runtimes"),
         "bundle_runtime_dir": str(tmp_path / "hub" / "InfernuxHubData" / "runtime"),
         "default_version": DEFAULT_PYTHON_RUNTIME,
     }
@@ -220,3 +221,55 @@ def test_fresh_installer_deploys_only_the_default_python_runtime(
         "on_status": None,
         "allow_frozen_repair": True,
     }
+
+
+def test_windows_shared_permissions_target_only_installing_user_and_shared(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    commands = []
+    monkeypatch.setattr(install_python_runtime.sys, "platform", "win32")
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+
+    def execute(command, **options):
+        commands.append((command, options))
+        return SimpleNamespace(stdout='"machine\\author","S-1-5-21-123-456-789-1001"\n')
+
+    monkeypatch.setattr(install_python_runtime.subprocess, "run", execute)
+    result = install_python_runtime.prepare_shared_storage(str(tmp_path / "Hub"))
+    expected = str((tmp_path / "Hub/InfernuxHubData/Shared").resolve())
+    assert result == expected
+    assert commands[1][0] == [
+        str(tmp_path / "Windows/System32/icacls.exe"), expected,
+        "/grant", "*S-1-5-21-123-456-789-1001:(OI)(CI)M",
+    ]
+    assert all(options["check"] and options["creationflags"] == 0x08000000 for _, options in commands)
+
+
+def test_installer_reuses_live_shared_runtime_after_activation(tmp_path, monkeypatch):
+    import installer_gui
+
+    payload = _make_payload(tmp_path / "payload")
+    install = _make_payload(tmp_path / "Hub", executable=b"old")
+    write_install_marker(str(install))
+    existing = install / "InfernuxHubData/Shared/Runtimes/python313/marker"
+    existing.parent.mkdir(parents=True)
+    existing.write_bytes(b"existing runtime")
+    calls = []
+    monkeypatch.setattr(installer_gui, "_payload_dir", lambda: str(payload))
+
+    def install_runtime(app_dir, **kwargs):
+        assert app_dir == str(install)
+        assert (install / HUB_EXECUTABLE).read_bytes() == b"new hub executable"
+        assert existing.read_bytes() == b"existing runtime"
+        calls.append(app_dir)
+
+    monkeypatch.setattr(installer_gui, "install_runtime_for_app", install_runtime)
+    monkeypatch.setattr(installer_gui, "_write_registry", lambda path: None)
+    monkeypatch.setattr(installer_gui, "_create_start_menu_shortcut", lambda path: None)
+    errors = []
+    worker = installer_gui.InstallWorker(str(install))
+    worker.error.connect(errors.append)
+    worker.run()
+    assert not errors
+    assert calls == [str(install)]
+    assert existing.read_bytes() == b"existing runtime"

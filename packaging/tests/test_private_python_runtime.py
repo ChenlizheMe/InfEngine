@@ -41,12 +41,12 @@ def test_runtime_and_bootstrap_staging_share_the_hub_data_root(tmp_path, monkeyp
     root = tmp_path / "HubData"
     monkeypatch.setattr(
         embed_runtime_manager,
-        "get_hub_user_data_dir",
+        "get_hub_shared_data_dir",
         lambda: str(root),
     )
     monkeypatch.setattr(
         stage_bundled_python_runtime,
-        "get_hub_user_data_dir",
+        "get_hub_shared_data_dir",
         lambda: str(root),
     )
 

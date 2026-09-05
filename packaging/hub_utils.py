@@ -65,6 +65,16 @@ def get_hub_data_dir() -> str:
     return os.path.join(get_app_dir(), "InfernuxHubData")
 
 
+def get_hub_shared_data_dir(app_dir: str | None = None) -> str:
+    """Mutable, reusable content beside the Hub, not in its application payload."""
+    if app_dir is None:
+        configured = os.environ.get("INFERNUX_SHARED_DATA_ROOT", "").strip()
+        if configured:
+            return os.path.abspath(os.path.expandvars(os.path.expanduser(configured)))
+        app_dir = get_app_dir()
+    return os.path.abspath(os.path.join(app_dir, "InfernuxHubData", "Shared"))
+
+
 def get_hub_user_data_dir() -> str:
     """Return the per-user Hub data root shared by source and installed launches."""
     configured = os.environ.get("INFERNUX_DATA_ROOT", "").strip()
@@ -179,9 +189,10 @@ def merge_child_env_utf8(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Environment for subprocesses: inherit current env and prefer UTF-8 on Windows."""
     merged = {**os.environ, **(extra or {})}
     merged.setdefault("INFERNUX_DATA_ROOT", get_hub_user_data_dir())
+    merged.setdefault("INFERNUX_SHARED_DATA_ROOT", get_hub_shared_data_dir())
     merged.setdefault(
         "INFERNUX_PACKAGE_CACHE_ROOT",
-        os.path.join(merged["INFERNUX_DATA_ROOT"], "Library", "Plugins"),
+        os.path.join(merged["INFERNUX_SHARED_DATA_ROOT"], "Library", "Plugins"),
     )
     if sys.platform == "win32":
         merged.setdefault("PYTHONUTF8", "1")

@@ -177,16 +177,16 @@ class InstallWorker(QObject):
                 self.progress.emit(tr("Preparing Infernux Hub files..."))
                 installation.prepare()
 
+                self.progress.emit(tr("Replacing the installed Infernux Hub..."))
+                installation.activate()
+
                 self.progress.emit(
                     tr(
                         "Deploying private Python {version} runtime...",
                         version=_BUNDLED_PYTHON_VERSION,
                     )
                 )
-                install_runtime_for_app(installation.staged_dir, progress_callback=self.progress.emit)
-
-                self.progress.emit(tr("Replacing the installed Infernux Hub..."))
-                installation.activate()
+                install_runtime_for_app(self.install_dir, progress_callback=self.progress.emit)
 
                 self.progress.emit(tr("Registering Infernux Hub..."))
                 _write_registry(self.install_dir)

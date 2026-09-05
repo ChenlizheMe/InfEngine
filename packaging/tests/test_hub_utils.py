@@ -32,10 +32,11 @@ def test_is_frozen_is_false_for_source_python(monkeypatch):
 def test_child_environment_owns_the_shared_package_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(
         hub_utils,
-        "get_hub_user_data_dir",
+        "get_hub_shared_data_dir",
         lambda: str(tmp_path / "HubData"),
     )
     monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
+    monkeypatch.delenv("INFERNUX_SHARED_DATA_ROOT", raising=False)
 
     merged = hub_utils.merge_child_env_utf8()
 
@@ -75,12 +76,38 @@ def test_explicit_hub_data_root_owns_every_child_launch(monkeypatch, tmp_path):
     root = tmp_path / "shared-data"
     monkeypatch.setenv("INFERNUX_DATA_ROOT", str(root))
     monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
+    monkeypatch.setenv("INFERNUX_SHARED_DATA_ROOT", str(tmp_path / "shared"))
 
     assert hub_utils.get_hub_user_data_dir() == str(root.resolve())
     merged = hub_utils.merge_child_env_utf8()
     assert merged["INFERNUX_DATA_ROOT"] == str(root.resolve())
     assert merged["INFERNUX_PACKAGE_CACHE_ROOT"] == os.path.join(
-        str(root.resolve()), "Library", "Plugins"
+        str(tmp_path / "shared"), "Library", "Plugins"
+    )
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+def test_shared_root_uses_source_or_installed_hub_location(tmp_path, monkeypatch, frozen):
+    monkeypatch.delenv("INFERNUX_SHARED_DATA_ROOT", raising=False)
+    monkeypatch.setattr(hub_utils, "is_frozen", lambda: frozen)
+    monkeypatch.setattr(hub_utils, "__file__", str(tmp_path / "source/packaging/hub_utils.py"))
+    monkeypatch.setattr(hub_utils.sys, "executable", str(tmp_path / "installed/Hub.exe"))
+    expected = tmp_path / ("installed" if frozen else "source/packaging") / "InfernuxHubData/Shared"
+    assert hub_utils.get_hub_shared_data_dir() == str(expected)
+    child = hub_utils.merge_child_env_utf8()
+    assert child["INFERNUX_SHARED_DATA_ROOT"] == str(expected)
+
+
+def test_explicit_shared_root_is_propagated_to_children(tmp_path, monkeypatch):
+    root = str(tmp_path / "managed")
+    monkeypatch.setenv("INFERNUX_SHARED_DATA_ROOT", root)
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
+    assert hub_utils.get_hub_shared_data_dir() == root
+    child = hub_utils.merge_child_env_utf8()
+    assert child["INFERNUX_SHARED_DATA_ROOT"] == root
+    assert child["INFERNUX_PACKAGE_CACHE_ROOT"] == os.path.join(root, "Library", "Plugins")
+    assert hub_utils.get_hub_shared_data_dir(str(tmp_path / "target")) == str(
+        tmp_path / "target/InfernuxHubData/Shared"
     )
 
 

@@ -30,7 +30,12 @@ def package_cache_root() -> str:
     if configured:
         return resolved_path(os.path.expandvars(os.path.expanduser(configured)))
     return resolved_path(
-        os.path.join(get_infernux_data_root(), "Library", "Plugins")
+        os.path.join(
+            os.path.expandvars(os.path.expanduser(os.environ["INFERNUX_SHARED_DATA_ROOT"]))
+            if os.environ.get("INFERNUX_SHARED_DATA_ROOT", "").strip()
+            else get_infernux_data_root(),
+            "Library", "Plugins",
+        )
     )
 
 
