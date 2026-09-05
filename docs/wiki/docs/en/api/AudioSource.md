@@ -77,13 +77,12 @@ AudioSource owns 1–16 tracks; `play_on_awake` starts only track 0. Use pooled 
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import AudioSource, GameObject
-from Infernux.core.audio_clip import AudioClip
+import infernux as inx
 
-audio_object = GameObject.find("Ambience")
-clip = AudioClip.load("Assets/Audio/ambience.wav")
+audio_object = inx.GameObject.find("Ambience")
+clip = inx.AudioClip.load("Assets/Audio/ambience.wav")
 if audio_object is not None and clip is not None:
-    source = audio_object.get_component(AudioSource)
+    source = audio_object.get_component(inx.AudioSource)
     if source is not None:
         source.set_track_clip(0, clip)
         source.loop = True

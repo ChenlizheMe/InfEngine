@@ -22,153 +22,149 @@ function withoutRemovedGuideLinks(value) {
 
 const examples = {
   InxComponent: `\`\`\`python
-from Infernux import InxComponent, Vector3, serialized_field
+import infernux as inx
 
 
-class Patrol(InxComponent):
-    speed: float = serialized_field(default=2.0, range=(0.0, 10.0))
+class Patrol(inx.InxComponent):
+    speed: float = inx.serialized_field(default=2.0, range=(0.0, 10.0))
 
     def update(self, delta_time: float) -> None:
-        self.transform.translate(Vector3(self.speed * delta_time, 0.0, 0.0))
+        self.transform.translate(inx.Vector3(self.speed * delta_time, 0.0, 0.0))
 \`\`\``,
   GameObject: `\`\`\`python
-from Infernux import GameObject, Rigidbody
+import infernux as inx
 
-player = GameObject.find("Player")
+player = inx.GameObject.find("Player")
 if player is not None and player.active_in_hierarchy:
-    body = player.get_component(Rigidbody)
+    body = player.get_component(inx.Rigidbody)
     if body is not None:
         body.use_gravity = True
 \`\`\``,
   serialized_field: `\`\`\`python
-from Infernux import InxComponent, serialized_field
+import infernux as inx
 
 
-class ProjectileSettings(InxComponent):
-    speed: float = serialized_field(
+class ProjectileSettings(inx.InxComponent):
+    speed: float = inx.serialized_field(
         default=20.0,
         range=(0.0, 100.0),
         tooltip="World units per second",
         slider=True,
     )
-    notes: str = serialized_field(default="", multiline=True)
+    notes: str = inx.serialized_field(default="", multiline=True)
 \`\`\``,
   Input: `\`\`\`python
-from Infernux import InxComponent, Vector3
-from Infernux.input import Input, KeyCode
+import infernux as inx
 
 
-class KeyboardMover(InxComponent):
+class KeyboardMover(inx.InxComponent):
     speed: float = 4.0
 
     def update(self, delta_time: float) -> None:
-        axis = float(Input.get_key(KeyCode.D)) - float(Input.get_key(KeyCode.A))
-        self.transform.translate(Vector3(axis * self.speed * delta_time, 0.0, 0.0))
+        axis = float(inx.input.Input.get_key(inx.input.KeyCode.D)) - float(inx.input.Input.get_key(inx.input.KeyCode.A))
+        self.transform.translate(inx.Vector3(axis * self.speed * delta_time, 0.0, 0.0))
 \`\`\``,
   Time: `\`\`\`python
-from Infernux import InxComponent, Time
+import infernux as inx
 
 
-class PauseClock(InxComponent):
+class PauseClock(inx.InxComponent):
     def update(self, delta_time: float) -> None:
-        gameplay_seconds = Time.time
-        menu_step = Time.unscaled_delta_time
+        gameplay_seconds = inx.Time.time
+        menu_step = inx.Time.unscaled_delta_time
         print(gameplay_seconds, menu_step)
 \`\`\``,
   Rigidbody: `\`\`\`python
-from Infernux import InxComponent, Rigidbody, Vector3
+import infernux as inx
 
 
-class Thruster(InxComponent):
+class Thruster(inx.InxComponent):
     def start(self) -> None:
-        self.body = self.game_object.get_component(Rigidbody)
+        self.body = self.game_object.get_component(inx.Rigidbody)
 
     def fixed_update(self, fixed_delta_time: float) -> None:
         if self.body is not None:
-            self.body.add_force(Vector3(0.0, 12.0, 0.0))
+            self.body.add_force(inx.Vector3(0.0, 12.0, 0.0))
 \`\`\``,
   Physics: `\`\`\`python
-from Infernux import InxComponent, Vector3
-from Infernux.physics import Physics
+import infernux as inx
 
 
-class GroundProbe(InxComponent):
+class GroundProbe(inx.InxComponent):
     def is_grounded(self) -> bool:
-        hit = Physics.raycast(
+        hit = inx.physics.Physics.raycast(
             self.transform.position,
-            Vector3(0.0, -1.0, 0.0),
+            inx.Vector3(0.0, -1.0, 0.0),
             max_distance=1.1,
         )
         return hit is not None
 \`\`\``,
   UICanvas: `\`\`\`python
-from Infernux import GameObject
-from Infernux.ui import UICanvas, UIScaleMode
+import infernux as inx
 
-ui_root = GameObject.find("UI")
+ui_root = inx.GameObject.find("UI")
 if ui_root is not None:
-    canvas = ui_root.get_component(UICanvas)
+    canvas = ui_root.get_component(inx.ui.UICanvas)
     if canvas is not None:
-        canvas.ui_scale_mode = UIScaleMode.ScaleWithScreenSize
+        canvas.ui_scale_mode = inx.ui.UIScaleMode.ScaleWithScreenSize
         scale_x, scale_y, text_scale = canvas.compute_scale(1280, 720)
 \`\`\``,
   Camera: `\`\`\`python
-from Infernux import Camera, CameraProjection, GameObject
+import infernux as inx
 
-camera_object = GameObject.find("Main Camera")
+camera_object = inx.GameObject.find("Main Camera")
 if camera_object is not None:
-    camera = camera_object.get_component(Camera)
+    camera = camera_object.get_component(inx.Camera)
     if camera is not None:
-        camera.projection_mode = CameraProjection.Orthographic
+        camera.projection_mode = 1  # Orthographic
         camera.orthographic_size = 5.0
 \`\`\``,
   MeshRenderer: `\`\`\`python
-from Infernux import GameObject, MeshRenderer, PrimitiveType
+import infernux as inx
 
-display = GameObject.find("DisplayObject")
+display = inx.GameObject.find("DisplayObject")
 if display is not None:
-    renderer = display.get_component(MeshRenderer)
+    renderer = display.get_component(inx.MeshRenderer)
     if renderer is not None:
-        renderer.set_primitive_mesh(PrimitiveType.Cube)
+        renderer.set_primitive_mesh(inx.PrimitiveType.Cube)
         renderer.casts_shadows = True
 \`\`\``,
   Light: `\`\`\`python
-from Infernux import GameObject, Light, LightType
+import infernux as inx
 
-light_object = GameObject.find("Key Light")
+light_object = inx.GameObject.find("Key Light")
 if light_object is not None:
-    light = light_object.get_component(Light)
+    light = light_object.get_component(inx.Light)
     if light is not None:
-        light.light_type = LightType.Point
+        light.light_type = 1  # Point
         light.intensity = 2.0
         light.range = 12.0
 \`\`\``,
   AudioSource: `\`\`\`python
-from Infernux import AudioSource, GameObject
-from Infernux.core.audio_clip import AudioClip
+import infernux as inx
 
-audio_object = GameObject.find("Ambience")
-clip = AudioClip.load("Assets/Audio/ambience.wav")
+audio_object = inx.GameObject.find("Ambience")
+clip = inx.AudioClip.load("Assets/Audio/ambience.wav")
 if audio_object is not None and clip is not None:
-    source = audio_object.get_component(AudioSource)
+    source = audio_object.get_component(inx.AudioSource)
     if source is not None:
         source.set_track_clip(0, clip)
         source.loop = True
         source.play(0)
 \`\`\``,
   AudioListener: `\`\`\`python
-from Infernux import AudioListener, GameObject
+import infernux as inx
 
-camera_object = GameObject.find("Main Camera")
+camera_object = inx.GameObject.find("Main Camera")
 if camera_object is not None:
-    listener = camera_object.get_component(AudioListener)
+    listener = camera_object.get_component(inx.AudioListener)
     if listener is None:
-        listener = camera_object.add_component(AudioListener)
+        listener = camera_object.add_component(inx.AudioListener)
 \`\`\``,
   AudioClip: `\`\`\`python
-from Infernux.core.audio_clip import AudioClip
+import infernux as inx
 
-clip = AudioClip.load("Assets/Audio/click.wav")
+clip = inx.AudioClip.load("Assets/Audio/click.wav")
 if clip is not None:
     print(clip.name, clip.duration, clip.sample_rate, clip.channels)
 \`\`\``,

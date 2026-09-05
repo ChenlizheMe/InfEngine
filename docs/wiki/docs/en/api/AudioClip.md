@@ -81,9 +81,9 @@ The current reliable decoder supports WAV. Keep a loaded clip alive while an Aud
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux.core.audio_clip import AudioClip
+import infernux as inx
 
-clip = AudioClip.load("Assets/Audio/click.wav")
+clip = inx.AudioClip.load("Assets/Audio/click.wav")
 if clip is not None:
     print(clip.name, clip.duration, clip.sample_rate, clip.channels)
 ```

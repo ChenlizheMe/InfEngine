@@ -126,14 +126,14 @@ Use this base for project gameplay components. Read Your First Component before 
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import InxComponent, Vector3, serialized_field
+import infernux as inx
 
 
-class Patrol(InxComponent):
-    speed: float = serialized_field(default=2.0, range=(0.0, 10.0))
+class Patrol(inx.InxComponent):
+    speed: float = inx.serialized_field(default=2.0, range=(0.0, 10.0))
 
     def update(self, delta_time: float) -> None:
-        self.transform.translate(Vector3(self.speed * delta_time, 0.0, 0.0))
+        self.transform.translate(inx.Vector3(self.speed * delta_time, 0.0, 0.0))
 ```
 <!-- USER CONTENT END -->
 

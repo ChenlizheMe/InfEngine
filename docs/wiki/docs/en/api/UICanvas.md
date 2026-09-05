@@ -69,14 +69,13 @@ Design in reference-resolution pixels, then select a scale and screen-match poli
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import GameObject
-from Infernux.ui import UICanvas, UIScaleMode
+import infernux as inx
 
-ui_root = GameObject.find("UI")
+ui_root = inx.GameObject.find("UI")
 if ui_root is not None:
-    canvas = ui_root.get_component(UICanvas)
+    canvas = ui_root.get_component(inx.ui.UICanvas)
     if canvas is not None:
-        canvas.ui_scale_mode = UIScaleMode.ScaleWithScreenSize
+        canvas.ui_scale_mode = inx.ui.UIScaleMode.ScaleWithScreenSize
         scale_x, scale_y, text_scale = canvas.compute_scale(1280, 720)
 ```
 <!-- USER CONTENT END -->

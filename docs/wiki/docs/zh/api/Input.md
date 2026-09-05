@@ -60,16 +60,15 @@
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import InxComponent, Vector3
-from Infernux.input import Input, KeyCode
+import infernux as inx
 
 
-class KeyboardMover(InxComponent):
+class KeyboardMover(inx.InxComponent):
     speed: float = 4.0
 
     def update(self, delta_time: float) -> None:
-        axis = float(Input.get_key(KeyCode.D)) - float(Input.get_key(KeyCode.A))
-        self.transform.translate(Vector3(axis * self.speed * delta_time, 0.0, 0.0))
+        axis = float(inx.input.Input.get_key(inx.input.KeyCode.D)) - float(inx.input.Input.get_key(inx.input.KeyCode.A))
+        self.transform.translate(inx.Vector3(axis * self.speed * delta_time, 0.0, 0.0))
 ```
 <!-- USER CONTENT END -->
 

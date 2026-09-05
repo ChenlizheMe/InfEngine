@@ -65,13 +65,13 @@ A MeshRenderer can use an inline primitive or an imported mesh asset and support
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import GameObject, MeshRenderer, PrimitiveType
+import infernux as inx
 
-display = GameObject.find("DisplayObject")
+display = inx.GameObject.find("DisplayObject")
 if display is not None:
-    renderer = display.get_component(MeshRenderer)
+    renderer = display.get_component(inx.MeshRenderer)
     if renderer is not None:
-        renderer.set_primitive_mesh(PrimitiveType.Cube)
+        renderer.set_primitive_mesh(inx.PrimitiveType.Cube)
         renderer.casts_shadows = True
 ```
 <!-- USER CONTENT END -->

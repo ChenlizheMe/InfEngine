@@ -67,13 +67,13 @@ Use a perspective Camera for normal 3D depth and an orthographic Camera for scal
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import Camera, CameraProjection, GameObject
+import infernux as inx
 
-camera_object = GameObject.find("Main Camera")
+camera_object = inx.GameObject.find("Main Camera")
 if camera_object is not None:
-    camera = camera_object.get_component(Camera)
+    camera = camera_object.get_component(inx.Camera)
     if camera is not None:
-        camera.projection_mode = CameraProjection.Orthographic
+        camera.projection_mode = 1  # Orthographic
         camera.orthographic_size = 5.0
 ```
 <!-- USER CONTENT END -->

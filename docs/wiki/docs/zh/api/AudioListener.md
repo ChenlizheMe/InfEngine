@@ -41,13 +41,13 @@
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import AudioListener, GameObject
+import infernux as inx
 
-camera_object = GameObject.find("Main Camera")
+camera_object = inx.GameObject.find("Main Camera")
 if camera_object is not None:
-    listener = camera_object.get_component(AudioListener)
+    listener = camera_object.get_component(inx.AudioListener)
     if listener is None:
-        listener = camera_object.add_component(AudioListener)
+        listener = camera_object.add_component(inx.AudioListener)
 ```
 <!-- USER CONTENT END -->
 

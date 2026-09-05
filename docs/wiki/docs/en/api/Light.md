@@ -62,13 +62,13 @@ Choose light type, range, intensity, color, and shadow settings for the scene sc
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import GameObject, Light, LightType
+import infernux as inx
 
-light_object = GameObject.find("Key Light")
+light_object = inx.GameObject.find("Key Light")
 if light_object is not None:
-    light = light_object.get_component(Light)
+    light = light_object.get_component(inx.Light)
     if light is not None:
-        light.light_type = LightType.Point
+        light.light_type = 1  # Point
         light.intensity = 2.0
         light.range = 12.0
 ```

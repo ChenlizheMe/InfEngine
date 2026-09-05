@@ -48,16 +48,16 @@ Keep an explicit type annotation beside each serialized field. Metadata controls
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import InxComponent, serialized_field
+import infernux as inx
 
 
-class ProjectileSettings(InxComponent):
-    speed: float = serialized_field(
+class ProjectileSettings(inx.InxComponent):
+    speed: float = inx.serialized_field(
         default=20.0,
         range=(0.0, 100.0),
         tooltip="World units per second",
         slider=True,
     )
-    notes: str = serialized_field(default="", multiline=True)
+    notes: str = inx.serialized_field(default="", multiline=True)
 ```
 <!-- USER CONTENT END -->

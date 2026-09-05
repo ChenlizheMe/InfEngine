@@ -50,15 +50,14 @@
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import InxComponent, Vector3
-from Infernux.physics import Physics
+import infernux as inx
 
 
-class GroundProbe(InxComponent):
+class GroundProbe(inx.InxComponent):
     def is_grounded(self) -> bool:
-        hit = Physics.raycast(
+        hit = inx.physics.Physics.raycast(
             self.transform.position,
-            Vector3(0.0, -1.0, 0.0),
+            inx.Vector3(0.0, -1.0, 0.0),
             max_distance=1.1,
         )
         return hit is not None

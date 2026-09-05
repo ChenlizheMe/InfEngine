@@ -72,16 +72,16 @@ For dynamic bodies, use forces or velocity rather than writing Transform every f
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import InxComponent, Rigidbody, Vector3
+import infernux as inx
 
 
-class Thruster(InxComponent):
+class Thruster(inx.InxComponent):
     def start(self) -> None:
-        self.body = self.game_object.get_component(Rigidbody)
+        self.body = self.game_object.get_component(inx.Rigidbody)
 
     def fixed_update(self, fixed_delta_time: float) -> None:
         if self.body is not None:
-            self.body.add_force(Vector3(0.0, 12.0, 0.0))
+            self.body.add_force(inx.Vector3(0.0, 12.0, 0.0))
 ```
 <!-- USER CONTENT END -->
 

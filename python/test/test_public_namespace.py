@@ -4,6 +4,7 @@ import ast
 import importlib
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -36,12 +37,10 @@ def _owned_public_documents(repository: Path) -> list[Path]:
     }
     paths.update((repository / "docs" / "learn").glob("*.md"))
     paths.update((repository / "docs" / "learn").glob("*.html"))
+    paths.update((repository / "docs" / "wiki" / "docs").rglob("*.md"))
+    paths.add(repository / "docs" / "tools" / "apply-api-curation.mjs")
     paths.update((repository / "external" / "plugins").glob("*/README*.md"))
-    paths.update(
-        (repository / "external" / "plugins" / "infernux_mcp").glob(
-            "plugin_pages/*.md"
-        )
-    )
+    paths.update((repository / "external" / "plugins").glob("*/package/plugin_pages/*.md"))
     paths.update((repository / "tests" / "fixtures").glob("**/README*.md"))
     return sorted(path for path in paths if path.is_file())
 
@@ -180,6 +179,34 @@ def test_public_docs_never_import_the_internal_package() -> None:
     assert len(public_docs) >= 50
     violations = _forbidden_import_violations(repository, public_docs)
     assert not violations, "\n".join(violations)
+
+
+def test_curated_wiki_examples_reference_existing_public_api() -> None:
+    repository = Path(__file__).parents[2]
+    checked = 0
+    for path in (repository / "docs/wiki/docs").glob("*/api/*.md"):
+        text = path.read_text(encoding="utf-8")
+        for source in re.findall(r"```python\s*\n(.*?)```", text, flags=re.DOTALL):
+            if "import infernux as inx" not in source:
+                continue
+            tree = ast.parse(source, filename=str(path))
+            compile(tree, str(path), "exec")
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Attribute):
+                    continue
+                attributes = []
+                root = node
+                while isinstance(root, ast.Attribute):
+                    attributes.append(root.attr)
+                    root = root.value
+                if not isinstance(root, ast.Name) or root.id != "inx":
+                    continue
+                value = inx
+                for attribute in reversed(attributes):
+                    assert hasattr(value, attribute), (path, ast.unparse(node))
+                    value = getattr(value, attribute)
+            checked += 1
+    assert checked >= 28
 
 
 def test_public_fixture_scripts_use_the_lowercase_namespace() -> None:

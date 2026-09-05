@@ -99,11 +99,11 @@ GameObject 拥有 Transform 与一组组件。注意 `active_self` 与派生状�
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import GameObject, Rigidbody
+import infernux as inx
 
-player = GameObject.find("Player")
+player = inx.GameObject.find("Player")
 if player is not None and player.active_in_hierarchy:
-    body = player.get_component(Rigidbody)
+    body = player.get_component(inx.Rigidbody)
     if body is not None:
         body.use_gravity = True
 ```
