@@ -27,6 +27,18 @@ def _module():
     return module
 
 
+def test_android_package_installs_its_host_header_dependency(tmp_path, monkeypatch):
+    root = Path(__file__).parents[2]
+    package = tmp_path / "android.inxpkg"
+    InxPackage.export_source(str(root / "external/plugins/infernux_android"), str(package))
+    preview = InxPackage.inspect(str(package))
+    manager = PluginManager(str(tmp_path / "project"), runtime=False)
+    installed_lines = []
+    monkeypatch.setattr(manager, "_install_pip_lines", lambda lines: installed_lines.extend(lines))
+    manager._install_requirements(preview)
+    assert [line.strip() for line in installed_lines if line.strip()] == ["pybind11==3.1.0"]
+
+
 def test_script_uses_the_checked_out_protocol_from_any_working_directory(
     tmp_path,
 ):

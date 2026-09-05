@@ -19,6 +19,11 @@ version-coupled exporter, doctor and host templates. Advanced source builds may
 still set `ANDROID_AVD_HOME`; target discovery and diagnostics use the shared
 Infernux build service.
 
+The plugin's `requirements.txt` installs the pinned host-side `pybind11`
+headers/CMake package when the plugin is imported. Its download cache is
+shared through Hub; Android builds do not install it on demand or assume it
+was already present in the engine's source-development environment.
+
 The exporter is being brought up in explicit stages. A target can be visible
 while its doctor or execution result reports a precise missing prerequisite;
 the plugin never reports an incomplete Android package as a successful build.

@@ -16,6 +16,10 @@ SDK/NDK，以及两种 ABI 的 Android CPython 目标运行时。所有项目复
 体积较小且与版本紧耦合的 exporter、doctor 与 Host 模板。源码高级用法仍可
 配置 `ANDROID_AVD_HOME`；目标发现和诊断统一通过 Infernux 构建服务完成。
 
+插件的 `requirements.txt` 会在导入时安装固定版本的宿主侧 `pybind11`
+头文件与 CMake 包，下载缓存由 Hub 共享。Android 构建时不再临时安装它，
+也不假设用户拥有源码开发环境里预装的依赖。
+
 Exporter 会按明确阶段逐步完成。目标已经可见并不代表不完整的构建会被伪装
 成成功；doctor 或执行结果会直接指出当前缺少的前置条件。
 
