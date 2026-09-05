@@ -2,6 +2,7 @@ from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea, QWidget
 
 from android_support import AndroidSupportManager
+from i18n import tr
 from style import StyleManager
 from view.installs_view import _AndroidSupportCard, _configure_install_scroll_area
 
@@ -48,8 +49,9 @@ def test_android_support_card_exposes_install_before_any_project_plugin(
 
     labels = [label.text() for label in card.findChildren(QLabel)]
     buttons = [button.text() for button in card.findChildren(QPushButton)]
-    assert "Android compatibility" in labels
-    assert any("Required before" in label for label in labels)
-    assert buttons == ["Install"]
+    assert tr("Android compatibility") in labels
+    assert tr("Required before the Android platform plugin can be imported. "
+              "Large toolchains are installed once and shared by every project.") in labels
+    assert buttons == [tr("Install")]
 
     card.close()

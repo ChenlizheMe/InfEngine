@@ -70,10 +70,6 @@ def test_frozen_project_runtime_installs_infernux_by_extracting_wheel(tmp_path, 
     project_model = _load_project_model(monkeypatch)
     monkeypatch.setattr(project_model, "is_frozen", lambda: True)
 
-    def fail_metadata_check(_python: str, _name: str) -> str:
-        raise AssertionError("metadata check should be skipped")
-
-    monkeypatch.setattr(project_model, "_installed_distribution_version", fail_metadata_check)
     monkeypatch.setattr(project_model.ProjectModel, "validate_python_runtime", staticmethod(lambda _python: None))
 
     wheel_path = tmp_path / "infernux-0.1.6-cp312-cp312-win_amd64.whl"
@@ -111,7 +107,6 @@ def test_frozen_project_runtime_installs_infernux_by_extracting_wheel(tmp_path, 
 def test_matching_frozen_project_runtime_skips_reinstall_when_native_import_valid(tmp_path, monkeypatch):
     project_model = _load_project_model(monkeypatch)
     monkeypatch.setattr(project_model, "is_frozen", lambda: True)
-    monkeypatch.setattr(project_model, "_installed_distribution_version", lambda _python, _name: "0.1.6")
     monkeypatch.setattr(project_model.ProjectModel, "validate_python_runtime", staticmethod(lambda _python: None))
 
     wheel_path = tmp_path / "infernux-0.1.6-cp312-cp312-win_amd64.whl"
@@ -129,6 +124,11 @@ def test_matching_frozen_project_runtime_skips_reinstall_when_native_import_vali
     project_python.parent.mkdir(parents=True, exist_ok=True)
     project_python.write_text("", encoding="utf-8")
 
+    marker = Path(project_model._project_wheel_marker(str(project_dir)))
+    marker.write_text(
+        project_model._wheel_install_fingerprint(str(wheel_path)), encoding="utf-8"
+    )
+
     def fail_run_hidden(_args: list[str], *, timeout: int):
         raise AssertionError("pip should not run for a valid matching runtime")
 
@@ -141,7 +141,6 @@ def test_matching_frozen_project_runtime_skips_reinstall_when_native_import_vali
 def test_frozen_project_runtime_direct_install_replaces_old_infernux_only(tmp_path, monkeypatch):
     project_model = _load_project_model(monkeypatch)
     monkeypatch.setattr(project_model, "is_frozen", lambda: True)
-    monkeypatch.setattr(project_model, "_installed_distribution_version", lambda _python, _name: "0.1.5")
     monkeypatch.setattr(project_model.ProjectModel, "validate_python_runtime", staticmethod(lambda _python: None))
 
     wheel_path = tmp_path / "infernux-0.1.6-cp312-cp312-win_amd64.whl"

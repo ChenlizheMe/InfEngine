@@ -159,6 +159,19 @@ class StyleManager:
             QMainWindow, QWidget#central, QDialog {{
                 background-color: {bg_base};
             }}
+            QAbstractItemView {{
+                background-color: {bg_input};
+                alternate-background-color: {bg_surface};
+                color: {text_primary};
+                selection-background-color: {accent};
+                selection-color: {accent_text};
+            }}
+            QHeaderView::section {{
+                background-color: {bg_surface};
+                color: {text_secondary};
+                border: none;
+                padding: 4px;
+            }}
             QToolTip {{
                 background-color: {bg_surface};
                 color: {text_primary};

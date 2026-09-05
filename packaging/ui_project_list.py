@@ -43,11 +43,14 @@ class _ProjectCard(AnimatedSurfaceFrame):
 
         name_label = QLabel(name)
         name_label.setObjectName("cardName")
+        name_label.setToolTip(name)
+        name_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         text_col.addWidget(name_label)
 
         path_label = QLabel(path)
         path_label.setObjectName("cardPath")
         path_label.setToolTip(path)
+        path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         text_col.addWidget(path_label)
 
         version = VersionManager.read_project_version(path) if os.path.isdir(path) else ""
