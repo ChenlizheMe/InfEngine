@@ -402,6 +402,9 @@ class AndroidSupportInstallDialog(QDialog):
         self.error_text = message
 
     def _on_thread_finished(self):
+        # finished precedes deferred worker deletion and native thread cleanup.
+        # Keep the Python owners alive until both have actually completed.
+        self._thread.wait()
         self._thread = None
         if self.result_path:
             self.accept()

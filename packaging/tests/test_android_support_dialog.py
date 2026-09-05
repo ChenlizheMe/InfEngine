@@ -4,7 +4,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QApplication, QDialog
 
 from view import installs_view
@@ -34,7 +34,11 @@ def test_android_install_keeps_ui_responsive_and_finishes_after_worker(archive_p
         install_archive=lambda path: install("archive", path),
     )
     dialog = installs_view.AndroidSupportInstallDialog(manager, archive_path=archive_path)
+    worker_destroyed = threading.Event()
+    dialog._worker.destroyed.connect(worker_destroyed.set, Qt.ConnectionType.DirectConnection)
     finished_running = []
+    finished_after_cleanup = []
+    dialog.finished.connect(lambda _result: finished_after_cleanup.append(worker_destroyed.is_set()))
     dialog.finished.connect(lambda _result: finished_running.append(
         dialog._thread is not None and dialog._thread.isRunning()))
     timer = QTimer()
@@ -63,6 +67,7 @@ def test_android_install_keeps_ui_responsive_and_finishes_after_worker(archive_p
     assert len(ticks) >= 3 and set(ticks) == {owner}
     assert all(visible_during_install)
     assert finished_running == [False]
+    assert finished_after_cleanup == [True]
     assert dialog.error_text == (failure or "")
     assert dialog.result_path == ("" if failure is not None else "/shared/android")
     dialog.deleteLater()
