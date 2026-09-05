@@ -1152,14 +1152,16 @@ def _temporary_import_paths(
         os.path.join(project_root, "Packages"),
     ]
     if package_reference:
+        from Infernux.engine.project_context import _package_role_root
+
         package_root = os.path.join(
             project_root, "Packages", *package_reference.split("/")
         )
         candidates.extend(
             [
                 package_root,
-                os.path.join(package_root, "runtime"),
-                os.path.join(package_root, "editor"),
+                _package_role_root(package_root, "runtime"),
+                _package_role_root(package_root, "editor"),
             ]
         )
     before = list(sys.path)

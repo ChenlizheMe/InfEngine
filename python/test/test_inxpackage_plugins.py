@@ -2499,6 +2499,40 @@ def test_package_preload_supports_relative_imports(tmp_path):
     )
 
 
+@pytest.mark.parametrize("role", ["editor", "Editor", "runtime", "Runtime"])
+def test_package_preload_absolute_imports_use_authored_role_spelling(tmp_path, role):
+    import sys
+
+    project = _project(tmp_path / "project")
+    role_root = project / "Packages" / "case_probe" / role
+    module = role_root / "infernux_case_probe"
+    module.mkdir(parents=True)
+    (module / "__init__.py").write_text("", encoding="utf-8")
+    (module / "service.py").write_text("VALUE = 'case-ready'\n", encoding="utf-8")
+    lifecycle = module / "lifecycle.py"
+    lifecycle.write_text(
+        "from pathlib import Path\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "class CasePreload(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        from infernux_case_probe.service import VALUE\n"
+        "        Path(context.project_root, 'case-ready.txt').write_text(VALUE)\n",
+        encoding="utf-8",
+    )
+    # Assert the physical spelling even on case-insensitive Windows, where
+    # importing from a fabricated lowercase directory would hide this bug.
+    with preload_module._temporary_import_paths(str(lifecycle), str(project), "case_probe"):
+        assert str(role_root.resolve()) in sys.path
+
+    manager = PluginManager.startup(str(project))
+    try:
+        state = next(iter(manager.preloads.states.values()))
+        assert state.loaded, state.error
+        assert (project / "case-ready.txt").read_text(encoding="utf-8") == "case-ready"
+    finally:
+        manager.shutdown()
+
+
 def test_manifestless_local_package_preload_supports_relative_imports(tmp_path):
     project = _project(tmp_path / "project")
     package_module = project / "Packages" / "abc" / "Editor" / "local_tool"
