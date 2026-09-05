@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import hub_update_apply
+import pytest
 
 
 def _metadata(path: Path, *, files: list[str], delete: list[str]) -> Path:
@@ -31,6 +32,9 @@ def test_linux_applier_replaces_owned_files_and_restarts(tmp_path: Path, monkeyp
     (install / "Infernux Hub").write_bytes(b"old")
     (install / "removed.so").write_bytes(b"remove")
     (stage / "Infernux Hub").write_bytes(b"new")
+    shared = install / "InfernuxHubData/Shared/Library/plugin.inxpkg"
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(b"user plugin")
     metadata = _metadata(
         tmp_path / "hub-update.json",
         files=["Infernux Hub"],
@@ -52,6 +56,7 @@ def test_linux_applier_replaces_owned_files_and_restarts(tmp_path: Path, monkeyp
     )
 
     assert (install / "Infernux Hub").read_bytes() == b"new"
+    assert shared.read_bytes() == b"user plugin"
     assert not (install / "removed.so").exists()
     assert launches == [
         (
@@ -59,6 +64,30 @@ def test_linux_applier_replaces_owned_files_and_restarts(tmp_path: Path, monkeyp
             {"cwd": install, "start_new_session": True},
         )
     ]
+
+
+@pytest.mark.parametrize("operation", ["files", "delete"])
+@pytest.mark.parametrize("relative", [
+    "InfernuxHubData/Shared/Library/private.inxpkg",
+    "infernuxhubdata/SHARED/PlatformKits/android/sdk.bin",
+])
+def test_updates_cannot_replace_or_delete_shared_resources(tmp_path, operation, relative):
+    from hub_release import _safe_relative_path
+    from hub_updater import _safe_path
+
+    for validator in (_safe_relative_path, _safe_path):
+        with pytest.raises(ValueError, match="shared resources"):
+            validator(relative)
+    metadata = _metadata(
+        tmp_path / "hub-update.json",
+        files=[relative] if operation == "files" else [],
+        delete=[relative] if operation == "delete" else [],
+    )
+    with pytest.raises(ValueError, match="shared resources"):
+        hub_update_apply.apply_update(
+            parent_pid=1, install_dir=tmp_path / "installed",
+            stage_dir=tmp_path / "stage", metadata_path=metadata,
+        )
 
 
 def test_linux_applier_rejects_paths_outside_the_installation(tmp_path: Path):

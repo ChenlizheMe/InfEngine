@@ -19,6 +19,8 @@ def _safe_path(value: object) -> PurePosixPath:
         part in ("", ".", "..") for part in path.parts
     ):
         raise ValueError(f"Unsafe Hub update path: {value!r}")
+    if tuple(part.casefold() for part in path.parts[:2]) == ("infernuxhubdata", "shared"):
+        raise ValueError("Hub updates cannot own user shared resources")
     return path
 
 

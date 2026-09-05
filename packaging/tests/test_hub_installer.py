@@ -61,6 +61,81 @@ def test_transaction_replaces_executable_and_removes_stale_files(tmp_path: Path)
     assert not (install_dir / "stale-library.dll").exists()
 
 
+@pytest.mark.parametrize("rollback", [False, True])
+def test_transaction_preserves_shared_resources_across_replacement(tmp_path, rollback):
+    payload = _make_payload(tmp_path / "payload")
+    install_dir = tmp_path / "Infernux Hub"
+    install_dir.mkdir()
+    (install_dir / HUB_EXECUTABLE).write_bytes(b"old hub executable")
+    write_install_marker(str(install_dir))
+    shared = install_dir / "InfernuxHubData/Shared"
+    relative_files = [
+        "Library/Plugins/example.inxpkg", "PlatformKits/android/sdk/tool.bin",
+        "Runtimes/python313/python.exe", "Engines/040/engine.whl",
+    ]
+    for relative in relative_files:
+        path = shared / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(relative.encode())
+    identity = shared.stat().st_ino
+
+    with HubInstallTransaction(payload, install_dir) as installation:
+        installation.prepare()
+        installation.activate()
+        assert shared.stat().st_ino == identity  # transfer, never copy gigabytes
+        for relative in relative_files:
+            assert (shared / relative).read_bytes() == relative.encode()
+        (shared / "added-during-install.txt").write_text("new runtime state")
+        if not rollback:
+            installation.commit()
+
+    assert shared.stat().st_ino == identity
+    for relative in relative_files:
+        assert (shared / relative).read_bytes() == relative.encode()
+    assert (shared / "added-during-install.txt").read_text() == "new runtime state"
+    assert (install_dir / HUB_EXECUTABLE).read_bytes() == (
+        b"old hub executable" if rollback else b"new hub executable"
+    )
+    assert not list(tmp_path.glob(".Infernux Hub.backup-*"))
+
+
+def test_installer_payload_cannot_own_shared_resources(tmp_path):
+    payload = _make_payload(tmp_path / "payload")
+    shared = payload / "InfernuxHubData/Shared"
+    shared.mkdir()
+    (shared / "user-data.bin").write_bytes(b"must not ship")
+    with pytest.raises(RuntimeError, match="shared resources"):
+        with HubInstallTransaction(payload, tmp_path / "Hub") as installation:
+            installation.prepare()
+    assert not (tmp_path / "Hub").exists()
+
+
+def test_failed_shared_transfer_restores_the_old_installation(tmp_path, monkeypatch):
+    from installer import install_application
+
+    payload = _make_payload(tmp_path / "payload")
+    install_dir = tmp_path / "Hub"
+    _make_payload(install_dir, executable=b"old executable")
+    write_install_marker(str(install_dir))
+    shared = install_dir / "InfernuxHubData/Shared"
+    shared.mkdir()
+    (shared / "keep.inxpkg").write_bytes(b"user package")
+    replace = install_application.os.replace
+
+    def fail_transfer(source, destination):
+        if Path(source).name == "Shared":
+            raise PermissionError("shared resources locked")
+        return replace(source, destination)
+
+    monkeypatch.setattr(install_application.os, "replace", fail_transfer)
+    with pytest.raises(PermissionError, match="shared resources locked"):
+        with HubInstallTransaction(payload, install_dir) as installation:
+            installation.prepare()
+            installation.activate()
+    assert (shared / "keep.inxpkg").read_bytes() == b"user package"
+    assert (install_dir / HUB_EXECUTABLE).read_bytes() == b"old executable"
+
+
 def test_transaction_rolls_back_after_activation_error(tmp_path: Path):
     payload = _make_payload(tmp_path / "payload")
     install_dir = tmp_path / "Infernux Hub"

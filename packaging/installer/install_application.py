@@ -25,6 +25,7 @@ from installer_safety import (
 
 
 _LOGGER = logging.getLogger(__name__)
+_SHARED_RESOURCES = Path("InfernuxHubData/Shared")
 
 
 def _normalized_path(path: str | os.PathLike[str]) -> str:
@@ -274,6 +275,7 @@ class HubInstallTransaction:
         self._backup_dir: Path | None = None
         self._activated = False
         self._committed = False
+        self._shared_transferred = False
 
     @property
     def staged_dir(self) -> str:
@@ -341,6 +343,9 @@ class HubInstallTransaction:
             extract_payload_archive(payload_archive, self._stage_dir)
         write_install_marker(os.fspath(self._stage_dir))
 
+        if (self._stage_dir / _SHARED_RESOURCES).exists():
+            raise RuntimeError("Hub payload must not contain user-owned shared resources")
+
         staged_executable = self._stage_dir / HUB_EXECUTABLE
         if not staged_executable.is_file():
             raise RuntimeError(f"The staged Hub payload is missing {HUB_EXECUTABLE}.")
@@ -374,6 +379,14 @@ class HubInstallTransaction:
                 self._backup_dir = None
             raise
 
+        if self._backup_dir is not None:
+            previous_shared = self._backup_dir / _SHARED_RESOURCES
+            if previous_shared.exists():
+                shared = self.install_dir / _SHARED_RESOURCES
+                shared.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(previous_shared, shared)
+                self._shared_transferred = True
+
         installed_executable = self.install_dir / HUB_EXECUTABLE
         if not installed_executable.is_file():
             raise RuntimeError(
@@ -386,6 +399,7 @@ class HubInstallTransaction:
                 "The Hub installation must be activated before it can be committed."
             )
         self._committed = True
+        self._shared_transferred = False
         if self._backup_dir is not None:
             try:
                 shutil.rmtree(self._backup_dir)
@@ -398,6 +412,14 @@ class HubInstallTransaction:
             self._backup_dir = None
 
     def rollback(self) -> None:
+        if self._shared_transferred:
+            # Return the same tree, including any runtime installed during
+            # activation. Never delete shared data with the failed app image.
+            os.replace(
+                self.install_dir / _SHARED_RESOURCES,
+                self._backup_dir / _SHARED_RESOURCES,
+            )
+            self._shared_transferred = False
         if self._activated and self.install_dir.exists():
             if self._backup_dir is not None and self._backup_dir.exists():
                 failed_dir = (

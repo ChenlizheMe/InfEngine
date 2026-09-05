@@ -32,6 +32,9 @@ def test_release_contains_one_archive_and_current_manifest(tmp_path: Path):
     bundled_runtime = hub / "InfernuxHubData" / "runtime" / "runtime_bundle.zip"
     bundled_runtime.parent.mkdir(parents=True)
     bundled_runtime.write_bytes(b"installer-only-python")
+    shared = hub / "InfernuxHubData/Shared/Library/Plugins/user.inxpkg"
+    shared.parent.mkdir(parents=True)
+    shared.write_bytes(b"private plugin")
 
     archive_path, manifest_path = build_release_artifacts(
         hub, "0.4.0", output, "windows-x64"

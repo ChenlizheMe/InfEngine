@@ -56,6 +56,8 @@ def _payload_files(root: Path) -> list[Path]:
         path
         for path in root.rglob("*")
         if path.is_file()
+        and tuple(part.casefold() for part in path.relative_to(root).parts[:2])
+        != ("infernuxhubdata", "shared")
         and PurePosixPath(path.relative_to(root).as_posix()) not in INSTALLER_ONLY_PATHS
         and not (
             path.parent == root
@@ -71,6 +73,8 @@ def _safe_relative_path(value: str) -> PurePosixPath:
         part in ("", ".", "..") for part in path.parts
     ):
         raise ValueError(f"Unsafe update path: {value!r}")
+    if tuple(part.casefold() for part in path.parts[:2]) == ("infernuxhubdata", "shared"):
+        raise ValueError("Hub updates cannot own user shared resources")
     return path
 
 
