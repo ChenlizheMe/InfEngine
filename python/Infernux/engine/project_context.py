@@ -408,10 +408,14 @@ def get_script_import_paths(path: Optional[str] = None) -> list[str]:
 @contextmanager
 def temporary_script_import_paths(path: Optional[str]) -> Iterator[None]:
     """Temporarily prepend the relevant import roots for a user script."""
-    old_path = sys.path.copy()
+    old_path = sys.path
+    temporary = old_path.copy()
     for import_path in reversed(get_script_import_paths(path)):
-        if import_path and import_path not in sys.path:
-            sys.path.insert(0, import_path)
+        if import_path and import_path not in temporary:
+            temporary.insert(0, import_path)
+    # A concurrent PathFinder keeps the list it began traversing. Do not
+    # mutate that snapshot while publishing or retiring author import roots.
+    sys.path = temporary
     try:
         yield
     finally:

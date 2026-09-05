@@ -1164,15 +1164,19 @@ def _temporary_import_paths(
                 _package_role_root(package_root, "editor"),
             ]
         )
-    before = list(sys.path)
+    before = sys.path
+    temporary = before.copy()
     try:
         for candidate in reversed(candidates):
             candidate = resolved_path(candidate)
-            if candidate and os.path.isdir(candidate) and candidate not in sys.path:
-                sys.path.insert(0, candidate)
+            if candidate and os.path.isdir(candidate) and candidate not in temporary:
+                temporary.insert(0, candidate)
+        # PathFinder may be iterating this list on a plugin's background
+        # thread. Publish a separate list and never shorten its live iterator.
+        sys.path = temporary
         yield
     finally:
-        sys.path[:] = before
+        sys.path = before
 
 
 __all__ = ["PreloadManager", "PreloadState"]
