@@ -20,6 +20,11 @@ changing the author's uninstall ownership. The preload resolves
 both the JSON file and its cataloged package directory, then reads that sibling
 to verify that raw resource layout survives the same packaging path.
 
+`Packages/local_probe/runtime/` is a second, locally authored package with no
+manifest and no installation record. Its compiled preload reads its TXT through
+the same package resolver. Scene startup requires that exact preload value, so
+missing local author content fails every target's gameplay acceptance.
+
 The interactive Balance project remains the functional acceptance project for
 physics, animation, particles, LineRenderer, authored materials, and shared
 Action input. This fixture does not replace those device tests.

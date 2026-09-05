@@ -74,6 +74,8 @@ vfx-kit/
 
 生命周期代码继承 `InxPreload`。包内 Python 使用显式相对导入，每个已安装插件拥有隔离且确定的模块命名空间。`runtime/` 参与玩法组件加载和热刷新；`editor/` 只由 Editor 生命周期加载。
 
+直接在 `Packages/<name>/runtime/` 编写本地包，不需要先安装自己才能构建 Player。构建会包含当前已索引的 runtime 文件及编译后的预载脚本，不会改写项目的安装所有权记录。简单包可以不写 manifest；`Packages/studio/tool/` 这样的命名空间目录需用 `inx_package.json` 明确包边界。即使 manifest 为未来分发 `.inxpkg` 指定了不同 reference，Player 仍保持当前项目目录对应的模块身份。
+
 这里没有 include/exclude fallback 清单。`.pyd` 或 `.wasm` 放在 `runtime/` 就属于运行时，放在 `editor/` 就只属于编辑器。材质、Shader、HTML 和其它普通资产安装到 `Assets/Plugins`，再通过正常资产管线进入 Player。
 
 ## 按作者路径读取资产

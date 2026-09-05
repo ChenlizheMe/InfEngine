@@ -35,6 +35,10 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._back_reported = False
 
     def start(self):
+        if os.environ.get("_INFERNUX_FIXTURE_LOCAL_AUTHOR_MESSAGE") != (
+            "Local author package reached Player preload."
+        ):
+            raise RuntimeError("Local author package preload did not complete")
         scene = inx.SceneManager.get_active_scene()
         if scene is None:
             raise RuntimeError("Multiplatform fixture requires an active scene")

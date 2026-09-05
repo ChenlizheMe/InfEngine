@@ -51,6 +51,12 @@ _SOURCE_FIELDS = frozenset(
 )
 
 
+def package_control_guid(reference: str) -> str:
+    """Return the generated control identity shared by package and Player exports."""
+
+    return uuid.uuid5(_GUID_NAMESPACE, f"{reference}\0{PACKAGE_MANIFEST}").hex
+
+
 @dataclass(frozen=True, slots=True)
 class InxPackagePreview:
     package_path: str
@@ -165,9 +171,7 @@ class InxPackage:
             "intros": intros,
             "engine": str(source_document.get("engine") or ""),
             "pages": pages,
-            "control_guid": uuid.uuid5(
-                _GUID_NAMESPACE, f"{reference}\0{PACKAGE_MANIFEST}"
-            ).hex,
+            "control_guid": package_control_guid(reference),
             "files": records,
         }
         InxPackage.validate_metadata(document)

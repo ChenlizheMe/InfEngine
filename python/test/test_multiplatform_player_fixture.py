@@ -117,3 +117,16 @@ def test_multiplatform_player_fixture_has_a_buildable_camera_scene():
     lifecycle_source = lifecycle.read_text(encoding="utf-8")
     compile(lifecycle_source, str(lifecycle), "exec")
     assert 'context.package_path("runtime/message.txt")' in lifecycle_source
+    local_root = FIXTURE / "Packages/local_probe"
+    assert not (local_root / "inx_package.json").exists()
+    assert all(item["reference"] != "local_probe" for item in registry["installed"])
+    local_script = local_root / "runtime/lifecycle.py"
+    local_source = local_script.read_text(encoding="utf-8")
+    compile(local_source, str(local_script), "exec")
+    local_message = (local_root / "runtime/message.txt").read_text(encoding="utf-8").strip()
+    assert local_message == "Local author package reached Player preload."
+    assert local_message in local_source
+    assert local_message in source
+    assert "_INFERNUX_FIXTURE_LOCAL_AUTHOR_MESSAGE" in source
+    assert local_script.with_suffix(".py.meta").is_file()
+    assert (local_root / "runtime/message.txt.meta").is_file()

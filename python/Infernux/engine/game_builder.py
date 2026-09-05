@@ -1519,7 +1519,9 @@ finally:
     def _stage_player_plugins(self, data_dir: str) -> None:
         """Stage enabled package files by GUID and structural Runtime policy."""
 
-        from Infernux.plugins.package import player_file_exported
+        from Infernux.plugins.package import (
+            InxPackage, PACKAGE_MANIFEST, package_control_guid, player_file_exported,
+        )
         from Infernux.plugins.registry import PluginRegistry
         from Infernux.engine.project_context import package_script_reference
 
@@ -1535,6 +1537,7 @@ finally:
             if str(entry.get("guid", "")).strip()
         }
         current_runtime_files: dict[str, list[dict[str, object]]] = {}
+        current_references: dict[str, str] = {}
         for guid, entry in indexed.items():
             source = self._library_source_entry_path(entry)
             if not is_path_within(source, packages_root, allow_root=False):
@@ -1546,6 +1549,7 @@ finally:
             logical = portable_path(relative_path(source, package_root))
             if logical.partition("/")[0].casefold() != "runtime":
                 continue
+            current_references[reference.casefold()] = reference
             current_runtime_files.setdefault(reference.casefold(), []).append(
                 {
                     "logical_path": logical,
@@ -1555,7 +1559,33 @@ finally:
                     "owned": False,
                 }
             )
-        for raw in document.get("installed", []):
+        package_records = list(document.get("installed", []))
+        installed_references = {
+            str(item.get("reference", "")).casefold()
+            for item in package_records if isinstance(item, dict)
+        }
+        for key in sorted(current_references.keys() - installed_references):
+            # A local author does not install their own working tree. Generate
+            # only the Player descriptor, preserving the live folder/module
+            # identity even when the author chose a future distribution name.
+            reference = current_references[key]
+            package_root = os.path.join(packages_root, *reference.split("/"))
+            metadata = InxPackage._source_document(package_root, None)
+            package_records.append({
+                "reference": reference,
+                "name": str(metadata.get("name") or reference.rsplit("/", 1)[-1]),
+                "version": str(metadata.get("version") or "0.0.0"),
+                "engine": str(metadata.get("engine") or ""),
+                "files": [],
+                "control": {
+                    "logical_path": PACKAGE_MANIFEST,
+                    "path_hint": f"Packages/{reference}/{PACKAGE_MANIFEST}",
+                    "guid": package_control_guid(reference),
+                    "role": "control",
+                    "owned": False,
+                },
+            })
+        for raw in package_records:
             if not isinstance(raw, dict) or not bool(raw.get("enabled", True)):
                 continue
             record = dict(raw)

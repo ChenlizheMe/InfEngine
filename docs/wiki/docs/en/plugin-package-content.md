@@ -74,6 +74,8 @@ Only markdown or text under `plugin_pages/` becomes Plugins-window content. Root
 
 Subclass `InxPreload` for lifecycle work. Use explicit relative imports for package-local Python code. Every installed package receives an isolated deterministic module namespace. `runtime/` participates in gameplay component loading and hot refresh; `editor/` is loaded only by the Editor lifecycle.
 
+A local package authored directly under `Packages/<name>/runtime/` does not need to be installed before building a Player. The build includes its current indexed runtime files and compiled preloads without changing the project's installation ownership records. A simple package needs no manifest; a namespaced author directory such as `Packages/studio/tool/` needs `inx_package.json` to define its boundary. Player module identity keeps the project's directory name, even if the manifest chooses a different reference for future `.inxpkg` distribution.
+
 No include/exclude fallback list exists. A `.pyd` or `.wasm` under `runtime/` is runtime-owned; the same file under `editor/` is Editor-only. Materials, shaders, HTML, and other ordinary assets are imported under `Assets/Plugins` and included in the Player through the normal asset pipeline.
 
 ## Read assets by authored path

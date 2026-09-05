@@ -2,7 +2,7 @@
     "metadata": {
         "content_hash": {
             "type": "string",
-            "value": "e74b2a1797719e3e"
+            "value": "c06f3dfd5b956da3"
         },
         "file_extension": {
             "type": "string",
@@ -14,7 +14,7 @@
         },
         "file_size": {
             "type": "size_t",
-            "value": 11475
+            "value": 13283
         },
         "file_type": {
             "type": "string",

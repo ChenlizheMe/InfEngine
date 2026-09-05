@@ -283,6 +283,7 @@
 <p>只有 <code>plugin_pages/</code> 下的 markdown 或文本会成为插件窗口内容。仓库根部 README 和许可证只是仓库文档，不再被读取成插件页面。中文文件在扩展名前加 <code>.zh-CN</code>，例如 <code>guide.zh-CN.md</code>；图片使用相对路径并留在包根内。</p>
 <h2 id="player">代码与 Player<a class="headerlink" href="#player" title="Permanent link">&para;</a></h2>
 <p>生命周期代码继承 <code>InxPreload</code>。包内 Python 使用显式相对导入，每个已安装插件拥有隔离且确定的模块命名空间。<code>runtime/</code> 参与玩法组件加载和热刷新；<code>editor/</code> 只由 Editor 生命周期加载。</p>
+<p>直接在 <code>Packages/&lt;name&gt;/runtime/</code> 编写本地包，不需要先安装自己才能构建 Player。构建会包含当前已索引的 runtime 文件及编译后的预载脚本，不会改写项目的安装所有权记录。简单包可以不写 manifest；<code>Packages/studio/tool/</code> 这样的命名空间目录需用 <code>inx_package.json</code> 明确包边界。即使 manifest 为未来分发 <code>.inxpkg</code> 指定了不同 reference，Player 仍保持当前项目目录对应的模块身份。</p>
 <p>这里没有 include/exclude fallback 清单。<code>.pyd</code> 或 <code>.wasm</code> 放在 <code>runtime/</code> 就属于运行时，放在 <code>editor/</code> 就只属于编辑器。材质、Shader、HTML 和其它普通资产安装到 <code>Assets/Plugins</code>，再通过正常资产管线进入 Player。</p>
 <h2 id="_5">按作者路径读取资产<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
 <p><code>inx.Application.asset_path("Assets/Data/message.txt")</code> 和 <code>inx.Application.asset_path("Packages/studio/server/runtime/config.json")</code> 使用同一个通用资产读取入口，不限于某种语言或 <code>Resources</code> 目录。Editor 解析 <code>Assets</code> 或 <code>Packages</code> 中的作者文件；Player 通过构建时冻结的作者路径、GUID 和 Cook 产物绑定解析，找不到绑定会明确失败，不会扫描松散文件来补齐。</p>

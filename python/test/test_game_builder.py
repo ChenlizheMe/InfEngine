@@ -883,6 +883,80 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(
     )["installed"] == []
 
 
+@pytest.mark.parametrize("reference,authored_manifest", [
+    ("local_probe", False), ("local_probe", True), ("vendor/local_probe", True),
+])
+def test_player_exports_local_author_package_without_installing(
+    tmp_path, reference, authored_manifest
+):
+    project = _make_project(tmp_path)
+    root = project / "Packages" / reference
+    runtime = root / "runtime/lifecycle.py"
+    message = root / "runtime/message.txt"
+    editor = root / "editor/panel.py"
+    sources = (
+        (runtime, "local-script-guid", (
+            "from Infernux.lifecycle import InxPreload\n"
+            "from pathlib import Path\n"
+            "class LocalLifecycle(InxPreload):\n"
+            "    def preload(self, context):\n"
+            "        self.message = Path(context.package_path('runtime/message.txt')).read_text()\n"
+        )),
+        (message, "local-text-guid", "Local author resource ready"),
+        (editor, "local-editor-guid", "raise RuntimeError('Editor must not enter Player')\n"),
+    )
+    for path, guid, payload in sources:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload, encoding="utf-8")
+        Path(str(path) + ".meta").write_text(
+            json.dumps({"metadata": {"guid": {"type": "string", "value": guid}}}),
+            encoding="utf-8",
+        )
+    if authored_manifest:
+        (root / "inx_package.json").write_text(json.dumps({
+            "reference": "future/distribution-name", "name": "Local Author",
+            "version": "1.2.3",
+        }), encoding="utf-8")
+    registry = PluginRegistry(str(project))
+    original_registry = registry.load()
+    _write_asset_index(project, [
+        _asset_index_entry(project, path, guid, "", "Script" if path.suffix == ".py" else "Binary")
+        for path, guid, _payload in sources
+    ])
+    output = tmp_path / "build"
+    data = output / "Data"
+    builder = GameBuilder(str(project), str(output), game_name="LocalAuthorGame")
+
+    builder._stage_player_plugins(str(data))
+
+    staged = data / "Packages" / reference
+    assert (staged / "runtime/lifecycle.py").is_file()
+    assert (staged / "runtime/message.txt").read_text() == "Local author resource ready"
+    assert not (staged / "editor").exists()
+    assert not (staged / "inx_package.json").exists()
+    assert registry.load() == original_registry
+    assert builder._staged_player_plugin_guids == {"local-script-guid", "local-text-guid"}
+    assert builder._cooked_asset_entries.keys() == builder._staged_player_plugin_guids
+    shipped = PluginRegistry(str(data)).load()["installed"]
+    assert len(shipped) == 1
+    assert shipped[0]["reference"] == reference
+    assert shipped[0]["name"] == ("Local Author" if authored_manifest else "local_probe")
+    assert shipped[0]["version"] == ("1.2.3" if authored_manifest else "0.0.0")
+    assert not shipped[0]["control"]["owned"]
+    assert all(not item["owned"] for item in shipped[0]["files"])
+    builder._compile_player_plugin_scripts(str(output))
+    assert not (staged / "runtime/lifecycle.py").exists()
+    assert (staged / "runtime/lifecycle.pyc").is_file()
+    manager = PreloadManager(str(data), runtime=True)
+    try:
+        states = manager.reload_all()
+        assert len(states) == 1
+        assert states[0].loaded, states[0].error
+        assert states[0].instance.message == "Local author resource ready"
+    finally:
+        manager.unload_all()
+
+
 def test_preload_context_package_path_fails_closed(tmp_path):
     project = tmp_path / "Project"
     resource = project / "Packages/vendor/gameplay/runtime/server.jar"
