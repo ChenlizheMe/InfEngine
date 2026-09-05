@@ -7,7 +7,8 @@ from PySide6.QtWidgets import QApplication, QDialog
 
 from i18n import configure_language, language_mode
 from version_manager import EngineVersion, VersionManager
-from view.installs_view import InstallEditorDialog, PythonRuntimeInstallDialog
+from view.installs_view import InstallEditorDialog, PythonRuntimesView
+from install_queue import InstallQueue
 from view import installs_view
 
 
@@ -26,7 +27,7 @@ def engine_dialog(tmp_path, monkeypatch):
         wheel_url="https://example.invalid/infernux.whl",
     )
     monkeypatch.setattr(manager, "list_versions", lambda **kwargs: [engine])
-    dialog = InstallEditorDialog(manager)
+    dialog = InstallEditorDialog(manager, InstallQueue(app))
     try:
         for _ in range(500):
             app.processEvents()
@@ -66,7 +67,7 @@ def test_missing_runtime_requires_explicit_action_and_preserves_engine_selection
     assert dialog._selected is engine
     assert dialog._btn_install.isEnabled() is installed_successfully
     assert dialog._btn_runtime.isHidden() is installed_successfully
-    assert dialog._dl_thread is None  # Runtime installation does not install the engine.
+    assert dialog._queue.jobs == []  # Runtime installation does not install the engine.
 
 
 def test_incompatible_engine_does_not_offer_runtime_install(engine_dialog):
@@ -87,65 +88,61 @@ def test_existing_runtime_needs_no_dependency_install_action(engine_dialog):
     assert dialog._btn_install.isEnabled()
 
 
-def test_install_page_connects_dependency_action_to_existing_runtime_installer(
-    engine_dialog, monkeypatch,
-):
+def test_install_page_connects_dependency_action_to_shared_queue(engine_dialog, monkeypatch):
     dialog, engine, installed = engine_dialog
-    runtime_manager = SimpleNamespace(
+    calls = []
+    def prepare(*, version, on_status):
+        calls.append(version)
+        installed.add(version)
+        return "/managed/python"
+    manager = SimpleNamespace(
         default_version="3.13", supported_versions=lambda: ["3.13"],
         get_runtime_path=lambda version: "/managed/python" if version in installed else "",
-        has_runtime=lambda version: version in installed,
+        has_runtime=lambda version: version in installed, ensure_runtime=prepare,
     )
-    calls = []
-
-    class RuntimeInstaller:
-        result_path = "/managed/python"
-
-        def __init__(self, manager, version, parent, *, reinstall):
-            assert manager is runtime_manager
-            assert not reinstall
-            calls.append(version)
-
-        def exec(self):
-            installed.add(calls[-1])
-            return QDialog.Accepted
-
-    def select_and_install():
-        dialog._select(engine)
-        dialog._btn_runtime.click()
-        return QDialog.Rejected  # Closing the selection must not install an engine.
-
     monkeypatch.setattr(installs_view, "InstallEditorDialog", lambda *args, **kwargs: dialog)
-    monkeypatch.setattr(installs_view, "PythonRuntimeInstallDialog", RuntimeInstaller)
-    monkeypatch.setattr(installs_view.QMessageBox, "information", lambda *args: None)
-    monkeypatch.setattr(dialog, "exec", select_and_install)
-    page = installs_view.InstallsView(dialog._vm, runtime_manager)
+    page = installs_view.InstallsView(dialog._vm, dialog._queue)
+    python_page = PythonRuntimesView(manager, dialog._queue)
+    page.runtime_install_requested.connect(python_page.install)
     try:
         page._on_install_editor()
+        dialog._select(engine)
+        dialog._btn_runtime.click()
+        assert calls == []  # The UI callback only enqueues work.
+        for _ in range(500):
+            QTest.qWait(10)
+            if not dialog._queue.busy:
+                break
+        assert not dialog._queue.busy
         assert calls == ["3.13"]
         assert dialog._btn_install.isEnabled()
-        assert dialog._dl_thread is None
+        assert [job.key for job in dialog._queue.jobs] == ["python:3.13"]
     finally:
         page.close()
+        python_page.close()
 
 
-@pytest.mark.parametrize("succeeds", [False, True])
-def test_runtime_dialog_finishes_only_after_worker_thread_cleanup(succeeds):
+@pytest.mark.parametrize("failure", [None, "installation failed", ""])
+def test_runtime_install_completion_follows_worker_cleanup(failure):
     app = QApplication.instance() or QApplication([])
-
+    queue = InstallQueue(app)
     def prepare(**kwargs):
-        if not succeeds:
-            raise RuntimeError("Runtime installation failed")
+        if failure is not None:
+            raise RuntimeError(failure)
         return "/managed/python"
-
-    dialog = PythonRuntimeInstallDialog(SimpleNamespace(ensure_runtime=prepare), "3.13")
+    manager = SimpleNamespace(
+        default_version="3.13", supported_versions=lambda: [],
+        has_runtime=lambda version: False, ensure_runtime=prepare,
+    )
+    page = PythonRuntimesView(manager, queue)
     cleaned_up = []
-    dialog.finished.connect(lambda _: cleaned_up.append(dialog._thread is None))
-    try:
-        result = dialog.exec()
-        assert result == (QDialog.Accepted if succeeds else QDialog.Rejected)
-        assert cleaned_up == [True]
-    finally:
-        if dialog._thread is not None:
-            dialog._thread.quit()
-            dialog._thread.wait()
+    queue.job_finished.connect(lambda job: cleaned_up.append(queue._thread is None))
+    job = page.install("3.13")
+    for _ in range(500):
+        QTest.qWait(10)
+        if not queue.busy:
+            break
+    assert not queue.busy
+    assert cleaned_up == [True]
+    assert job.state == ("succeeded" if failure is None else "failed")
+    page.close()

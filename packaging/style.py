@@ -487,6 +487,24 @@ class StyleManager:
             QLabel#projectVersion[kind="warning"] {{ color: {accent_hover}; }}
             QLabel#projectVersion[kind="active"] {{ color: {accent}; }}
 
+            QTabWidget#installTabs::pane {{
+                border: none;
+                top: 12px;
+            }}
+            QTabWidget#installTabs QTabBar::tab {{
+                background: transparent;
+                color: {text_secondary};
+                padding: 10px 16px;
+                border-bottom: 2px solid transparent;
+            }}
+            QTabWidget#installTabs QTabBar::tab:selected {{
+                color: {text_primary};
+                border-bottom: 2px solid {accent};
+            }}
+            QTabWidget#installTabs QTabBar::tab:hover {{
+                background: {button_hover};
+            }}
+
             /* ── Version Card (Installs page) ── */
             QFrame#versionCard {{
                 background: transparent;
@@ -597,6 +615,11 @@ class StyleManager:
                 background-color: {bg_surface};
                 border: 1px solid {border};
                 border-radius: 4px;
+            }}
+            QFrame#installQueuePanel, QFrame#installQueuePopup {{
+                background-color: {bg_surface};
+                border: 1px solid {border};
+                border-radius: 6px;
             }}
             QLabel#communityTopicTitle {{
                 color: {text_primary};

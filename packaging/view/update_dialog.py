@@ -1,4 +1,4 @@
-"""Small update prompt and progress window for Infernux Hub."""
+"""Update approval and shared-queue staging for Infernux Hub."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QProgressBar, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from hub_updater import HubUpdateStatus, check_for_update, launch_external_updater, stage_update
 from i18n import tr
@@ -50,87 +50,6 @@ class _CheckWorker(QObject):
             self.failed.emit(str(exc))
 
 
-class _DownloadWorker(QObject):
-    progress = Signal(int)
-    finished = Signal(str)
-    failed = Signal(str)
-
-    def __init__(self, update):
-        super().__init__()
-        self.update = update
-
-    def run(self):
-        try:
-            def report(received, total):
-                self.progress.emit(int(received * 100 / total) if total else 0)
-            self.finished.emit(str(stage_update(self.update, report)))
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
-class UpdateProgressDialog(QDialog):
-    def __init__(self, update, parent=None):
-        super().__init__(parent)
-        self.update = update
-        self.setWindowTitle(tr("Updating Infernux Hub"))
-        self.setFixedSize(480, 170)
-        self.setModal(True)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(14)
-        title = QLabel(tr("INSTALLING HUB UPDATE {version}", version=update.target_version))
-        title.setObjectName("settingsLabel")
-        layout.addWidget(title)
-        self.status = QLabel(tr("Downloading the Hub update..."))
-        self.status.setObjectName("settingsDescription")
-        layout.addWidget(self.status)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        layout.addWidget(self.progress)
-
-        self.thread = QThread(self)
-        self.worker = _DownloadWorker(update)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self.progress.setValue)
-        self.worker.finished.connect(self._ready)
-        self.worker.failed.connect(self._failed)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.failed.connect(self.thread.quit)
-        self.thread.finished.connect(self.worker.deleteLater)
-        self.thread.start()
-
-    def reject(self):
-        if self.thread.isRunning():
-            return
-        super().reject()
-
-    def _ready(self, staged_root: str):
-        self.thread.quit()
-        self.thread.wait(2000)
-        self.progress.setValue(100)
-        self.status.setText(tr("Closing Hub and installing the update..."))
-        try:
-            application = QApplication.instance()
-            launch_external_updater(
-                staged_root,
-                is_dark=bool(getattr(application, "is_dark_theme", True)),
-            )
-        except Exception as exc:
-            self._failed(str(exc))
-            return
-        self.accept()
-
-    def _failed(self, message: str):
-        self.thread.quit()
-        self.thread.wait(2000)
-        self.progress.setRange(0, 1)
-        self.progress.setValue(0)
-        self.status.setText(tr("Update failed"))
-        QMessageBox.critical(self, tr("Hub Update Failed"), message)
-        super().reject()
-
-
 class UpdateController(QObject):
     """Own worker lifetime and present an update without blocking Hub startup."""
 
@@ -139,6 +58,9 @@ class UpdateController(QObject):
     def __init__(self, main_window):
         super().__init__(main_window)
         self.main_window = main_window
+        self.queue = main_window.install_queue
+        self._update_job = None
+        self.queue.idle.connect(self._apply_staged_update)
         self.thread = None
         self.worker = None
         self._silent_check = True
@@ -219,13 +141,31 @@ class UpdateController(QObject):
         if answer != QMessageBox.Yes:
             self._finish_check()
             return
-        dialog = UpdateProgressDialog(update, self.main_window)
-        result = dialog.exec()
-        if result == QDialog.Accepted:
-            self.main_window.hide()
-            self.main_window.app.quit()
-            return
+        self._update_job = self.queue.submit(
+            f"hub-update:{update.target_version}",
+            tr("Hub update {version}", version=update.target_version),
+            lambda report: str(stage_update(
+                update, lambda done, total: report(tr("Downloading"), done, total),
+            )),
+        )
         self._finish_check()
+
+    def _apply_staged_update(self):
+        job = self._update_job
+        if job is None or job.state != "succeeded":
+            return
+        self._update_job = None
+        try:
+            application = QApplication.instance()
+            launch_external_updater(
+                job.result, is_dark=bool(getattr(application, "is_dark_theme", True)),
+            )
+        except Exception as exc:
+            job.state, job.error = "failed", str(exc)
+            self.queue.changed.emit()
+            return
+        self.main_window.hide()
+        self.main_window.app.quit()
 
     def _check_failed(self, message: str):
         if not self._silent_check:
@@ -239,4 +179,4 @@ class UpdateController(QObject):
         self.check_finished.emit()
 
 
-__all__ = ["UpdateController", "UpdateProgressDialog"]
+__all__ = ["UpdateController"]

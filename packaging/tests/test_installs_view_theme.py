@@ -50,6 +50,6 @@ def test_android_support_card_exposes_install_before_any_project_plugin(
     buttons = [button.text() for button in card.findChildren(QPushButton)]
     assert "Android compatibility" in labels
     assert any("Required before" in label for label in labels)
-    assert buttons == ["Locate Bundle", "Install"]
+    assert buttons == ["Install"]
 
     card.close()

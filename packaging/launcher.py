@@ -21,7 +21,7 @@ sys.dont_write_bytecode = True
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QMessageBox, QDialog,
     QHBoxLayout, QVBoxLayout, QSizePolicy, QStackedWidget,
-    QGraphicsOpacityEffect,
+    QGraphicsOpacityEffect, QSystemTrayIcon, QMenu, QTabWidget, QLabel,
 )
 from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QIcon, QFontDatabase
@@ -39,7 +39,9 @@ from model.project_model import ProjectModel
 from viewmodel.control_pane_viewmodel import ControlPaneViewModel
 from view.control_pane_view import ControlPane
 from view.sidebar_view import SidebarView
-from view.installs_view import InstallsView
+from view.installs_view import InstallsView, PythonRuntimesView, AndroidSupportView
+from view.install_queue_panel import InstallQueuePanel
+from install_queue import InstallQueue
 from installer_safety import can_remove_install_dir
 from hub_uninstall import remove_application
 from i18n import configure_language, tr
@@ -48,7 +50,7 @@ import logging
 
 
 class GameEngineLauncher(QMainWindow):
-    def __init__(self, launch_context: HubLaunchContext | None = None) -> None:
+    def __init__(self, launch_context: HubLaunchContext | None = None, *, install_queue=None) -> None:
         self.launch_context = launch_context or HubLaunchContext.current()
         self._own_app = False
         if QApplication.instance() is None:
@@ -82,6 +84,9 @@ class GameEngineLauncher(QMainWindow):
         self.android_support_manager = AndroidSupportManager()
         self.android_support_manager.activate_environment()
         self.version_manager = VersionManager(self.runtime_manager)
+        self.install_queue = install_queue if install_queue is not None else InstallQueue(self.app)
+        self._exit_when_idle = False
+        self.install_queue.idle.connect(self._on_queue_idle)
 
         # ── Root layout: sidebar | content ───────────────────────────
         central = QWidget(self)
@@ -132,15 +137,28 @@ class GameEngineLauncher(QMainWindow):
         installs_page = QWidget()
         installs_layout = QVBoxLayout(installs_page)
         installs_layout.setContentsMargins(28, 24, 28, 24)
-        installs_layout.setSpacing(0)
+        installs_layout.setSpacing(16)
+        installs_title = QLabel(tr("Installs"))
+        installs_title.setObjectName("pageTitle")
+        installs_layout.addWidget(installs_title)
+        self.install_tabs = QTabWidget()
+        self.install_tabs.setObjectName("installTabs")
+        installs_layout.addWidget(self.install_tabs)
 
         self.installs_view = InstallsView(
             self.version_manager,
-            self.runtime_manager,
-            self.android_support_manager,
+            self.install_queue,
             parent=installs_page,
         )
-        installs_layout.addWidget(self.installs_view)
+        self.python_view = PythonRuntimesView(self.runtime_manager, self.install_queue)
+        self.android_view = AndroidSupportView(self.android_support_manager, self.install_queue)
+        for view, label in (
+            (self.installs_view, tr("Engine versions")),
+            (self.python_view, tr("Runtime environment")),
+            (self.android_view, tr("Android support")),
+        ):
+            self.install_tabs.addTab(view, label)
+        self.install_tabs.currentChanged.connect(self._on_install_tab_changed)
 
         self.pages.addWidget(installs_page)
 
@@ -179,6 +197,24 @@ class GameEngineLauncher(QMainWindow):
         self.discussion_view = DiscussionView(parent=self.pages)
         self.pages.addWidget(self.discussion_view)
 
+        self.installs_view.runtime_install_requested.connect(self._install_required_runtime)
+
+        self.install_panel = InstallQueuePanel(self.install_queue, central)
+        self.install_panel.layout_changed.connect(self._position_install_panel)
+        self._position_install_panel()
+        self.tray = QSystemTrayIcon(QIcon(ICON_PATH), self)
+        self.tray.setToolTip("Infernux Hub")
+        tray_menu = QMenu(self)
+        tray_menu.addAction(tr("Open Infernux Hub"), self._restore_window)
+        tray_menu.addAction(tr("Downloads and installs"), self._show_installs)
+        tray_menu.addSeparator()
+        tray_menu.addAction(tr("Exit"), self.request_quit)
+        self.tray.setContextMenu(tray_menu)
+        self.tray.activated.connect(self._on_tray_activated)
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.app.setQuitOnLastWindowClosed(False)
+            self.tray.show()
+
         # ── Sidebar → page switching ─────────────────────────────────
         self.sidebar.page_changed.connect(self._on_page_changed)
 
@@ -200,9 +236,73 @@ class GameEngineLauncher(QMainWindow):
         self._page_transition.start()
         # Refresh installs when switching to that page
         if index == 1:
-            self.installs_view.refresh()
+            self._on_install_tab_changed(self.install_tabs.currentIndex())
         elif index == 2:
             self.settings_view.refresh()
+
+    def _on_install_tab_changed(self, index):
+        self.install_tabs.widget(index).refresh()
+
+    def _show_runtime_installs(self):
+        self.install_tabs.setCurrentWidget(self.python_view)
+        self.sidebar.select_page(1)
+
+    def _install_required_runtime(self, version):
+        self._show_runtime_installs()
+        self.python_view.install(version)
+
+    def _position_install_panel(self):
+        panel = self.install_panel
+        panel.setFixedWidth(max(240, min(320, self.pages.width() - 32)))
+        panel.move(self.centralWidget().width() - panel.width() - 16,
+                   max(16, self.centralWidget().height() - panel.height() - 16))
+        panel.raise_()
+        panel.position_details()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "install_panel"):
+            self._position_install_panel()
+
+    def _restore_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _show_installs(self):
+        self._restore_window()
+        self.sidebar.select_page(1)
+        self.install_panel.refresh()
+
+    def _on_tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self._restore_window()
+
+    def closeEvent(self, event):
+        if self.tray.isVisible():
+            event.ignore()
+            self.hide()
+        elif self.install_queue.busy:
+            event.ignore()
+            self.showMinimized()
+        else:
+            super().closeEvent(event)
+
+    def request_quit(self):
+        if self.install_queue.busy:
+            if QMessageBox.question(
+                self, tr("Installation in progress"),
+                tr("Exit after the installation queue finishes? Installations will continue in the background."),
+            ) != QMessageBox.Yes:
+                return
+            self._exit_when_idle = True
+            self.close()
+        else:
+            self.app.quit()
+
+    def _on_queue_idle(self):
+        if self._exit_when_idle:
+            self.app.quit()
 
     def _remove_project_from_card(self, project_id: str):
         self.project_list.select_project(project_id)
@@ -210,11 +310,12 @@ class GameEngineLauncher(QMainWindow):
 
     def _on_language_changed(self, _mode: str):
         """Rebuild visible widgets in the new language without restarting the process."""
-        replacement = GameEngineLauncher()
+        replacement = GameEngineLauncher(self.launch_context, install_queue=self.install_queue)
         replacement.setGeometry(self.geometry())
         replacement.show()
         # Keep the replacement alive while the old window finishes its event turn.
         self._language_replacement = replacement
+        self.tray.hide()
         self.hide()
         self.db.close()
 
@@ -245,19 +346,7 @@ class GameEngineLauncher(QMainWindow):
         # explicit and take the user directly to the runtime controls.
         default_version = self.runtime_manager.default_version
         if not self.runtime_manager.has_runtime(default_version):
-            QMessageBox.warning(
-                self,
-                tr("Python Runtime Required"),
-                tr(
-                    "This Infernux Hub requires Python {version} for current "
-                    "engine releases. Install Python {version} from Installs "
-                    "before installing or creating a project with them.\n\n"
-                    "Older engine versions continue to use their own matching "
-                    "Python runtime.",
-                    version=default_version,
-                ),
-            )
-            self.sidebar.select_page(1)
+            self._show_runtime_installs()
         QTimer.singleShot(0, self._finish_startup)
 
     def _finish_startup(self):

@@ -205,9 +205,7 @@ def test_upgraded_hub_requires_the_new_default_runtime(monkeypatch):
             default_version="3.13",
             has_runtime=lambda _version: False,
         ),
-        sidebar=SimpleNamespace(
-            select_page=lambda page: observed.__setitem__("page", page)
-        ),
+        _show_runtime_installs=lambda: observed.__setitem__("page", "runtime"),
         _finish_startup=lambda: observed.__setitem__("finished", True),
     )
     monkeypatch.setattr(
@@ -222,8 +220,8 @@ def test_upgraded_hub_requires_the_new_default_runtime(monkeypatch):
 
     GameEngineLauncher._bootstrap_python_runtime(launcher)
 
-    assert "Python 3.13" in observed["message"]
-    assert observed["page"] == 1
+    assert observed["message"] == ""
+    assert observed["page"] == "runtime"
     assert observed["finished"] is True
 
 

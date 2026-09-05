@@ -167,6 +167,7 @@ class SidebarView(QWidget):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFixedHeight(46)
             btn.setProperty("active", index == 0)
+            btn.setProperty("page", index)
             btn.clicked.connect(lambda _checked, i=index: self._switch_page(i))
             layout.addWidget(btn)
             self._nav_buttons.append(btn)
@@ -182,7 +183,7 @@ class SidebarView(QWidget):
                 animation.stop()
             btn._hub_hover_progress = 0.0
             btn.setStyleSheet("")
-            btn.setProperty("active", i == index)
+            btn.setProperty("active", btn.property("page") == index)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
         self.page_changed.emit(index)
