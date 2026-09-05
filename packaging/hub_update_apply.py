@@ -94,13 +94,15 @@ def apply_update(
             source = stage_dir.joinpath(*relative.parts)
             destination = install_dir.joinpath(*relative.parts)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+            # A failed copy may already have truncated or partially written the
+            # destination. Record ownership before beginning that mutation.
             applied.append(relative)
+            shutil.copy2(source, destination)
         for relative in removed:
             target = install_dir.joinpath(*relative.parts)
+            applied.append(relative)
             if target.is_file():
                 target.unlink()
-            applied.append(relative)
 
         executable = install_dir / "Infernux Hub"
         if not executable.is_file():

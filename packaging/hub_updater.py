@@ -456,6 +456,7 @@ _POWERSHELL_UPDATER_TEMPLATE = r'''param(
     [string]$StageDir,
     [string]$MetadataPath
 )
+$ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 $form = New-Object Windows.Forms.Form
@@ -511,14 +512,14 @@ try {
         $source = Join-Path $StageDir $file.path
         $destination = Join-Path $InstallDir $file.path
         New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
-        Copy-Item -LiteralPath $source -Destination $destination -Force
         $applied.Add([string]$file.path)
+        Copy-Item -LiteralPath $source -Destination $destination -Force
     }
     foreach ($relative in $metadata.delete) {
         $target = Join-Path $InstallDir $relative
         if (Test-Path -LiteralPath $target -PathType Leaf) {
-            Remove-Item -LiteralPath $target -Force
             $applied.Add([string]$relative)
+            Remove-Item -LiteralPath $target -Force
         }
     }
     $status.Text = "Update complete. Restarting..."
