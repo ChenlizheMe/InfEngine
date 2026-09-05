@@ -14,6 +14,14 @@ PLUGIN_EDITOR = (
 )
 
 
+def test_raw_shader_compatibility_fixtures_are_not_shipped_as_authored_assets():
+    plugin = ROOT / "external/plugins/infernux_web"
+    fixtures = plugin / "tests/fixtures/shader_compat"
+    for suffix in ("vert", "frag"):
+        assert (fixtures / f"representative.{suffix}").read_text().startswith("#version 450")
+        assert not tuple((plugin / "package").rglob(f"representative.{suffix}"))
+
+
 @pytest.fixture
 def shader_pipeline(monkeypatch):
     monkeypatch.syspath_prepend(str(PLUGIN_EDITOR))
