@@ -1,6 +1,17 @@
 # Developer-only maintenance targets. Product targets and package assembly do
 # not belong in this module.
 
+# Explicit source maintenance only; ordinary builds must not remove files from
+# an author's checkout, even when those files are generated Python bytecode.
+add_custom_target(clean_python_pycache
+    COMMAND ${CMAKE_COMMAND}
+            "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
+            "-DPYTHON_DIR=${CMAKE_SOURCE_DIR}/python"
+            -P "${CMAKE_SOURCE_DIR}/cmake/clean_python_pycache.cmake"
+    COMMENT "Explicitly removing source Python caches for Release"
+    VERBATIM
+)
+
 find_program(INFERNUX_CLANG_FORMAT_EXECUTABLE
     NAMES clang-format clang-format-22 clang-format-21 clang-format-20
           clang-format-19 clang-format-18

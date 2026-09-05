@@ -28,6 +28,7 @@ message(STATUS "Prebuilding LTO Release Player Runtime Pack and optional paralle
 execute_process(
     COMMAND ${CMAKE_COMMAND} -E env
         "PYTHONPATH=${INFERNUX_SOURCE_DIR}/python"
+        "PYTHONDONTWRITEBYTECODE=1"
         "INFERNUX_NATIVE_MODULE_DIR=${NATIVE_MODULE_DIR}"
         "INFERNUX_PLAYER_HOST_PATH=${PLAYER_HOST_PATH}"
         "${PYTHON_EXECUTABLE}" -m Infernux.engine.prebuilt_runtime

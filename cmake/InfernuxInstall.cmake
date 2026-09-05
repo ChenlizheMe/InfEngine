@@ -1,17 +1,4 @@
 # ------------------------------------------------------------------------------
-# Release Pre-Build Cleanup: remove generated Python artifacts recursively
-# ------------------------------------------------------------------------------
-add_custom_target(clean_python_pycache
-    COMMAND ${CMAKE_COMMAND}
-            "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
-            -DPYTHON_DIR=${CMAKE_SOURCE_DIR}/python
-            -P ${CMAKE_SOURCE_DIR}/cmake/clean_python_pycache.cmake
-    COMMENT "Removing __pycache__ directories under python/ for Release"
-    VERBATIM
-)
-add_dependencies(_Infernux _InfernuxBootstrap clean_python_pycache)
-
-# ------------------------------------------------------------------------------
 # Post-Build Steps
 # ------------------------------------------------------------------------------
 
@@ -164,14 +151,6 @@ add_custom_target(prebuild_player_runtime
         "-DMODULE_OUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_MODULE_DIR}"
         "-DBUILD_CACHE_ROOT=${CMAKE_BINARY_DIR}/build-cache/player-runtime"
         -P "${CMAKE_SOURCE_DIR}/cmake/prebuild_player_runtime.cmake"
-    COMMAND ${CMAKE_COMMAND}
-        "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
-        "-DPYTHON_DIR=${CMAKE_SOURCE_DIR}/python"
-        -P "${CMAKE_SOURCE_DIR}/cmake/clean_python_pycache.cmake"
-    COMMAND ${CMAKE_COMMAND}
-        "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
-        "-DPYTHON_DIR=${CMAKE_SOURCE_DIR}/packaging"
-        -P "${CMAKE_SOURCE_DIR}/cmake/clean_python_pycache.cmake"
     DEPENDS _Infernux _InfernuxBootstrap
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     COMMENT "Preparing wheel-distributed Release Player Runtime Pack and parallel module"
