@@ -83,6 +83,7 @@ def test_android_python_producer_selects_java_before_sdk_setup():
     assert producer.index("actions/setup-java@v4") < producer.index("android-actions/setup-android@v3")
     assert 'java-version: "17"' in producer
     assert 'python-version: "3.13"' in producer
+    assert "git submodule update --init --depth 1 external/plugins/infernux_android" in producer
 
 
 @pytest.mark.parametrize("abi", ["arm64-v8a", "x86_64"])

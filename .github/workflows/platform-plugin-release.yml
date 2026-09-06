@@ -62,6 +62,9 @@ jobs:
         with:
           ref: ${{ needs.resolve-release.outputs.source-ref }}
 
+      - name: Checkout the pinned Android runtime manifest contract
+        run: git submodule update --init --depth 1 external/plugins/infernux_android
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
