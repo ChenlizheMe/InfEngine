@@ -136,6 +136,17 @@ def test_windows_native_build_can_load_the_vulkan_linked_module():
     assert "VK_DRIVER_FILES=$swiftShaderManifest" in text[loader_step:build_step]
 
 
+def test_windows_publisher_has_a_system_loader_independent_of_sdk_cache():
+    # Publication imports a staged wheel outside the source/build DLL folders.
+    for name in ("ci.yml", "platform-player.yml"):
+        text = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
+        step = text.split("- name: Install Vulkan Runtime", 1)[1].split("- name:", 1)[0]
+        assert "if:" not in step
+        assert "VulkanRT-$env:VULKAN_SDK_VERSION-Installer.exe" in step
+        assert "-WindowStyle Hidden" in step
+        assert "ExitCode -ne 0" in step
+
+
 def test_platform_workflow_keeps_product_graphics_contracts_explicit():
     text = (_text() + "\n" + _android_driver_text()).casefold()
 

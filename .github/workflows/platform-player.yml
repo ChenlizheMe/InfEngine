@@ -77,6 +77,15 @@ jobs:
           Start-Process -Wait -FilePath .\vulkan_sdk.exe -ArgumentList `
             "--accept-licenses","--default-answer","--confirm-command","install"
 
+      - name: Install Vulkan Runtime
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkan-runtime.exe'
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/VulkanRT-$env:VULKAN_SDK_VERSION-Installer.exe" -OutFile $installer
+          $process = Start-Process -Wait -PassThru -WindowStyle Hidden -FilePath $installer -ArgumentList '/S'
+          if ($process.ExitCode -ne 0) { throw "Vulkan Runtime installation failed: $($process.ExitCode)" }
+
       - name: Cache Windows native build
         uses: actions/cache@v4
         with:
@@ -515,6 +524,20 @@ jobs:
               "$INFERNUX_ANDROID_RUNTIME" \
               "$INFERNUX_ANDROID_RUNTIME_WORK"
           fi
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.12"
+
+      - name: Publish the precompiled Android plugin payload
+        run: |
+          conda activate infernux
+          echo "INFERNUX_GRADLE_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v gradle)")")")" >> "$GITHUB_ENV"
+          python external/plugins/infernux_android/native/build.py \
+            --sdk "$ANDROID_SDK_ROOT" \
+            --python-prefix "$INFERNUX_ANDROID_RUNTIME" \
+            --abi x86_64 \
+            --build-root "$INFERNUX_ANDROID_BUILD_CACHE/AndroidEngine/x86_64/Release"
 
       - name: Build Android Player and input instrumentation
         run: |

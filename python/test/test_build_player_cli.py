@@ -106,6 +106,29 @@ def test_installed_acceptance_is_an_explicit_cli_mode():
     assert arguments.installed is True
 
 
+def test_installed_preload_has_project_paths_and_mirrored_resources(tmp_path, monkeypatch):
+    from Infernux.application import Application
+    from Infernux.engine import library_sync, project_context
+    from Infernux.engine.build import exporter_registry
+    from Infernux.plugins import PluginManager
+
+    asset = tmp_path / "Packages/probe/runtime/message.txt"
+    asset.parent.mkdir(parents=True)
+    asset.write_text("package preload", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(project_context, "_project_root", None)
+    monkeypatch.setattr(project_context, "_runtime_asset_resolver", None)
+    monkeypatch.setattr(library_sync, "sync_resources", lambda root: calls.append(root))
+
+    def startup(root, *, runtime):
+        assert runtime is False
+        assert calls == [root]
+        assert Path(Application.asset_path("Packages/probe/runtime/message.txt")) == asset
+
+    monkeypatch.setattr(PluginManager, "startup", startup)
+    assert _module()._installed_exporter_registry(tmp_path) is exporter_registry
+
+
 def test_raw_build_tool_output_is_not_retained_as_phase_progress():
     module = _module()
 

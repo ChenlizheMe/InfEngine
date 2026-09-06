@@ -112,22 +112,71 @@ def _toolchain(tmp_path: Path) -> dict[str, str]:
         path.write_text("fixture\n", encoding="utf-8")
     (java / "release").write_text('JAVA_VERSION="17.0.20"\n', encoding="utf-8")
     (avd / "Infernux_API_36.ini").write_text("target=android-36\n", encoding="utf-8")
-    source = tmp_path / "source"
-    (source / "external" / "SDL" / "android-project").mkdir(parents=True)
-    (source / "CMakeLists.txt").write_text("project(Infernux)\n", encoding="utf-8")
-    (source / "external" / "SDL" / "CMakeLists.txt").write_text(
-        "project(SDL)\n", encoding="utf-8"
-    )
-    wrapper = source / "external" / "SDL" / "android-project" / (
-        "gradlew.bat" if sys.platform == "win32" else "gradlew"
-    )
-    wrapper.write_text("fixture\n", encoding="utf-8")
+    gradle = tmp_path / "gradle"
+    (gradle / "bin").mkdir(parents=True)
+    launcher = gradle / "bin" / ("gradle.bat" if sys.platform == "win32" else "gradle")
+    launcher.write_text("fixture\n", encoding="utf-8")
     return {
         "ANDROID_SDK_ROOT": str(sdk),
         "ANDROID_AVD_HOME": str(avd),
         "JAVA_HOME": str(java),
-        "INFERNUX_SOURCE_ROOT": str(source),
+        "INFERNUX_GRADLE_HOME": str(gradle),
     }
+
+
+
+def _write_native_payload(root: Path, *, abi: str) -> Path:
+    payload = importlib.import_module("infernux_android.native_payload")
+    native = root / abi / "jniLibs"
+    native.mkdir(parents=True)
+    for name in payload.NATIVE_LIBRARIES:
+        (native / name).write_bytes(b"\\x7fELFfixture")
+    (root / abi / "Player.inxmanifest").write_text(json.dumps({
+        "engine_version": "0.4.0", "platform": "android", "abi": abi,
+        "python_abi": "cp313", "minimum_api": 26, "configuration": "Release",
+    }), encoding="utf-8")
+    java = root / "java/org/libsdl/app/SDLActivity.java"
+    java.parent.mkdir(parents=True)
+    java.write_text("// SDL fixture", encoding="utf-8")
+    return root
+
+
+def test_android_native_payload_stages_without_build_tools(monkeypatch, tmp_path):
+    _android_module(monkeypatch)
+    module = importlib.import_module("infernux_android.native_payload")
+    source = _write_native_payload(tmp_path / "player", abi="x86_64")
+    manifest = module.inspect_native_payload(source, abi="x86_64")
+    assert manifest["configuration"] == "Release"
+    staging = tmp_path / "host"
+    native = staging / "app/src/main/jniLibs/x86_64"
+    native.mkdir(parents=True)
+    (native / "libInfernuxOld.so").write_bytes(b"stale")
+    (native / "libpython3.13.so").write_bytes(b"Hub-owned")
+    (source / "x86_64/jniLibs/libmain.so.meta").write_bytes(b"editor-only")
+    module.stage_native_payload(source, staging, abi="x86_64")
+    assert {p.name for p in native.iterdir()} == set(module.NATIVE_LIBRARIES) | {"libpython3.13.so"}
+    assert (native / "libpython3.13.so").read_bytes() == b"Hub-owned"
+    assert (staging / "app/src/main/java/org/libsdl/app/SDLActivity.java").is_file()
+
+
+@pytest.mark.parametrize("failure", ["abi", "engine", "missing_library", "missing_java"])
+def test_android_native_payload_rejects_incomplete_or_incompatible_plugin(monkeypatch, tmp_path, failure):
+    _android_module(monkeypatch)
+    module = importlib.import_module("infernux_android.native_payload")
+    source = _write_native_payload(tmp_path / "player", abi="x86_64")
+    manifest = source / "x86_64/Player.inxmanifest"
+    document = json.loads(manifest.read_bytes())
+    if failure == "abi":
+        document["abi"] = "arm64-v8a"
+    elif failure == "engine":
+        document["engine_version"] = "0.3.7"
+    elif failure == "missing_library":
+        (source / "x86_64/jniLibs/libmain.so").unlink()
+    else:
+        (source / "java/org/libsdl/app/SDLActivity.java").unlink()
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises((ValueError, FileNotFoundError)):
+        module.inspect_native_payload(source, abi="x86_64")
 
 
 def test_android_exporter_contributes_only_vulkan_targets(monkeypatch):
@@ -221,59 +270,6 @@ def test_android_gradle_process_owns_cache_and_persistent_user_state(
     assert json.loads(output[-1]) == [expected_gradle, expected_android]
 
 
-def test_android_native_source_path_keeps_ascii_source(monkeypatch, tmp_path):
-    _android_module(monkeypatch)
-    exporter = importlib.import_module("infernux_android.exporter")
-    source = ROOT / "external"
-    assert source.is_dir()
-    request = BuildRequest(
-        str(tmp_path / "project"),
-        "android-arm64",
-        str(tmp_path / "output"),
-        BuildProfile(options={"build_cache_root": str(tmp_path / "cache")}),
-    )
-
-    assert exporter._android_native_source_path(request, "volk", source) == source
-
-
-def test_android_cmake_cache_is_reused_only_for_identical_sources(
-    monkeypatch, tmp_path
-):
-    _android_module(monkeypatch)
-    exporter = importlib.import_module("infernux_android.exporter")
-    cache = tmp_path / "cache"
-    request = BuildRequest(
-        str(tmp_path / "project"),
-        "android-arm64",
-        str(tmp_path / "output"),
-        BuildProfile(options={"build_cache_root": str(cache)}),
-    )
-    build_root = cache / "AndroidEngine/arm64-v8a/RelWithDebInfo"
-    first_source = tmp_path / "sources" / "volk-a"
-    second_source = tmp_path / "sources" / "volk-b"
-    first_source.mkdir(parents=True)
-    second_source.mkdir(parents=True)
-
-    exporter._prepare_android_cmake_build_root(
-        request, build_root, {"volk": first_source}
-    )
-    retained = build_root / "ninja-object.o"
-    retained.write_bytes(b"compiled")
-    exporter._prepare_android_cmake_build_root(
-        request, build_root, {"volk": first_source}
-    )
-    assert retained.read_bytes() == b"compiled"
-
-    exporter._prepare_android_cmake_build_root(
-        request, build_root, {"volk": second_source}
-    )
-    assert not retained.exists()
-    identity = json.loads(
-        (build_root / ".infernux-cmake-inputs.json").read_text(encoding="utf-8")
-    )
-    assert identity["sources"] == {"volk": str(second_source.resolve())}
-
-
 def test_android_doctor_accepts_the_pinned_local_toolchain(monkeypatch, tmp_path):
     module = _android_module(monkeypatch)
     report = module.inspect_android_toolchain(
@@ -316,6 +312,7 @@ def test_android_doctor_reports_every_missing_root(monkeypatch):
     assert {item.code for item in report.diagnostics} == {
         "android.sdk.environment",
         "android.jdk.environment",
+        "android.gradle.environment",
     }
 
 
@@ -358,6 +355,9 @@ def test_android_exporter_doctor_validates_target_python_runtime(
         BuildProfile(options={"android_python_prefix": str(prefix)}),
     )
 
+    exporter = importlib.import_module("infernux_android.exporter")
+    _write_native_payload(tmp_path / "player", abi="arm64-v8a")
+    monkeypatch.setattr(exporter, "__file__", str(tmp_path / "exporter.py"))
     report = module.AndroidPlatformExporter().doctor(request)
 
     assert report.available
@@ -407,22 +407,6 @@ def test_android_exporter_plan_is_inspectable(monkeypatch, tmp_path):
     assert plan.metadata["graphics_api"] == "vulkan"
 
 
-def test_android_native_builds_keep_development_symbols_without_debug_runtime_cost(
-    monkeypatch,
-):
-    _android_module(monkeypatch)
-    exporter_module = importlib.import_module("infernux_android.exporter")
-
-    assert (
-        exporter_module._native_build_type(BuildConfiguration.DEVELOPMENT)
-        == "RelWithDebInfo"
-    )
-    assert (
-        exporter_module._native_build_type(BuildConfiguration.RELEASE)
-        == "Release"
-    )
-
-
 def test_android_host_template_disables_opengl_and_configures_vulkan(
     monkeypatch, tmp_path
 ):
@@ -434,14 +418,11 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
 
     exporter_module._configure_project(
         project,
-        ROOT,
         tmp_path / "sdk",
         "x86_64",
     )
 
-    cmake = (project / "app/src/main/cpp/CMakeLists.txt").read_text(
-        encoding="utf-8"
-    )
+    assert not (project / "app/src/main/cpp/CMakeLists.txt").exists()
     manifest = (project / "app/src/main/AndroidManifest.xml").read_text(
         encoding="utf-8"
     )
@@ -458,21 +439,15 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     doctor = importlib.import_module("infernux_android.doctor")
     assert f'buildToolsVersion "{doctor.ANDROID_BUILD_TOOLS}"' in gradle
     root_gradle = (project / "build.gradle").read_text(encoding="utf-8")
-    host_source = (project / "app/src/main/cpp/main.cpp").read_text(encoding="utf-8")
+    host_source = (PLUGIN_EDITOR.parents[1] / "native/main.cpp").read_text(encoding="utf-8")
     activity = (
         project
         / "app/src/main/java/com/infernux/bootstrap/InfernuxActivity.java"
     ).read_text(encoding="utf-8")
-    assert "SDL_OPENGL OFF" in cmake
-    assert "SDL_OPENGLES OFF" in cmake
-    assert "SDL_VULKAN ON" in cmake
-    assert 'INFERNUX_ANDROID_ORIENTATIONS=' not in cmake
     assert 'android:name="infernux.orientations"' in manifest
     assert 'android:value="LandscapeLeft LandscapeRight"' in manifest
     assert 'SDL_getenv("INFERNUX_ANDROID_ORIENTATIONS")' in host_source
     assert 'Os.setenv("INFERNUX_ANDROID_ORIENTATIONS", orientations, true)' in activity
-    assert '"${CMAKE_CURRENT_SOURCE_DIR}/../python/include/' in cmake
-    assert '"${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/' in cmake
     assert "android.hardware.vulkan.version" in manifest
     assert 'android:screenOrientation="sensorLandscape"' in manifest
     assert 'android:name="infernux.resolution_scaling"' in manifest
@@ -547,8 +522,10 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "stagedRoot.renameTo(installedRoot)" in activity
     assert "stream.getFD().sync()" in activity
     assert not list(project.rglob("*.in"))
-    assert "@INFERNUX_" not in cmake + gradle + root_gradle
-    assert "@ANDROID_" not in cmake + gradle + root_gradle
+    assert "externalNativeBuild" not in gradle
+    assert "cmake" not in gradle
+    assert "@INFERNUX_" not in gradle + root_gradle
+    assert "@ANDROID_" not in gradle + root_gradle
 
 
 def test_android_launcher_icons_are_generated_from_the_cooked_project_icon(
@@ -892,7 +869,7 @@ def test_android_python_runtime_staging_is_exact_and_versioned(monkeypatch, tmp_
     runtime_id = stale_assets / "infernux-runtime.id"
     first_identity = runtime_id.read_text(encoding="utf-8")
     assert version == "3.13"
-    assert (stale_include / "Python.h").read_text(encoding="utf-8") == "fixture header\n"
+    assert not stale_include.exists()
     assert not (stale_assets / "stale.py").exists()
     assert not (stale_assets / "lib/python3.13/__pycache__").exists()
     assert (stale_native / "libpython3.13.so").is_file()
@@ -1003,7 +980,7 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
         BuildProfile(),
     )
 
-    exporter_module._stage_engine_python_package(request, staging, source_root)
+    exporter_module._stage_engine_python_package(request, staging, package)
 
     destination = staging / "app/src/main/assets/python/site-packages/Infernux"
     assert (destination.parent / "infernux.py").read_text(encoding="utf-8") == public_api.read_text(
@@ -1262,64 +1239,6 @@ def test_android_python_runtime_manifest_rejects_incompatible_target(
             expected_python_series="3.13",
             application_minimum_android_api=27,
         )
-
-
-def test_android_engine_native_staging_is_exact(monkeypatch, tmp_path):
-    _android_module(monkeypatch)
-    exporter_module = importlib.import_module("infernux_android.exporter")
-    build = tmp_path / "engine-build"
-    sync = build / "python-sync"
-    sync.mkdir(parents=True)
-    (sync / "_Infernux.so").write_bytes(b"engine")
-    (sync / "_InfernuxBootstrap.so").write_bytes(b"bootstrap")
-    (sync / "libInfernuxFoundation.so").write_bytes(b"foundation")
-    (sync / "libSDL3.so").write_bytes(b"host-owned")
-    assimp = build / "external" / "assimp" / "libassimp.so"
-    jolt = build / "external" / "Jolt" / "libJolt.so"
-    assimp.parent.mkdir(parents=True)
-    jolt.parent.mkdir(parents=True)
-    assimp.write_bytes(b"assimp")
-    jolt.write_bytes(b"jolt")
-
-    staging = tmp_path / "host"
-    native = staging / "app/src/main/jniLibs/x86_64"
-    native.mkdir(parents=True)
-    (native / "libInfernuxOld.so").write_bytes(b"stale")
-    (native / "libpython3.13.so").write_bytes(b"keep")
-
-    staged = exporter_module._stage_engine_native_libraries(
-        build, staging, "x86_64"
-    )
-
-    assert {path.name for path in staged} == {
-        "_Infernux.so",
-        "_InfernuxBootstrap.so",
-        "libInfernuxFoundation.so",
-        "libassimp.so",
-        "libJolt.so",
-    }
-    assert not (native / "libInfernuxOld.so").exists()
-    assert not (native / "libSDL3.so").exists()
-    assert (native / "libpython3.13.so").is_file()
-
-
-def test_android_engine_native_staging_rejects_incomplete_build(monkeypatch, tmp_path):
-    _android_module(monkeypatch)
-    exporter_module = importlib.import_module("infernux_android.exporter")
-    build = tmp_path / "engine-build"
-    sync = build / "python-sync"
-    sync.mkdir(parents=True)
-    (sync / "_Infernux.so").write_bytes(b"engine")
-
-    try:
-        exporter_module._stage_engine_native_libraries(
-            build, tmp_path / "host", "x86_64"
-        )
-    except FileNotFoundError as error:
-        assert "libassimp.so" in str(error)
-        assert "libJolt.so" in str(error)
-    else:
-        raise AssertionError("incomplete Android runtime was accepted")
 
 
 def test_android_registration_can_be_removed_without_residue(monkeypatch):

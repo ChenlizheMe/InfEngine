@@ -104,6 +104,19 @@ def _prepare_engine(*, installed: bool) -> dict[str, str]:
     return origins
 
 
+def _installed_exporter_registry(project: Path):
+    from Infernux.engine.build import exporter_registry
+    from Infernux.engine.library_sync import sync_resources
+    from Infernux.engine.project_context import set_project_root
+    from Infernux.plugins import PluginManager
+
+    # Match Editor ordering: plugin preloads can read project assets immediately.
+    set_project_root(str(project))
+    sync_resources(str(project))
+    PluginManager.startup(str(project), runtime=False)
+    return exporter_registry
+
+
 def _diagnostic_payload(item) -> dict[str, object]:
     return {
         "severity": item.severity.value,
@@ -244,11 +257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         progress=on_progress,
     )
     if arguments.installed:
-        from Infernux.plugins import PluginManager
-        from Infernux.engine.build import exporter_registry
-
-        PluginManager.startup(str(project), runtime=False)
-        registry = exporter_registry
+        registry = _installed_exporter_registry(project)
     else:
         exporter = _load_exporter(arguments.target)
         registry = BuildExporterRegistry()

@@ -83,6 +83,33 @@ Installed plugins have reload/uninstall actions but no version update operation.
 
 ## Iteration log
 
+### 2026-09-06: complete Android payload and compiler-free APK assembly
+
+- Removed native source acquisition, consumer CMake configuration, pybind11
+  installation and engine compilation from the Android exporter. It now stages
+  the plugin's precompiled libraries and SDL Java host, then invokes Gradle.
+  The native host source and build entry live outside the distributable package.
+- Cross-built Release payloads for arm64-v8a and x86_64. The owning CMake target
+  produced the complete 0.2.0 `.inxpkg` (881,401,088 bytes) and release JSON in the
+  Android subrepository. Both ELF ABIs and the engine/Python contract were checked;
+  no intermediate ZIP archive was used. Public release publication is still pending.
+- Source-mode MultiPlatform040 APK assembly passed in 118.8 seconds without any
+  CMake or native compilation task. The APK audit found 17 native libraries and
+  no forbidden distributions. This is build evidence, not physical-device execution.
+- Installed the complete plugin in the isolated acceptance project. Its older
+  development-format archive required uninstall/fresh installation in that copy;
+  the original desktop project and its cached archive were left unchanged.
+- Android/export-release regressions: 67 passed, 1 skipped; standalone Android
+  packaging: 5 passed. Build workflow/ownership checks: 25 passed, 2 skipped.
+- Fixed the installed-only acceptance entry to bind project paths and synchronize
+  installed resources before plugin preloads, matching Editor startup order;
+  all 12 CLI tests pass. Installed-only Android export verification is in progress.
+- The complete Linux plugin workflow passed. Main PR Linux desktop/Player,
+  Android Player and Web Player/browser checks passed at `bc5cdfd6`; both Windows
+  jobs failed because the staged publisher lacked the system Vulkan loader.
+  Added an explicit Vulkan Runtime install independent of the SDK cache; rerun
+  results and the public Windows release are still pending.
+
 ### 2026-09-06: desktop publication and Android native ownership
 
 - Pushed the desktop implementation to the engine and both platform repositories.

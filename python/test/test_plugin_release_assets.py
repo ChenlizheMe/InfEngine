@@ -28,16 +28,19 @@ def _module():
     return module
 
 
-def test_android_package_installs_its_host_header_dependency(tmp_path, monkeypatch):
+def test_android_package_does_not_install_host_compiler_dependencies(tmp_path, monkeypatch):
     root = Path(__file__).parents[2]
     package = tmp_path / "android.inxpkg"
-    InxPackage.export_source(str(root / "external/plugins/infernux_android"), str(package))
+    source = tmp_path / "android"
+    shutil.copytree(root / "external/plugins/infernux_android/package", source,
+                    ignore=shutil.ignore_patterns("player"))
+    InxPackage.export_source(str(source), str(package))
     preview = InxPackage.inspect(str(package))
     manager = PluginManager(str(tmp_path / "project"), runtime=False)
     installed_lines = []
     monkeypatch.setattr(manager, "_install_pip_lines", lambda lines: installed_lines.extend(lines))
     manager._install_requirements(preview)
-    assert [line.strip() for line in installed_lines if line.strip()] == ["pybind11==3.1.0"]
+    assert installed_lines == []
 
 
 def test_script_uses_the_checked_out_protocol_from_any_working_directory(
@@ -285,6 +288,10 @@ def test_platform_releases_are_owned_by_independent_repositories():
             assert "--runtime-only" not in release
             assert "python -m zipfile" not in release
             assert "player-runtime-v0.4.0" not in release
+        elif item["path"] == "infernux_android":
+            assert "native/build.py" in release
+            assert "--target package_android_plugin" in release
+            assert "python -m zipfile" not in release
         else:
             assert "python release.py" in release
         assert "gh release create" in release
