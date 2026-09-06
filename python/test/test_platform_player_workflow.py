@@ -41,7 +41,8 @@ def test_ci_software_driver_is_included_in_the_staged_wheel(tmp_path):
     (project / "CMakeLists.txt").write_text(
         "cmake_minimum_required(VERSION 3.25)\n"
         "project(Infernux LANGUAGES NONE)\n"
-        'set(INFERNUX_PYTHON_INSTALL_COMPONENT "PythonWheel")\n',
+        'set(INFERNUX_PYTHON_INSTALL_COMPONENT "PythonWheel")\n'
+        'install(FILES CMakeLists.txt DESTINATION . COMPONENT PythonWheel)\n',
         encoding="utf-8",
     )
     build = tmp_path / "build"
@@ -52,6 +53,22 @@ def test_ci_software_driver_is_included_in_the_staged_wheel(tmp_path):
     subprocess.run([cmake, "--install", str(build), "--prefix", str(destination),
                     "--component", "PythonWheel"], check=True, capture_output=True)
     assert (destination / "python/Infernux/lib/vulkan-1.dll").read_bytes() == driver.read_bytes()
+    # Reconfiguring for delivery must remove the test-only install rule.
+    subprocess.run([cmake, "-S", str(project), "-B", str(build),
+                    "-U", "CMAKE_PROJECT_Infernux_INCLUDE"], check=True, capture_output=True)
+    public_destination = tmp_path / "public-wheel-source"
+    subprocess.run([cmake, "--install", str(build), "--prefix", str(public_destination),
+                    "--component", "PythonWheel"], check=True, capture_output=True)
+    assert (public_destination / "CMakeLists.txt").is_file()
+    assert not (public_destination / "python/Infernux/lib/vulkan-1.dll").exists()
+
+
+def test_desktop_distribution_disables_the_test_driver_install_hook():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    delivery = workflow.split("- name: Build Windows editor wheel and Hub distribution", 1)[1]
+    assert delivery.index("-U CMAKE_PROJECT_Infernux_INCLUDE") < delivery.index(
+        "cmake --build --preset windows-msvc-wheel"
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Android CI driver runs on Linux")

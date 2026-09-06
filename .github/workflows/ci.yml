@@ -142,6 +142,9 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          # The software driver belongs to test payloads, never shipped wheels.
+          cmake --preset windows-msvc-release -U CMAKE_PROJECT_Infernux_INCLUDE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset windows-msvc-wheel
           cmake --build --preset windows-hub-installer
 

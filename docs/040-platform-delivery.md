@@ -8,9 +8,9 @@ and a green, mergeable engine PR. Publishing exporter-only plugins is not enough
 
 ## 1. Complete platform packages
 
-- [ ] Windows and Linux plugins carry their precompiled Player distributions.
-- [ ] Android plugins carry the supported ABI-specific native Player payloads.
-- [ ] Web plugins carry the precompiled WASM/JavaScript runtime and the host-side
+- [x] Windows and Linux plugins carry their precompiled Player distributions.
+- [x] Android plugins carry the supported ABI-specific native Player payloads.
+- [x] Web plugins carry the precompiled WASM/JavaScript runtime and the host-side
   asset/shader tools needed for supported build hosts.
 - [ ] Normal game exports require no engine source checkout, Git submodules,
   CMake invocation, or engine compilation, including hidden compiler fallback.
@@ -82,6 +82,35 @@ The installed editor's official catalog is currently a wheel-bundled snapshot.
 Installed plugins have reload/uninstall actions but no version update operation.
 
 ## Iteration log
+
+### 2026-09-06: complete Web release and Android symbol separation
+
+- Web workflow `34025867647` passed its runtime and both host shader-tool builds.
+  Installed its exact CI package into the isolated MultiPlatform040 project;
+  installed-only Release export passed in 19.106 seconds. An actual Edge WebGPU
+  button click displayed the packaged TXT, with no page or script errors.
+  Published those same bytes as Web v0.2.0: 38,245,824-byte `.inxpkg` plus manifest.
+- Measured public Android v0.2.0: most of its 842 MiB was native debug information.
+  CMake now writes runtime libraries directly to the plugin and separate `.debug`
+  files under the build tree's `symbols/<configuration>/<abi>/`. It preserves
+  original build outputs and dynamic exports; there is no intermediate ZIP.
+  Both local ABI publication targets passed; the complete v0.2.1 package is
+  93,698,240 bytes (89.36 MiB), without removing either supported architecture.
+- Updated the isolated project from public Android v0.2.0 to local v0.2.1;
+  all 59 member GUIDs and enabled state survived. Installed-only ARM64 and x86_64
+  MultiPlatform040 APK exports passed using the existing local Hub kit/cache.
+  This is not fresh channel-install or device-run evidence. Public v0.2.1 awaits
+  its complete release CI. ELF publication tests: 6 passed; Android/export/release
+  regressions: 78 passed, 1 skipped.
+- Cold Hub CI successfully built and repaired the ARM64 NumPy wheel after using
+  the ABI-specific absolute Python library for Meson probes and extension linking.
+  The next failure was the missing plugin-owned manifest module: the producer now
+  explicitly checks out the pinned Android submodule. Both-host kit publication
+  remains open. Hub setup regression: 10 passed, 1 skipped.
+- Final Windows wheel/Hub assembly now disables the CI-only software Vulkan
+  install hook after tests. A real CMake configure/install regression verifies
+  that the hook includes the driver for tests and excludes it after reconfiguration
+  for delivery. Workflow regression: 22 passed, 2 platform skips.
 
 ### 2026-09-06: verify Hub kits before channel publication
 
