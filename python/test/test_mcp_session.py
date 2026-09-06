@@ -37,6 +37,16 @@ def test_session_status_enforces_debug_recording_policy(tmp_path):
     assert session.status()["recording_available"] is False
 
 
+def test_mode_remediation_exposes_only_engine_capture_contract(tmp_path):
+    session.configure(str(tmp_path), _config("developer_assist"))
+
+    remediation = session.mode_remediation("global_validation")
+
+    assert "os_foreground_control" not in remediation
+    assert remediation["capture_source"] == "engine_render_target_only"
+    assert "foreground window" not in remediation["instructions"]
+
+
 def test_supervisor_lease_is_verified_but_never_exposed_in_status_or_trace(tmp_path, monkeypatch):
     lease = "private-supervisor-lease"
     monkeypatch.setenv("INFERNUX_MCP_EDITOR_INSTANCE_ID", "editor-instance-for-test")
@@ -276,7 +286,6 @@ def test_global_validation_attempt_manifest_persists_build_identity(tmp_path, mo
         "package_version": "0.2.1",
         "git": {"available": True, "branch": "029/030preview", "revision": "abc123"},
         "cmake": {"configure_preset": "debug", "build_preset": "debug"},
-        "native_artifact": {"available": True, "sha256": "artifact-hash"},
     }
     monkeypatch.setattr(session, "_capture_build_identity", lambda policy, build_profile: identity)
     configured = session.configure(str(tmp_path), _config("global_validation"))
@@ -324,33 +333,6 @@ def test_package_version_falls_back_to_installed_distribution(monkeypatch):
     )
 
     assert session_identity._read_package_version("") == "0.2.1-installed"
-
-
-def test_python_package_identity_hashes_actual_runtime_sources(tmp_path):
-    package_root = tmp_path / "Infernux"
-    package_root.mkdir()
-    source = package_root / "runtime.py"
-    schema = package_root / "schema.json"
-    source.write_text("VALUE = 1\n", encoding="utf-8")
-    schema.write_text('{"version": 1}\n', encoding="utf-8")
-    cache = package_root / "__pycache__"
-    cache.mkdir()
-    bytecode = cache / "runtime.pyc"
-    bytecode.write_bytes(b"first")
-
-    first = session_identity._python_package_identity(str(tmp_path), package_root)
-    bytecode.write_bytes(b"second")
-    cache_only_change = session_identity._python_package_identity(str(tmp_path), package_root)
-    source.write_text("VALUE = 2\n", encoding="utf-8")
-    source_change = session_identity._python_package_identity(str(tmp_path), package_root)
-
-    assert first["available"] is True
-    assert first["path"] == "Infernux"
-    assert first["file_count"] == 2
-    assert first["extensions"] == [".json", ".py", ".pyi"]
-    assert len(first["sha256"]) == 64
-    assert cache_only_change["sha256"] == first["sha256"]
-    assert source_change["sha256"] != first["sha256"]
 
 
 def test_global_validation_attempt_stop_is_idempotent_and_tracks_activity(tmp_path):

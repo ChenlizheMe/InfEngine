@@ -175,6 +175,7 @@ class ConsolePanel : public EditorPanel
     bool m_focusSearchNextFrame = false;
     float m_rowHeight = 22.0f;
     bool m_rowHeightMeasured = false;
+    float m_lastDpiScale = 0.0f;
     float m_detailHeight = 90.0f;
     float m_detailResizeStart = 90.0f;
 

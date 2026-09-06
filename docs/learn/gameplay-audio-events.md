@@ -38,27 +38,25 @@ The AudioSource Inspector exposes source settings first, followed by a **Tracks*
 ## Build the complete component {#complete-component}
 
 ```python
-from Infernux.components import AudioSource, InxComponent
-from Infernux.core import AudioClip
-from Infernux.debug import Debug
+import infernux as inx
 
 
-class GameplayAudio(InxComponent):
+class GameplayAudio(inx.InxComponent):
     def awake(self):
         self._source = None
         self._music_clip = None
         self._hit_clip = None
 
     def start(self):
-        self._source = self.game_object.get_component(AudioSource)
+        self._source = self.game_object.get_component(inx.AudioSource)
         if self._source is None:
-            Debug.log_error("GameplayAudio requires an AudioSource.", self)
+            inx.Debug.log_error("GameplayAudio requires an AudioSource.", self)
             return
 
-        self._music_clip = AudioClip.load("Assets/Audio/music_loop.wav")
-        self._hit_clip = AudioClip.load("Assets/Audio/hit.wav")
+        self._music_clip = inx.AudioClip.load("Assets/Audio/music_loop.wav")
+        self._hit_clip = inx.AudioClip.load("Assets/Audio/hit.wav")
         if self._music_clip is None or self._hit_clip is None:
-            Debug.log_error("Could not load the gameplay WAV files.", self)
+            inx.Debug.log_error("Could not load the gameplay WAV files.", self)
             return
 
         self._source.track_count = 1
@@ -210,27 +208,25 @@ AudioSource Inspector 先显示音源级设置，后面是 **Tracks** 区域。�
 ## 编写完整组件 {#zh-complete-component}
 
 ```python
-from Infernux.components import AudioSource, InxComponent
-from Infernux.core import AudioClip
-from Infernux.debug import Debug
+import infernux as inx
 
 
-class GameplayAudio(InxComponent):
+class GameplayAudio(inx.InxComponent):
     def awake(self):
         self._source = None
         self._music_clip = None
         self._hit_clip = None
 
     def start(self):
-        self._source = self.game_object.get_component(AudioSource)
+        self._source = self.game_object.get_component(inx.AudioSource)
         if self._source is None:
-            Debug.log_error("GameplayAudio requires an AudioSource.", self)
+            inx.Debug.log_error("GameplayAudio requires an AudioSource.", self)
             return
 
-        self._music_clip = AudioClip.load("Assets/Audio/music_loop.wav")
-        self._hit_clip = AudioClip.load("Assets/Audio/hit.wav")
+        self._music_clip = inx.AudioClip.load("Assets/Audio/music_loop.wav")
+        self._hit_clip = inx.AudioClip.load("Assets/Audio/hit.wav")
         if self._music_clip is None or self._hit_clip is None:
-            Debug.log_error("Could not load the gameplay WAV files.", self)
+            inx.Debug.log_error("Could not load the gameplay WAV files.", self)
             return
 
         self._source.track_count = 1

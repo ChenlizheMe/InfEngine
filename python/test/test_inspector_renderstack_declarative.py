@@ -100,6 +100,29 @@ def test_default_forward_pipeline_uses_forward_for_opaque_and_transparent():
     assert draws["TransparentPass"]._sort_mode == "back_to_front"
 
 
+def test_mobile_profile_bounds_builtin_pipeline_cost_without_rewriting_authored_values(
+    monkeypatch,
+):
+    from Infernux.rendergraph.graph import RenderGraph
+
+    monkeypatch.setenv("INFERNUX_RENDER_PROFILE", "mobile")
+    forward = DefaultForwardPipeline()
+    forward.shadow_resolution = 4096
+    graph = RenderGraph("Mobile Default Forward")
+    forward.define_topology(graph)
+
+    assert graph._msaa_samples == 1
+    assert graph.get_texture("shadow_map").size == (1024, 1024)
+    assert forward.shadow_resolution == 4096
+    assert int(forward.msaa_samples) == 4
+
+    deferred = DefaultDeferredPipeline()
+    deferred.shadow_resolution = 8192
+    deferred_graph = RenderGraph("Mobile Default Deferred")
+    deferred.define_topology(deferred_graph)
+    assert deferred_graph.get_texture("shadow_map").size == (1024, 1024)
+
+
 def test_builtin_pipeline_route_selector_is_not_an_exposed_parameter():
     from Infernux.components.fields import get_serialized_fields
 
@@ -436,6 +459,22 @@ def test_broken_topology_probe_keeps_the_last_valid_inspector_model(monkeypatch)
     assert "bad topology" in stack.effect_compile_errors[-1]
 
 
+def test_broken_initial_topology_probe_raises_without_fabricating_a_model(monkeypatch):
+    stack = RenderStack()
+    monkeypatch.setattr(
+        stack.pipeline,
+        "define_topology",
+        lambda _graph: (_ for _ in ()).throw(ValueError("bad initial topology")),
+    )
+
+    with pytest.raises(ValueError, match="bad initial topology"):
+        stack._build_full_topology_probe()
+
+    assert stack._topology_probe_cache is None
+    assert stack._last_valid_topology_probe is None
+    assert "No valid Inspector topology has been published" in stack.effect_compile_errors[-1]
+
+
 def test_rejected_graph_rebuild_keeps_rendering_the_last_valid_graph(monkeypatch):
     stack = RenderStack()
     previous_graph = object()
@@ -471,6 +510,110 @@ def test_rejected_graph_rebuild_keeps_rendering_the_last_valid_graph(monkeypatch
     assert stack._build_failed is True
     assert context.applied == [previous_graph]
     assert context.submitted == ["culling"]
+
+
+def test_initial_graph_build_failure_is_not_replaced_by_another_pipeline(monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    stack = RenderStack()
+    stack._graph_desc = None
+    stack._last_valid_graph_desc = None
+    stack._build_failed = False
+    monkeypatch.setattr(AssetManager, "refresh_pending", staticmethod(lambda: False))
+    monkeypatch.setattr(
+        stack,
+        "build_graph",
+        lambda: (_ for _ in ()).throw(ValueError("invalid initial graph")),
+    )
+
+    class Context:
+        def setup_camera_properties(self, _camera):
+            pass
+
+        def cull(self, _camera):
+            return "culling"
+
+        def submit_culling(self, _culling):
+            raise AssertionError("failed initial graph submitted culling")
+
+    with pytest.raises(RuntimeError, match="could not build") as error:
+        stack.render(Context(), object())
+
+    assert isinstance(error.value.__cause__, ValueError)
+    assert stack._graph_desc is None
+    assert stack._last_valid_graph_desc is None
+    assert stack._build_failed is True
+
+
+def test_graph_publication_failure_restores_only_the_last_valid_graph(monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    stack = RenderStack()
+    previous_graph = object()
+    candidate_graph = object()
+    stack._graph_desc = None
+    stack._last_valid_graph_desc = previous_graph
+    stack._build_failed = False
+    monkeypatch.setattr(AssetManager, "refresh_pending", staticmethod(lambda: False))
+    monkeypatch.setattr(stack, "build_graph", lambda: candidate_graph)
+
+    class Context:
+        def __init__(self):
+            self.applied = []
+            self.submitted = []
+
+        def setup_camera_properties(self, _camera):
+            pass
+
+        def cull(self, _camera):
+            return "culling"
+
+        def apply_graph(self, graph):
+            self.applied.append(graph)
+            if graph is candidate_graph:
+                raise ValueError("candidate rejected")
+
+        def submit_culling(self, culling):
+            self.submitted.append(culling)
+
+    context = Context()
+    stack.render(context, object())
+
+    assert context.applied == [candidate_graph, previous_graph]
+    assert context.submitted == ["culling"]
+    assert stack._graph_desc is previous_graph
+    assert stack._last_valid_graph_desc is previous_graph
+    assert stack._build_failed is True
+
+
+def test_initial_graph_publication_failure_is_not_replaced(monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    stack = RenderStack()
+    candidate_graph = object()
+    stack._graph_desc = None
+    stack._last_valid_graph_desc = None
+    stack._build_failed = False
+    monkeypatch.setattr(AssetManager, "refresh_pending", staticmethod(lambda: False))
+    monkeypatch.setattr(stack, "build_graph", lambda: candidate_graph)
+
+    class Context:
+        def setup_camera_properties(self, _camera):
+            pass
+
+        def cull(self, _camera):
+            return "culling"
+
+        def apply_graph(self, _graph):
+            raise ValueError("candidate rejected")
+
+    with pytest.raises(RuntimeError, match="could not apply") as error:
+        stack.render(Context(), object())
+
+    assert isinstance(error.value.__cause__, ValueError)
+    assert stack._graph_desc is None
+    assert stack._last_valid_graph_desc is None
+    assert stack._build_failed is True
 
 
 def test_initial_graph_build_waits_for_asset_refresh_commit(monkeypatch):

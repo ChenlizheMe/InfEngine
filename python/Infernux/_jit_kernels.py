@@ -49,12 +49,14 @@ _DEBUG = hasattr(_sys, "_INFERNUX_DEBUG")
 
 
 def _log_jit(msg: str) -> None:
-    """Log a JIT diagnostic through the engine Debug system AND stdout.
+    """Log a JIT diagnostic only when the process enables JIT debugging.
 
     In packaged debug builds the boot script redirects stdout to the debug
     log file, so ``print()`` always reaches a log.  We also forward to the
     engine's ``Debug`` system for the in-editor Console panel.
     """
+    if not _DEBUG:
+        return
     print(msg, flush=True)
     try:
         from Infernux.debug import Debug  # late import to avoid circular deps

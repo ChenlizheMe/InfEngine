@@ -5,7 +5,6 @@ from typing import Any
 from .shortcuts import KeyChord, ShortcutBinding
 
 SHORTCUT_PROFILES_SCHEMA: str
-SHORTCUT_PROFILES_VERSION: int
 DEFAULT_PROFILE_ID: str
 DEFAULT_PROFILE_NAME: str
 

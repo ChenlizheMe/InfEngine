@@ -352,8 +352,7 @@ def test_render_effect_debounced_save_uses_document_store_worker(tmp_path):
     finally:
         AssetManager._scheduled_saves.pop(str(path), None)
         AssetManager._render_effect_save_snapshots.pop(str(path), None)
-        AssetManager._pending_document_writes.pop(str(path), None)
-        AssetManager._pending_document_write_callbacks.pop(str(path), None)
+        AssetManager._pending_document_write_records.pop(str(path), None)
         RenderEffect._pending_saves.discard(effect)
 
 
@@ -422,8 +421,7 @@ def test_material_snapshot_save_returns_document_store_ticket(tmp_path):
         ] == pytest.approx(0.4)
     finally:
         AssetManager._material_save_snapshots.pop(normalized, None)
-        AssetManager._pending_document_writes.pop(normalized, None)
-        AssetManager._pending_document_write_callbacks.pop(normalized, None)
+        AssetManager._pending_document_write_records.pop(normalized, None)
 
 
 def test_tonemapping_effect_accepts_integer_enum_source_value(tmp_path):

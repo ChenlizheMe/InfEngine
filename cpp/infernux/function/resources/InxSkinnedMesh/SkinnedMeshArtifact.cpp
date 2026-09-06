@@ -12,10 +12,7 @@ namespace infernux
 {
 namespace
 {
-// V2 stores animation channels by source-skeleton node index.  V1 stored
-// names, which made it too easy for runtime retargeting to inherit string
-// identity accidentally.  Old artifacts are deliberately reimported.
-constexpr std::string_view Magic = "INXSKINAR2";
+constexpr std::string_view Magic = "INXSKINAR";
 constexpr uint32_t EndianMarker = 0x01020304U;
 constexpr uint32_t MaximumVertices = 10'000'000U;
 constexpr uint32_t MaximumIndices = 30'000'000U;

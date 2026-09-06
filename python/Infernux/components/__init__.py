@@ -111,6 +111,12 @@ from .timeline_action import TimelineAction
 from .particle_system import ParticleBoundsMode, ParticleOffscreenPolicy, ParticleSystem
 from .runtime_acceptance_runner import RuntimeAcceptanceRunner
 from ._component_lifecycle import RuntimeExecutionScheduler
+from Infernux.graph.ramp import (
+    AnimationCurve,
+    Gradient,
+    GradientKey,
+    Keyframe,
+)
 
 __all__ = [
     "InxComponent",
@@ -154,6 +160,10 @@ __all__ = [
     "NonSerialized",
     "HDR",
     "Color",
+    "AnimationCurve",
+    "Keyframe",
+    "Gradient",
+    "GradientKey",
     "GameObjectRef",
     "MaterialRef",
     "ComponentRef",

@@ -18,8 +18,6 @@ INFERNUX_REGISTER_VALIDATED_COMPONENT("AudioListener", AudioListener)
 void AudioListener::Awake()
 {
     AudioEngine::Instance().RegisterListener(this);
-    INXLOG_DEBUG("AudioListener registered on GameObject '", GetGameObject() ? GetGameObject()->GetName() : "null",
-                 "'");
 }
 
 void AudioListener::OnEnable()

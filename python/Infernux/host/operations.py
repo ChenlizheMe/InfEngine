@@ -1,4 +1,4 @@
-"""OperationSchema v0 and its transport-neutral execution registry."""
+"""The current OperationSchema and its transport-neutral execution registry."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from typing import Any, Callable, Iterable, Mapping
 
 
 OPERATION_SCHEMA_ID = "infernux.operation"
-OPERATION_SCHEMA_VERSION = 0
 
 
 class OperationKind(str, Enum):
@@ -43,7 +42,6 @@ class OperationError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class OperationSchema:
     id: str
-    version: int
     kind: OperationKind
     summary: str
     input_schema: Mapping[str, object]
@@ -61,8 +59,6 @@ class OperationSchema:
             r"[a-z][a-z0-9_-]*(?:\.[a-z0-9][a-z0-9_-]*)+", self.id
         ):
             raise ValueError("OperationSchema id must be a dotted stable identifier")
-        if self.version != OPERATION_SCHEMA_VERSION:
-            raise ValueError("Unsupported OperationSchema version")
         if self.thread not in {"any", "owner", "mixed"}:
             raise ValueError("OperationSchema thread must be any, owner, or mixed")
         if self.input_schema.get("type") != "object":
@@ -86,6 +82,26 @@ class Operation:
     schema: OperationSchema
     handler: Callable[..., Any]
     owner: str
+
+
+def capability_granted(required: str, granted: Iterable[str]) -> bool:
+    """Return whether one required capability is satisfied by a grant set.
+
+    Grants are matched exactly first; entries containing fnmatch wildcards
+    (for example ``scene.*`` or ``*.read``) are treated as patterns so hosts
+    can express grant families without enumerating every capability.
+    """
+
+    name = str(required)
+    for grant in granted:
+        pattern = str(grant)
+        if pattern == name:
+            return True
+        if any(character in pattern for character in "*?[") and fnmatch.fnmatchcase(
+            name, pattern
+        ):
+            return True
+    return False
 
 
 class OperationRegistry:
@@ -227,13 +243,17 @@ class OperationRegistry:
                 "operation.kind_mismatch",
                 f"{operation_id} is {operation.schema.kind.value}, not {OperationKind(expected_kind).value}",
             )
-        granted = set(str(item) for item in capabilities)
-        missing = [item for item in operation.schema.capabilities if item not in granted and "*" not in granted]
+        granted = tuple(str(item) for item in capabilities)
+        missing = [
+            item
+            for item in operation.schema.capabilities
+            if not capability_granted(item, granted)
+        ]
         if missing:
             raise OperationError(
                 "operation.permission_denied",
                 f"Missing capabilities for {operation_id}: {', '.join(missing)}",
-                details={"required": missing},
+                details={"required": missing, "granted": sorted(set(granted))},
             )
         payload = dict(arguments or {})
         _validate_arguments(payload, operation.schema.input_schema)
@@ -448,11 +468,11 @@ def _validate_arguments(arguments: Mapping[str, object], schema: Mapping[str, ob
 
 __all__ = [
     "OPERATION_SCHEMA_ID",
-    "OPERATION_SCHEMA_VERSION",
     "Operation",
     "OperationError",
     "OperationJobRegistry",
     "OperationKind",
     "OperationRegistry",
     "OperationSchema",
+    "capability_granted",
 ]

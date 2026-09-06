@@ -1,8 +1,4 @@
-"""Convenient top-level runtime API for game scripts.
-
-This module intentionally re-exports the most common scripting symbols so
-user scripts can simply do ``from Infernux import *``.
-"""
+"""Implementation package behind the public ``import infernux as inx`` API."""
 
 import importlib
 
@@ -13,6 +9,7 @@ __version__ = ENGINE_VERSION
 # ── Runtime API (used by game scripts) ─────────────────────────────
 from Infernux.engine import release_engine, run_headless, Engine, LogLevel
 from Infernux.application import Application
+from Infernux.screen import Insets, Rect, Screen
 from Infernux.acceptance import RuntimeAcceptance, RuntimeAcceptanceManifest, RuntimeAcceptanceTest
 from Infernux.math import Vector2, Vector3, vec4f, quatf, vector2, vector3, vector4, quaternion
 from Infernux import components as _components_module
@@ -50,10 +47,11 @@ from Infernux.coroutine import (
 )
 from Infernux.batch import batch_read, batch_write, create_batch_handle
 from Infernux.instantiate import Instantiate, Destroy
+from Infernux.lifecycle import InxPreload, PreloadContext
 
 
 def __getattr__(name: str):
-    """Lazily expose optional JIT helpers without bloating ``from Infernux import *``.
+    """Lazily expose optional JIT helpers without loading them at startup.
 
     This keeps Numba out of ordinary star-import paths while still supporting:
 
@@ -68,14 +66,23 @@ def __getattr__(name: str):
     }:
         jit_module = importlib.import_module("Infernux.jit")
         return getattr(jit_module, name)
-    if name in {"input", "rendergraph", "renderstack", "ui"}:
+    if name in {
+        "components",
+        "input",
+        "lifecycle",
+        "physics",
+        "rendergraph",
+        "renderstack",
+        "resources",
+        "ui",
+    }:
         module = importlib.import_module(f"Infernux.{name}")
         globals()[name] = module
         return module
     raise AttributeError(f"module 'Infernux' has no attribute {name!r}")
 
 
-# ── Public API surface for ``from Infernux import *`` ──────────────
+# ── Public game-scripting API surface ──────────────────────────────
 # Curated list: only symbols commonly needed in game scripts.
 # Internal / advanced helpers stay accessible via their submodules
 # (e.g. ``from Infernux.debug import debug``).
@@ -84,6 +91,9 @@ __all__ = [
     # Engine
     "Engine",
     "Application",
+    "Screen",
+    "Rect",
+    "Insets",
     "RuntimeAcceptance",
     "RuntimeAcceptanceManifest",
     "RuntimeAcceptanceTest",
@@ -122,6 +132,10 @@ __all__ = [
     "InspectorSpace",
     "FieldType",
     "Color",
+    "AnimationCurve",
+    "Keyframe",
+    "Gradient",
+    "GradientKey",
     "GameObjectRef",
     "MaterialRef",
     "ComponentRef",
@@ -149,6 +163,9 @@ __all__ = [
     "SpiritAnimator",
     "SkeletalAnimator",
     "RuntimeAcceptanceRunner",
+    # Explicit early-import lifecycle used by project and plugin scripts
+    "InxPreload",
+    "PreloadContext",
     # Decorators
     "require_component",
     "disallow_multiple",
@@ -185,8 +202,12 @@ __all__ = [
     "Debug",
     # Submodules
     "core",
+    "components",
+    "lifecycle",
+    "physics",
     "rendergraph",
     "renderstack",
+    "resources",
     "scene",
     "input",
     "ui",

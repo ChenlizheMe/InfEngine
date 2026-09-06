@@ -11,7 +11,7 @@ from .registry import (
     PropertyDef,
 )
 from .types import CoordinateSpace, TypeRef, ValueType
-from .ramp import Curve, Gradient
+from .ramp import AnimationCurve, Gradient
 
 
 def _input(
@@ -748,7 +748,7 @@ COMMON_NODE_DEFINITIONS = (
             _input(
                 "curve",
                 TypeRef(ValueType.CURVE),
-                default=Curve().to_dict(),
+                default=AnimationCurve().to_dict(),
             ),
             _input(
                 "t",

@@ -343,7 +343,7 @@
 <p>音频源组件。在场景中播放声音的扬声器。</p>
 <!-- USER CONTENT START -->
 <p>description
-<strong>状态：</strong> Preview · <strong>验证版本：</strong> 0.3.7</p>
+<strong>状态：</strong> Preview · <strong>验证版本：</strong> 0.4.0</p>
 <p>AudioSource 拥有 1–16 个 Track，<code>play_on_awake</code> 只启动 Track 0。瞬时效果使用池化 One-shot，并在播放仍可能引用时保持 AudioClip 已加载。</p>
 <!-- USER CONTENT END -->
 
@@ -514,17 +514,16 @@
 <h2 id="_4">示例<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
 <!-- USER CONTENT START -->
 <p>example
-<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">AudioSource</span><span class="p">,</span> <span class="n">GameObject</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.core.audio_clip</span><span class="w"> </span><span class="kn">import</span> <span class="n">AudioClip</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">audio_object</span> <span class="o">=</span> <span class="n">GameObject</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="s2">"Ambience"</span><span class="p">)</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">clip</span> <span class="o">=</span> <span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/ambience.wav"</span><span class="p">)</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="k">if</span> <span class="n">audio_object</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">clip</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">source</span> <span class="o">=</span> <span class="n">audio_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">AudioSource</span><span class="p">)</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="k">if</span> <span class="n">source</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="n">source</span><span class="o">.</span><span class="n">set_track_clip</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">clip</span><span class="p">)</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        <span class="n">source</span><span class="o">.</span><span class="n">loop</span> <span class="o">=</span> <span class="kc">True</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        <span class="n">source</span><span class="o">.</span><span class="n">play</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">audio_object</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">GameObject</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="s2">"Ambience"</span><span class="p">)</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/ambience.wav"</span><span class="p">)</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">if</span> <span class="n">audio_object</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">clip</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">source</span> <span class="o">=</span> <span class="n">audio_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">AudioSource</span><span class="p">)</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="k">if</span> <span class="n">source</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        <span class="n">source</span><span class="o">.</span><span class="n">set_track_clip</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">clip</span><span class="p">)</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="n">source</span><span class="o">.</span><span class="n">loop</span> <span class="o">=</span> <span class="kc">True</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        <span class="n">source</span><span class="o">.</span><span class="n">play</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
 </code></pre></div></p>
 <!-- USER CONTENT END -->
 

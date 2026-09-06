@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
+from Infernux.core.asset_types import TextureImportSettings, TextureType
 from Infernux.engine.i18n import get_locale, t
 from Infernux.engine.interaction import PanelInteractionDescriptor
 from Infernux.engine.path_utils import resolved_path
@@ -13,12 +14,18 @@ from Infernux.plugins import (
     localized_intro,
     markdown_to_plain_text,
     parse_markdown_blocks,
+    plugin_install_block_reason,
 )
 
 from .asset_resource_preview import render_resource_preview_rect
+from .dpi import scaled_editor_metric
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .theme import ImGuiCol, ImGuiStyleVar, Theme
+
+
+def _metric(ctx, value: float) -> float:
+    return scaled_editor_metric(ctx, value)
 
 
 @editor_panel(
@@ -38,15 +45,39 @@ class PluginPanel(EditorPanel):
         self._pip = ""
         self._message = ""
         self._selected_reference = ""
+        self._detail_reference = ""
+        self._document_texture_settings = TextureImportSettings(texture_type=TextureType.UI)
         self._scope_index = 0
         self._sort_index = 2
+        from .plugin_versions import PluginVersionsView
+
+        self._versions = PluginVersionsView()
 
     def _initial_size(self) -> tuple[float, float]:
         return 1180.0, 740.0
 
+    def select_reference(self, reference: str) -> bool:
+        """Reveal one package after navigation from another editor surface."""
+
+        value = str(reference or "").strip()
+        if not value:
+            return False
+        self._scope_index = 0
+        self._search = ""
+        self._selected_reference = value
+        return True
+
     def _push_window_style(self, ctx) -> None:
-        ctx.push_style_var_vec2(ImGuiStyleVar.WindowPadding, *Theme.PROJECT_PANEL_PAD)
-        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.TOOLBAR_ITEM_SPC)
+        ctx.push_style_var_vec2(
+            ImGuiStyleVar.WindowPadding,
+            _metric(ctx, Theme.PROJECT_PANEL_PAD[0]),
+            _metric(ctx, Theme.PROJECT_PANEL_PAD[1]),
+        )
+        ctx.push_style_var_vec2(
+            ImGuiStyleVar.ItemSpacing,
+            _metric(ctx, Theme.TOOLBAR_ITEM_SPC[0]),
+            _metric(ctx, Theme.TOOLBAR_ITEM_SPC[1]),
+        )
 
     def _pop_window_style(self, ctx) -> None:
         ctx.pop_style_var(2)
@@ -75,14 +106,14 @@ class PluginPanel(EditorPanel):
             )
             self._selected_reference = str(preferred.get("reference", "")) if preferred else ""
 
-        ctx.dummy(0.0, Theme.INSPECTOR_SECTION_GAP)
+        ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_SECTION_GAP))
         ctx.separator()
-        ctx.dummy(0.0, Theme.INSPECTOR_SECTION_GAP)
-        available_w = max(520.0, ctx.get_content_region_avail_width())
-        available_h = max(260.0, ctx.get_content_region_avail_height())
-        column_gap = Theme.INSPECTOR_TITLE_GAP
-        left_w = min(360.0, max(260.0, available_w * 0.31))
-        right_w = max(240.0, available_w - left_w - column_gap)
+        ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_SECTION_GAP))
+        available_w = max(_metric(ctx, 520.0), ctx.get_content_region_avail_width())
+        available_h = max(_metric(ctx, 260.0), ctx.get_content_region_avail_height())
+        column_gap = _metric(ctx, Theme.INSPECTOR_TITLE_GAP)
+        left_w = min(_metric(ctx, 360.0), max(_metric(ctx, 260.0), available_w * 0.31))
+        right_w = max(_metric(ctx, 240.0), available_w - left_w - column_gap)
 
         if ctx.begin_child("##plugins_package_list", left_w, available_h, True, Theme.WINDOW_FLAGS_NO_SCROLL):
             self._render_package_list(ctx, manager, rows)
@@ -100,15 +131,16 @@ class PluginPanel(EditorPanel):
         ctx.end_child()
 
     def _render_toolbar(self, ctx, manager: PluginManager) -> None:
-        if ctx.button(t("plugins.add") + "##plugins_add", width=112.0):
+        if ctx.button(t("plugins.add") + "##plugins_add", width=_metric(ctx, 112.0)):
             ctx.open_popup("##plugins_add_popup")
         ctx.same_line()
         scopes = [
             t("plugins.scope.all"),
             t("plugins.scope.project"),
             t("plugins.scope.registry"),
+            t("plugins.scope.downloaded"),
         ]
-        ctx.set_next_item_width(160.0)
+        ctx.set_next_item_width(_metric(ctx, 160.0))
         self._scope_index = ctx.combo("##plugins_scope", self._scope_index, scopes)
         ctx.same_line()
         sorts = [
@@ -116,9 +148,12 @@ class PluginPanel(EditorPanel):
             t("plugins.sort.name_desc"),
             t("plugins.sort.status"),
         ]
-        ctx.set_next_item_width(152.0)
+        ctx.set_next_item_width(_metric(ctx, 152.0))
         self._sort_index = ctx.combo("##plugins_sort", self._sort_index, sorts)
-        ctx.dummy(0.0, Theme.INSPECTOR_SECTION_GAP)
+        ctx.same_line()
+        if ctx.button(t("plugins.refresh_catalog") + "##plugins_refresh_catalog"):
+            self._refresh_catalog(manager)
+        ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_SECTION_GAP))
         ctx.set_next_item_width(-1.0)
         self._search = ctx.input_text_with_hint(
             "##plugin_search",
@@ -127,7 +162,7 @@ class PluginPanel(EditorPanel):
             512,
         )
         if manager.official_catalog_error:
-            ctx.dummy(0.0, Theme.INSPECTOR_SECTION_GAP)
+            ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_SECTION_GAP))
             ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
             ctx.text_wrapped(t("plugins.official_unavailable"))
             ctx.pop_style_color()
@@ -138,27 +173,33 @@ class PluginPanel(EditorPanel):
             return
         ctx.label(t("plugins.add_source_title"))
         ctx.text_wrapped(t("plugins.add_source_help"))
-        ctx.set_next_item_width(430.0)
+        ctx.set_next_item_width(_metric(ctx, 430.0))
         self._source = ctx.input_text_with_hint(
             "##plugin_source",
             t("plugins.source"),
             self._source,
             2048,
         )
-        if ctx.button(t("plugins.install_source") + "##plugin_install_source", width=150.0):
+        if ctx.button(
+            t("plugins.install_source") + "##plugin_install_source",
+            width=_metric(ctx, 150.0),
+        ):
             self._request_install(manager, "source", self._source)
             ctx.close_current_popup()
         ctx.separator()
         ctx.label(t("plugins.python_dependencies"))
         ctx.text_wrapped(t("plugins.pip_not_plugin"))
-        ctx.set_next_item_width(430.0)
+        ctx.set_next_item_width(_metric(ctx, 430.0))
         self._pip = ctx.input_text_with_hint(
             "##plugin_pip",
             t("plugins.pip_syntax"),
             self._pip,
             4096,
         )
-        if ctx.button(t("plugins.run_pip") + "##plugin_run_pip", width=150.0):
+        if ctx.button(
+            t("plugins.run_pip") + "##plugin_run_pip",
+            width=_metric(ctx, 150.0),
+        ):
             self._request_install(manager, "pip", self._pip)
             ctx.close_current_popup()
         if self._message:
@@ -177,7 +218,19 @@ class PluginPanel(EditorPanel):
             row = dict(value)
             key = str(row.get("reference", "")).casefold()
             row["_registry"] = True
+            source = row.get("source", {})
+            row["_official"] = bool(
+                isinstance(source, Mapping) and source.get("official", False)
+            )
+            row["_cached"] = bool(
+                manager.cached_reference_path(str(row.get("reference", "")))
+            )
             row["_installed"] = key in installed
+            row["_install_block_reason"] = (
+                ""
+                if row["_installed"]
+                else plugin_install_block_reason(str(row.get("reference", "")))
+            )
             if key in installed:
                 installed_version = str(installed[key].get("version", "")).strip()
                 merged = dict(row)
@@ -185,6 +238,9 @@ class PluginPanel(EditorPanel):
                 merged["_registry"] = True
                 merged["_installed"] = True
                 merged["_installed_version"] = installed_version
+                merged["_official"] = row["_official"]
+                merged["_cached"] = row["_cached"]
+                merged["_install_block_reason"] = ""
                 row = merged
             rows.append(row)
             known.add(key)
@@ -193,6 +249,9 @@ class PluginPanel(EditorPanel):
                 continue
             value["_registry"] = False
             value["_installed"] = True
+            value["_official"] = False
+            value["_cached"] = False
+            value["_install_block_reason"] = ""
             value["_installed_version"] = str(value.get("version", "")).strip()
             rows.append(value)
 
@@ -202,6 +261,8 @@ class PluginPanel(EditorPanel):
             if self._scope_index == 1 and not row.get("_installed"):
                 continue
             if self._scope_index == 2 and not row.get("_registry"):
+                continue
+            if self._scope_index == 3 and not row.get("_cached"):
                 continue
             localized_intros = row.get("intros", {})
             intro_values = (
@@ -240,46 +301,64 @@ class PluginPanel(EditorPanel):
         ctx.label(t("plugins.packages_count").format(count=len(rows)))
         ctx.pop_style_color()
         ctx.separator()
-        ctx.dummy(0.0, Theme.INSPECTOR_SECTION_GAP)
-        footer_h = 42.0
-        section_gap = Theme.INSPECTOR_SECTION_GAP
+        ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_SECTION_GAP))
+        footer_h = _metric(ctx, 42.0)
+        section_gap = _metric(ctx, Theme.INSPECTOR_SECTION_GAP)
         body_y = ctx.get_cursor_pos_y()
         body_h = ctx.get_content_region_avail_height()
         footer_y = body_y + max(0.0, body_h - footer_h)
-        rows_h = max(40.0, body_h - footer_h - section_gap)
+        rows_h = max(_metric(ctx, 40.0), body_h - footer_h - section_gap)
         ctx.push_style_var_vec2(
             ImGuiStyleVar.WindowPadding,
-            Theme.INSPECTOR_LIST_BODY_PAD_X,
-            Theme.INSPECTOR_LIST_BODY_PAD_Y,
+            _metric(ctx, Theme.INSPECTOR_LIST_BODY_PAD_X),
+            _metric(ctx, Theme.INSPECTOR_LIST_BODY_PAD_Y),
         )
         rows_visible = ctx.begin_child("##plugin_rows", 0.0, rows_h, False)
         if rows_visible:
             if not rows:
                 ctx.text_wrapped(t("plugins.empty"))
             else:
-                ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.TREE_ITEM_SPC)
+                ctx.push_style_var_vec2(
+                    ImGuiStyleVar.ItemSpacing,
+                    _metric(ctx, Theme.TREE_ITEM_SPC[0]),
+                    _metric(ctx, Theme.TREE_ITEM_SPC[1]),
+                )
                 for row in rows:
                     reference = str(row.get("reference", ""))
                     key = reference.casefold()
                     state = manager.states.get(key)
                     status, status_color = self._state_visual(state, row)
                     name = str(row.get("name") or reference)
+                    if row.get("_official"):
+                        name = f"{name}  [{t('plugins.official')}]"
                     selected = key == self._selected_reference.casefold()
-                    if ctx.selectable(f"##plugin_row_{key}", selected, 0, 0.0, 26.0):
+                    if ctx.selectable(
+                        f"##plugin_row_{key}", selected, 0, 0.0, _metric(ctx, 26.0)
+                    ):
                         self._selected_reference = reference
                     x0 = ctx.get_item_rect_min_x()
                     y0 = ctx.get_item_rect_min_y()
                     x1 = ctx.get_item_rect_max_x()
                     y1 = ctx.get_item_rect_max_y()
                     status_w = ctx.calc_text_width(status)
-                    name_right = max(x0 + 48.0, x1 - status_w - Theme.INSPECTOR_TITLE_GAP - 10.0)
-                    display_name = self._fit_text(ctx, name, max(24.0, name_right - x0 - 10.0))
+                    name_right = max(
+                        x0 + _metric(ctx, 48.0),
+                        x1
+                        - status_w
+                        - _metric(ctx, Theme.INSPECTOR_TITLE_GAP)
+                        - _metric(ctx, 10.0),
+                    )
+                    display_name = self._fit_text(
+                        ctx,
+                        name,
+                        max(_metric(ctx, 24.0), name_right - x0 - _metric(ctx, 10.0)),
+                    )
                     ctx.draw_text_aligned(
-                        x0 + 8.0, y0, name_right, y1,
+                        x0 + _metric(ctx, 8.0), y0, name_right, y1,
                         display_name, *Theme.TEXT, 0.0, 0.5, 0.0, True,
                     )
                     ctx.draw_text_aligned(
-                        name_right, y0, x1 - 8.0, y1,
+                        name_right, y0, x1 - _metric(ctx, 8.0), y1,
                         status, *status_color, 1.0, 0.5, 0.0, True,
                     )
                 ctx.pop_style_var(1)
@@ -290,14 +369,16 @@ class PluginPanel(EditorPanel):
         ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)
         footer_visible = ctx.begin_child("##plugin_list_footer", 0.0, footer_h, True)
         if footer_visible:
-            if ctx.button(t("plugins.refresh") + "##plugin_refresh", width=80.0):
+            if ctx.button(
+                t("plugins.refresh") + "##plugin_refresh", width=_metric(ctx, 80.0)
+            ):
                 references = tuple(
                     str(item.get("reference", ""))
                     for item in manager.registry.installed()
                     if item.get("enabled", True)
                 )
                 self._begin_reload(manager, references)
-            ctx.same_line(0.0, Theme.INSPECTOR_TITLE_GAP)
+            ctx.same_line(0.0, _metric(ctx, Theme.INSPECTOR_TITLE_GAP))
             ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
             ctx.label(
                 t("plugins.stats").format(
@@ -326,14 +407,14 @@ class PluginPanel(EditorPanel):
         version = str(row.get("_installed_version") or row.get("version", ""))
         status, status_color = self._state_visual(state, row)
 
-        summary_h = 72.0
-        footer_h = 46.0
-        section_gap = Theme.INSPECTOR_SECTION_GAP
+        summary_h = _metric(ctx, 72.0)
+        footer_h = _metric(ctx, 46.0)
+        section_gap = _metric(ctx, Theme.INSPECTOR_SECTION_GAP)
         details_y = ctx.get_cursor_pos_y()
         details_h = ctx.get_content_region_avail_height()
         content_y = details_y + summary_h + section_gap
         footer_y = details_y + max(0.0, details_h - footer_h)
-        content_h = max(40.0, footer_y - section_gap - content_y)
+        content_h = max(_metric(ctx, 40.0), footer_y - section_gap - content_y)
         self._render_detail_summary(ctx, name, reference, version, status, status_color, summary_h)
 
         ctx.set_cursor_pos_y(content_y)
@@ -356,7 +437,9 @@ class PluginPanel(EditorPanel):
         if visible:
             start_x = ctx.get_cursor_pos_x()
             width = ctx.get_content_region_avail_width()
-            status_x = start_x + max(80.0, width - ctx.calc_text_width(status))
+            status_x = start_x + max(
+                _metric(ctx, 80.0), width - ctx.calc_text_width(status)
+            )
             ctx.label(name)
             ctx.same_line(status_x)
             ctx.push_style_color(ImGuiCol.Text, *status_color)
@@ -364,7 +447,7 @@ class PluginPanel(EditorPanel):
             ctx.pop_style_color()
             ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
             ctx.label(reference)
-            ctx.same_line(0.0, Theme.INSPECTOR_TITLE_GAP)
+            ctx.same_line(0.0, _metric(ctx, Theme.INSPECTOR_TITLE_GAP))
             ctx.label(version or "-")
             ctx.pop_style_color()
         ctx.end_child()
@@ -372,36 +455,42 @@ class PluginPanel(EditorPanel):
 
     def _render_detail_pages(self, ctx, manager, row, state) -> None:
         pages = manager.content_pages(row)
+        reference = str(row.get("reference", "")).casefold()
+        select_first = reference != self._detail_reference
         if ctx.begin_tab_bar("##plugins_details_tabs"):
+            self._detail_reference = reference
             if pages:
-                for page in pages:
+                for index, page in enumerate(pages):
                     page_id = str(page.get("id", "page"))
                     title = self._page_title(page_id, str(page.get("title", page_id)))
-                    if ctx.begin_tab_item(f"{title}##plugin_page_{page_id}"):
+                    if ctx.begin_tab_item(f"{title}##plugin_page_{page_id}", selected=select_first and index == 0):
                         content = str(page.get("content", ""))
                         if str(page.get("format", "text")) == "markdown":
                             self._render_markdown_page(ctx, manager, row, page, content)
                         else:
                             ctx.text_wrapped(content or t("plugins.page_empty"))
                         if page_id == "intro":
-                            ctx.dummy(0.0, Theme.INSPECTOR_TITLE_GAP)
+                            ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_TITLE_GAP))
                             self._render_metadata(ctx, row)
                             self._render_diagnostics(ctx, row, state)
                         ctx.end_tab_item()
             else:
-                if ctx.begin_tab_item(t("plugins.tab.description")):
+                if ctx.begin_tab_item(t("plugins.tab.description"), selected=select_first):
                     ctx.text_wrapped(t("plugins.no_description"))
-                    ctx.dummy(0.0, Theme.INSPECTOR_TITLE_GAP)
+                    ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_TITLE_GAP))
                     self._render_metadata(ctx, row)
                     self._render_diagnostics(ctx, row, state)
                     ctx.end_tab_item()
+            if row.get("_installed") and ctx.begin_tab_item(t("plugins.versions.tab")):
+                self._versions.render(ctx, manager, row)
+                ctx.end_tab_item()
             ctx.end_tab_bar()
 
     def _render_markdown_page(self, ctx, manager, row, page, content: str) -> None:
         rendered = False
         for index, block in enumerate(parse_markdown_blocks(content)):
             if rendered:
-                ctx.dummy(0.0, Theme.INSPECTOR_SECTION_GAP)
+                ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_SECTION_GAP))
             kind = str(block.get("kind", "paragraph"))
             text = markdown_to_plain_text(str(block.get("content", "")))
             if kind == "heading":
@@ -425,8 +514,18 @@ class PluginPanel(EditorPanel):
                 ctx.pop_style_color()
             elif kind == "code":
                 lines = str(block.get("content", "")).count("\n") + 1
-                language_h = 22.0 if str(block.get("language", "")).strip() else 0.0
-                height = max(42.0, min(280.0, 30.0 + language_h + lines * 18.0))
+                language_h = (
+                    _metric(ctx, 22.0)
+                    if str(block.get("language", "")).strip()
+                    else 0.0
+                )
+                height = max(
+                    _metric(ctx, 42.0),
+                    min(
+                        _metric(ctx, 280.0),
+                        _metric(ctx, 30.0) + language_h + lines * _metric(ctx, 18.0),
+                    ),
+                )
                 ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)
                 visible = ctx.begin_child(
                     f"##plugin_markdown_code_{index}",
@@ -455,14 +554,18 @@ class PluginPanel(EditorPanel):
     def _render_markdown_image(self, ctx, manager, row, page, block) -> None:
         source = str(block.get("source", ""))
         image_path = manager.content_asset_path(row, page, source)
-        width = min(720.0, max(1.0, ctx.get_content_region_avail_width()))
+        width = min(
+            _metric(ctx, 720.0),
+            max(_metric(ctx, 1.0), ctx.get_content_region_avail_width()),
+        )
         shown = bool(image_path) and render_resource_preview_rect(
             ctx,
             self,
             image_path,
             width,
-            min(360.0, width),
+            min(_metric(ctx, 360.0), width),
             preserve_aspect=True,
+            texture_settings=self._document_texture_settings,
         )
         if not shown:
             label = str(block.get("alt", "")).strip() or source
@@ -491,6 +594,12 @@ class PluginPanel(EditorPanel):
             ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
             ctx.text_wrapped(state.error)
             ctx.pop_style_color()
+        install_block = str(row.get("_install_block_reason", "")).strip()
+        if install_block:
+            ctx.separator()
+            ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
+            ctx.text_wrapped(t(install_block))
+            ctx.pop_style_color()
 
     def _render_detail_footer(self, ctx, manager, row, reference, key, installed, height) -> None:
         source = self._source_text(row)
@@ -498,7 +607,7 @@ class PluginPanel(EditorPanel):
         ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)
         visible = ctx.begin_child("##plugin_detail_footer", 0.0, height, True)
         if visible:
-            button_w = 104.0
+            button_w = _metric(ctx, 104.0)
             footer_start_x = ctx.get_cursor_pos_x()
             footer_w = ctx.get_content_region_avail_width()
             if ctx.button(t("plugins.copy_reference") + "##plugin_copy_reference", width=button_w):
@@ -511,10 +620,13 @@ class PluginPanel(EditorPanel):
                 if ctx.button(t("plugins.open_location") + "##plugin_open_location", width=button_w):
                     self._open_plugin_location(location)
 
-            action_count = 3 if installed else 1
+            cached = bool(row.get("_cached"))
+            action_count = 3 if installed else (2 if cached else 1)
             action_x = footer_start_x + max(
                 0.0,
-                footer_w - action_count * button_w - (action_count - 1) * Theme.INSPECTOR_TITLE_GAP,
+                footer_w
+                - action_count * button_w
+                - (action_count - 1) * _metric(ctx, Theme.INSPECTOR_TITLE_GAP),
             )
             ctx.same_line(action_x)
             if installed:
@@ -522,27 +634,70 @@ class PluginPanel(EditorPanel):
                 toggle_label = t("plugins.disable") if enabled else t("plugins.enable")
                 if ctx.button(toggle_label + f"##plugin_toggle_{key}", width=button_w):
                     self._run(lambda ref=reference, value=not enabled: manager.set_enabled(ref, value), "toggle")
-                ctx.same_line(0.0, Theme.INSPECTOR_TITLE_GAP)
+                ctx.same_line(0.0, _metric(ctx, Theme.INSPECTOR_TITLE_GAP))
                 if ctx.button(t("plugins.uninstall") + f"##plugin_uninstall_{key}", width=button_w):
                     self._run(lambda ref=reference: manager.uninstall(ref), "uninstall")
-                ctx.same_line(0.0, Theme.INSPECTOR_TITLE_GAP)
+                ctx.same_line(0.0, _metric(ctx, Theme.INSPECTOR_TITLE_GAP))
                 if self._primary_button(ctx, t("plugins.reload") + f"##plugin_reload_{key}"):
                     self._begin_reload(manager, (reference,))
             else:
                 blocked = bool(str(row.get("diagnostic", "")).strip())
-                if blocked:
-                    ctx.begin_disabled(True)
-                if self._primary_button(ctx, t("plugins.install") + f"##plugin_install_{key}"):
-                    self._begin_install(
-                        label=reference,
-                        work=lambda report, ref=reference: manager.install_reference(
-                            ref,
-                            progress=report,
-                        ),
-                        action="install",
-                    )
-                if blocked:
-                    ctx.end_disabled()
+                install_blocked = bool(
+                    str(row.get("_install_block_reason", "")).strip()
+                )
+                if cached:
+                    if blocked:
+                        ctx.begin_disabled(True)
+                    if ctx.button(
+                        t("plugins.redownload") + f"##plugin_redownload_{key}",
+                        width=button_w,
+                    ):
+                        self._begin_install(
+                            manager,
+                            label=reference,
+                            work=lambda report, ref=reference: manager.download_reference(
+                                ref,
+                                force=True,
+                                progress=report,
+                            ),
+                            action="download",
+                        )
+                    if blocked:
+                        ctx.end_disabled()
+                    ctx.same_line(0.0, _metric(ctx, Theme.INSPECTOR_TITLE_GAP))
+                    if blocked or install_blocked:
+                        ctx.begin_disabled(True)
+                    if self._primary_button(
+                        ctx, t("plugins.import") + f"##plugin_import_{key}"
+                    ):
+                        self._begin_install(
+                            manager,
+                            label=reference,
+                            work=lambda report, ref=reference: manager.install_reference(
+                                ref,
+                                progress=report,
+                            ),
+                            action="install",
+                        )
+                    if blocked or install_blocked:
+                        ctx.end_disabled()
+                else:
+                    if blocked:
+                        ctx.begin_disabled(True)
+                    if self._primary_button(
+                        ctx, t("plugins.download") + f"##plugin_download_{key}"
+                    ):
+                        self._begin_install(
+                            manager,
+                            label=reference,
+                            work=lambda report, ref=reference: manager.download_reference(
+                                ref,
+                                progress=report,
+                            ),
+                            action="download",
+                        )
+                    if blocked:
+                        ctx.end_disabled()
         ctx.end_child()
         ctx.pop_style_color()
 
@@ -562,10 +717,18 @@ class PluginPanel(EditorPanel):
         source = self._source_text(row)
         root_value = f"Packages/{reference}" if reference else "-"
         label_x = ctx.get_cursor_pos_x()
-        value_x = label_x + 112.0
-        value_w = max(120.0, ctx.get_content_region_avail_width() - 112.0)
+        value_x = label_x + _metric(ctx, 112.0)
+        value_w = max(
+            _metric(ctx, 120.0),
+            ctx.get_content_region_avail_width() - _metric(ctx, 112.0),
+        )
         for label, value in (
             (t("plugins.detail.reference"), reference),
+            (t("plugins.detail.category"), str(row.get("category", "Other"))),
+            (
+                t("plugins.detail.targets"),
+                ", ".join(str(value) for value in row.get("targets", [])) or "-",
+            ),
             (t("plugins.detail.source"), source),
             (t("plugins.detail.root"), root_value),
         ):
@@ -603,7 +766,7 @@ class PluginPanel(EditorPanel):
         ctx.push_style_color(ImGuiCol.Button, *Theme.APPLY_BUTTON)
         ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.PREFAB_BTN_HOVERED)
         ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.PREFAB_BTN_ACTIVE)
-        clicked = bool(ctx.button(label, width=104.0))
+        clicked = bool(ctx.button(label, width=_metric(ctx, 104.0)))
         ctx.pop_style_color(3)
         return clicked
 
@@ -629,7 +792,9 @@ class PluginPanel(EditorPanel):
             t("plugins.loaded"): 1,
             t("plugins.disabled"): 2,
             t("plugins.installed"): 3,
-            t("plugins.available"): 4,
+            t("plugins.downloaded"): 4,
+            t("plugins.available"): 5,
+            t("plugins.downloadable"): 6,
         }.get(label, 6)
 
     @staticmethod
@@ -642,7 +807,30 @@ class PluginPanel(EditorPanel):
             return t("plugins.loaded"), Theme.SUCCESS_TEXT
         if row.get("_installed"):
             return t("plugins.installed"), Theme.SUCCESS_TEXT
-        return t("plugins.available"), Theme.TEXT_DIM
+        if row.get("_cached"):
+            return t("plugins.downloaded"), Theme.SUCCESS_TEXT
+        source = row.get("source")
+        if isinstance(source, Mapping) and str(source.get("type", "")).casefold() == "local":
+            return t("plugins.available"), Theme.SUCCESS_TEXT
+        return t("plugins.downloadable"), Theme.TEXT_DIM
+
+    def _refresh_catalog(self, manager: PluginManager) -> None:
+        from Infernux.plugins.official import refresh_official_registry
+        from .plugin_install_progress import PluginInstallProgressService
+
+        def complete(ok, result, message):
+            if ok:
+                manager.official_catalog_error = ""
+                self._message = t("plugins.catalog_refreshed")
+            else:
+                self._message = message
+
+        if not PluginInstallProgressService.instance().begin(
+            label=t("plugins.refresh_catalog"),
+            work=lambda report: refresh_official_registry(manager.project_root),
+            complete=complete,
+        ):
+            self._message = t("plugins.install_progress.busy")
 
     def _begin_reload(self, manager: PluginManager, references: tuple[str, ...]) -> None:
         if not references:
@@ -673,6 +861,7 @@ class PluginPanel(EditorPanel):
             kind,
             syntax,
             lambda: self._begin_install(
+                manager,
                 label=syntax,
                 work=(
                     (lambda report: manager.install_source(syntax, progress=report))
@@ -685,7 +874,7 @@ class PluginPanel(EditorPanel):
         if not requested:
             self._message = t("plugins.install_progress.busy")
 
-    def _begin_install(self, *, label: str, work, action: str) -> None:
+    def _begin_install(self, manager: PluginManager, *, label: str, work, action: str) -> None:
         from .plugin_install_progress import PluginInstallProgressService
 
         def complete(ok: bool, result: object | None, message: str) -> None:
@@ -694,6 +883,11 @@ class PluginPanel(EditorPanel):
                 return
             reference = str(getattr(result, "reference", ""))
             if reference:
+                try:
+                    result = manager.finalize_background_install(reference)
+                except Exception as exc:
+                    self._message = f"{type(exc).__name__}: {exc}"
+                    return
                 self._selected_reference = reference
             self._message = t("plugins.action_ok").format(
                 action=action,
@@ -735,14 +929,23 @@ class InxPackageImportPanel(EditorPanel):
         self.package_path = ""
         self._preview = None
         self._selected: dict[str, bool] = {}
+        self._install_block_reason = ""
         self._message = ""
 
     def _initial_size(self) -> tuple[float, float]:
         return 760.0, 560.0
 
     def _push_window_style(self, ctx) -> None:
-        ctx.push_style_var_vec2(ImGuiStyleVar.WindowPadding, *Theme.PROJECT_PANEL_PAD)
-        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.TOOLBAR_ITEM_SPC)
+        ctx.push_style_var_vec2(
+            ImGuiStyleVar.WindowPadding,
+            _metric(ctx, Theme.PROJECT_PANEL_PAD[0]),
+            _metric(ctx, Theme.PROJECT_PANEL_PAD[1]),
+        )
+        ctx.push_style_var_vec2(
+            ImGuiStyleVar.ItemSpacing,
+            _metric(ctx, Theme.TOOLBAR_ITEM_SPC[0]),
+            _metric(ctx, Theme.TOOLBAR_ITEM_SPC[1]),
+        )
 
     def _pop_window_style(self, ctx) -> None:
         ctx.pop_style_var(2)
@@ -751,7 +954,12 @@ class InxPackageImportPanel(EditorPanel):
         self.package_path = resolved_path(package_path)
         self._preview = InxPackage.inspect(self.package_path)
         self._selected = {path: True for path in self._preview.project_entries}
-        self._message = ""
+        self._install_block_reason = plugin_install_block_reason(
+            str(self._preview.metadata.get("reference", ""))
+        )
+        self._message = (
+            t(self._install_block_reason) if self._install_block_reason else ""
+        )
 
     def _begin_import(self) -> bool:
         manager = PluginManager.instance()
@@ -804,14 +1012,14 @@ class InxPackageImportPanel(EditorPanel):
             ctx.text_wrapped(t("inxpackage.no_package"))
             return
         metadata = self._preview.metadata
-        summary_h = 112.0
-        footer_h = 46.0
-        gap = Theme.INSPECTOR_SECTION_GAP
+        summary_h = _metric(ctx, 112.0)
+        footer_h = _metric(ctx, 46.0)
+        gap = _metric(ctx, Theme.INSPECTOR_SECTION_GAP)
         start_y = ctx.get_cursor_pos_y()
         available_h = ctx.get_content_region_avail_height()
         content_y = start_y + summary_h + gap
         footer_y = start_y + max(0.0, available_h - footer_h)
-        content_h = max(48.0, footer_y - gap - content_y)
+        content_h = max(_metric(ctx, 48.0), footer_y - gap - content_y)
 
         ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)
         summary_visible = ctx.begin_child(
@@ -822,7 +1030,7 @@ class InxPackageImportPanel(EditorPanel):
             version = str(metadata.get("version", ""))
             ctx.label(name)
             if version:
-                ctx.same_line(0.0, Theme.INSPECTOR_TITLE_GAP)
+                ctx.same_line(0.0, _metric(ctx, Theme.INSPECTOR_TITLE_GAP))
                 ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
                 ctx.label(version)
                 ctx.pop_style_color()
@@ -863,15 +1071,23 @@ class InxPackageImportPanel(EditorPanel):
             "##inxpackage_footer", 0.0, footer_h, True, Theme.WINDOW_FLAGS_NO_SCROLL
         )
         if footer_visible:
-            if ctx.button(t("inxpackage.select_all") + "##inxpackage_all", width=96.0):
+            if ctx.button(
+                t("inxpackage.select_all") + "##inxpackage_all",
+                width=_metric(ctx, 96.0),
+            ):
                 self._selected = {path: True for path in self._selected}
             ctx.same_line()
-            if ctx.button(t("inxpackage.select_none") + "##inxpackage_none", width=96.0):
+            if ctx.button(
+                t("inxpackage.select_none") + "##inxpackage_none",
+                width=_metric(ctx, 96.0),
+            ):
                 self._selected = {path: False for path in self._selected}
-            button_w = 104.0
+            button_w = _metric(ctx, 104.0)
             action_x = ctx.get_cursor_pos_x() + max(0.0, ctx.get_content_region_avail_width() - button_w)
             ctx.same_line(action_x)
-            ctx.begin_disabled(not any(self._selected.values()))
+            ctx.begin_disabled(
+                not any(self._selected.values()) or bool(self._install_block_reason)
+            )
             if self._primary_button(ctx, t("inxpackage.import") + "##inxpackage_import"):
                 self._begin_import()
             ctx.end_disabled()
@@ -883,7 +1099,7 @@ class InxPackageImportPanel(EditorPanel):
         ctx.push_style_color(ImGuiCol.Button, *Theme.APPLY_BUTTON)
         ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.PREFAB_BTN_HOVERED)
         ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.PREFAB_BTN_ACTIVE)
-        clicked = bool(ctx.button(label, width=104.0))
+        clicked = bool(ctx.button(label, width=_metric(ctx, 104.0)))
         ctx.pop_style_color(3)
         return clicked
 

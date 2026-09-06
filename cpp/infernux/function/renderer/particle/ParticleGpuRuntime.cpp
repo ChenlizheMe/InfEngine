@@ -235,7 +235,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused && !fusedUpdateRendering)
             continue;
         const auto &kernel = desc.kernels[index];
-        if (!kernel.words || kernel.wordCount == 0)
+        if (!kernel.IsValid())
             return false;
     }
     m_device = &device;
@@ -369,7 +369,12 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     graphSpawnLayoutDesc.entries[2] = {2, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     graphSpawnLayoutDesc.entries[3] = {3, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     graphSpawnLayoutDesc.entries[4] = {4, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+#if !defined(INFERNUX_WEBGPU_RUNTIME)
+    graphSpawnLayoutDesc.entries[5] = {5, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    graphSpawnLayoutDesc.entryCount = 6;
+#else
     graphSpawnLayoutDesc.entryCount = 5;
+#endif
     m_graphSpawnLayout = device.CreateBindingLayout(graphSpawnLayoutDesc);
     if (!m_graphSpawnLayout.IsValid()) {
         Destroy();
@@ -674,7 +679,10 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused &&
             !m_supportsFusedUpdateRendering)
             continue;
-        const auto shader = device.CreateShaderModule({desc.kernels[index].words, desc.kernels[index].wordCount});
+        const auto &kernel = desc.kernels[index];
+        const auto shader = device.CreateShaderModule(
+            kernel.IsWgsl() ? rhi::ShaderModuleDesc::FromWgsl(kernel.wgsl, kernel.wgslByteSize)
+                            : rhi::ShaderModuleDesc::FromSpirV(kernel.words, kernel.wordCount));
         if (!shader.IsValid()) {
             Destroy();
             return false;
@@ -685,11 +693,18 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         pipelineDesc.bindingLayouts[1] = m_dataInterfaces ? m_dataInterfaces->layout : m_emptyDataInterfaceLayout;
         pipelineDesc.bindingLayouts[2] = m_vectorFields ? m_vectorFields->layout : m_emptyDataInterfaceLayout;
         pipelineDesc.bindingLayouts[3] = m_graphSpawnLayout;
+#if defined(INFERNUX_WEBGPU_RUNTIME)
+        // The portable Web subset rejects contacts, continuations, and data
+        // interfaces before runtime creation. WebGPU guarantees four bind
+        // groups, so do not publish unused Vulkan-only sets 4 through 7.
+        pipelineDesc.bindingLayoutCount = 4;
+#else
         pipelineDesc.bindingLayouts[4] = m_emptyDataInterfaceLayout;
         pipelineDesc.bindingLayouts[5] = m_continuation ? m_continuation->Layout() : m_emptyDataInterfaceLayout;
         pipelineDesc.bindingLayouts[6] = m_collisionEnabled ? m_collisionSceneLayout : m_emptyDataInterfaceLayout;
         pipelineDesc.bindingLayouts[7] = m_contacts ? m_contacts->Layout() : m_emptyDataInterfaceLayout;
         pipelineDesc.bindingLayoutCount = 8;
+#endif
         pipelineDesc.pushConstantBytes = sizeof(GpuParticlePushConstants);
         m_pipelines[index] = device.CreateComputePipeline(pipelineDesc);
         device.Release(shader);
@@ -1102,13 +1117,19 @@ void ParticleGpuRuntime::RecordInitIndirect(const rhi::ComputeCommandEncoder &en
     constants.systemSeed = systemSeed;
     constants.simulationStep = simulationStep;
     constants.deltaTime = deltaTime;
+    // Portable hosts may already have an authoritative CPU spawn schedule but
+    // no GPU SpawnPrepare pass. In that case the Init kernel must consume the
+    // count and identity carried by these push constants instead of the
+    // graph-owned spawn metadata buffer. Native render graphs keep the
+    // existing metadata-driven path by supplying a valid buffer.
+    constants.reserved = spawnMetadata.IsValid() ? 0u : 1u;
     constants.aliveReadSlot = AliveReadSlot();
     constants.aliveWriteSlot = AliveWriteSlot();
     constants.useAliveList = IsAliveListReady() ? 1u : 0u;
-    if (cpuSpawnCount > 0)
-        Record(encoder, GpuKernelStage::Init, constants, cpuSpawnCount, graphSpawnGroup);
-    else
+    if (spawnMetadata.IsValid())
         Record(encoder, GpuKernelStage::Init, constants, 1, graphSpawnGroup, spawnMetadata, indirectOffset);
+    else if (cpuSpawnCount > 0)
+        Record(encoder, GpuKernelStage::Init, constants, cpuSpawnCount, graphSpawnGroup);
 }
 
 bool ParticleGpuRuntime::RecordUpdate(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,

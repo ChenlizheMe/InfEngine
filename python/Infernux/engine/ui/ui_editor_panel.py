@@ -27,6 +27,7 @@ from Infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 from Infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
 from Infernux.ui.ui_canvas_utils import scene_canvas_cache_key
 from .editor_panel import EditorPanel
+from .dpi import scaled_editor_metric
 from .panel_registry import editor_panel
 from .editor_icons import EditorIcons
 from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiMouseCursor
@@ -37,6 +38,10 @@ from ._ui_editor_geometry import UIEditorGeometryMixin
 from ._ui_editor_alignment import UIEditorAlignmentMixin
 from ._ui_editor_resize import UIEditorResizeMixin
 from ._ui_editor_creation import UIEditorCreationMixin
+
+
+def _metric(ctx, value: float) -> float:
+    return scaled_editor_metric(ctx, value)
 
 @editor_panel("UI Editor", type_id="ui_editor", title_key="panel.ui_editor")
 class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentMixin, UIEditorResizeMixin, UIEditorCreationMixin, EditorPanel):
@@ -577,23 +582,29 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         ctx.label("  " + t("ui_editor.create_canvas_hint").split("\n")[1])
         ctx.label("")
         ctx.button(t("ui_editor.create_canvas"), self._create_canvas,
-                   width=Theme.UI_EDITOR_CREATE_BTN_W, height=Theme.UI_EDITOR_CREATE_BTN_H)
+                   width=_metric(ctx, Theme.UI_EDITOR_CREATE_BTN_W),
+                   height=_metric(ctx, Theme.UI_EDITOR_CREATE_BTN_H))
 
     # ── Toolbar ──────────────────────────────────────────────────────
 
     def _render_toolbar(self, ctx: InxGUIContext, canvas_go, canvas):
         """Top toolbar with creation buttons, zoom control, and background toggle."""
-        _GAP = Theme.UI_EDITOR_TOOLBAR_GAP
-        _SEC = Theme.UI_EDITOR_TOOLBAR_SECTION_GAP
+        _GAP = _metric(ctx, Theme.UI_EDITOR_TOOLBAR_GAP)
+        _SEC = _metric(ctx, Theme.UI_EDITOR_TOOLBAR_SECTION_GAP)
 
         ctx.label(f"Canvas: {canvas_go.name}")
         ctx.same_line(0, _SEC)
 
         native = self._engine.get_native_engine() if self._engine else None
-        _ICO_SZ = Theme.EDITOR_ICON_SIZE
+        _ICO_SZ = _metric(ctx, Theme.EDITOR_ICON_SIZE)
 
         # ── Create Canvas button ──
-        ctx.button("Canvas", self._create_canvas, width=72, height=_ICO_SZ + 8)
+        ctx.button(
+            "Canvas",
+            self._create_canvas,
+            width=_metric(ctx, 72.0),
+            height=_ICO_SZ + _metric(ctx, 8.0),
+        )
         if ctx.is_item_hovered():
             ctx.set_tooltip(t("ui_editor.tooltip_canvas"))
 
@@ -603,7 +614,12 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             if ctx.image_button("##add_text", tid_text, _ICO_SZ, _ICO_SZ):
                 self._create_text_element(canvas_go)
         else:
-            ctx.button("T", lambda: self._create_text_element(canvas_go), width=_ICO_SZ + 8, height=_ICO_SZ + 8)
+            ctx.button(
+                "T",
+                lambda: self._create_text_element(canvas_go),
+                width=_ICO_SZ + _metric(ctx, 8.0),
+                height=_ICO_SZ + _metric(ctx, 8.0),
+            )
         if ctx.is_item_hovered():
             ctx.set_tooltip(t("ui_editor.tooltip_text"))
 
@@ -613,7 +629,12 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             if ctx.image_button("##add_image", tid_img, _ICO_SZ, _ICO_SZ):
                 self._create_image_element(canvas_go)
         else:
-            ctx.button("Img", lambda: self._create_image_element(canvas_go), width=_ICO_SZ + 8, height=_ICO_SZ + 8)
+            ctx.button(
+                "Img",
+                lambda: self._create_image_element(canvas_go),
+                width=_ICO_SZ + _metric(ctx, 8.0),
+                height=_ICO_SZ + _metric(ctx, 8.0),
+            )
         if ctx.is_item_hovered():
             ctx.set_tooltip(t("ui_editor.tooltip_image"))
 
@@ -623,7 +644,12 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             if ctx.image_button("##add_button", tid_btn, _ICO_SZ, _ICO_SZ):
                 self._create_button_element(canvas_go)
         else:
-            ctx.button("Btn", lambda: self._create_button_element(canvas_go), width=_ICO_SZ + 8, height=_ICO_SZ + 8)
+            ctx.button(
+                "Btn",
+                lambda: self._create_button_element(canvas_go),
+                width=_ICO_SZ + _metric(ctx, 8.0),
+                height=_ICO_SZ + _metric(ctx, 8.0),
+            )
         if ctx.is_item_hovered():
             ctx.set_tooltip(t("ui_editor.tooltip_button"))
 
@@ -631,7 +657,11 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         zoom_pct = int(self._zoom * 100)
         ctx.label(t("ui_editor.zoom").format(pct=zoom_pct))
         ctx.same_line(0, _SEC // 2)
-        ctx.button(t("ui_editor.fit"), lambda: self._fit_zoom(ctx, canvas), width=56)
+        ctx.button(
+            t("ui_editor.fit"),
+            lambda: self._fit_zoom(ctx, canvas),
+            width=_metric(ctx, 56.0),
+        )
 
         ctx.separator()
 
@@ -824,8 +854,8 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         hovered_canvas_id = 0
         hovered_elem = None
         hovered_all: list = []
-        HEADER_H = Theme.UI_EDITOR_CANVAS_HEADER_H
-        _PICK_TOL = 3.0 / self._zoom
+        HEADER_H = _metric(ctx, Theme.UI_EDITOR_CANVAS_HEADER_H)
+        _PICK_TOL = _metric(ctx, 3.0) / self._zoom
 
         for canvas_go, canvas in all_canvases:
             go_id = canvas_go.id
@@ -899,7 +929,10 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             if not is_active:
                 label += "  (inactive)"
             tc = Theme.UI_EDITOR_CANVAS_HEADER_TEXT
-            ctx.draw_text(c_tl_x + 6, h_tl_y + 3, label,
+            ctx.draw_text(
+                          c_tl_x + _metric(ctx, 6.0),
+                          h_tl_y + _metric(ctx, 3.0),
+                          label,
                           tc[0], tc[1], tc[2], tc[3] * alpha_mult, 0.0)
 
         if canvas_visible:
@@ -997,8 +1030,8 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
                 zoom=self._zoom,
                 get_tex_id=_get_tid,
             ):
-                tx = max(s_x + 2, area_min_x)
-                ty = max(s_y + 2, area_min_y)
+                tx = max(s_x + _metric(ctx, 2.0), area_min_x)
+                ty = max(s_y + _metric(ctx, 2.0), area_min_y)
                 if tx < area_max_x and ty < area_max_y:
                     ctx.draw_text(tx, ty,
                                   elem.type_name, *Theme.UI_EDITOR_FALLBACK_TEXT, 0.0)
@@ -1036,23 +1069,26 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             self._selection_geometry = self._get_oriented_box_screen(
                 sel, foc_ref_w, foc_ref_h, foc_origin_x, foc_origin_y)
             corners = self._selection_geometry['corners']
-            _HS = Theme.UI_EDITOR_HANDLE_SIZE
+            _HS = _metric(ctx, Theme.UI_EDITOR_HANDLE_SIZE)
             self._handle_positions = [(cx - _HS, cy - _HS) for cx, cy in corners]
 
             for idx in range(4):
                 ax, ay = corners[idx]
                 bx, by = corners[(idx + 1) % 4]
                 ctx.draw_line(ax, ay, bx, by,
-                              *Theme.UI_EDITOR_ELEMENT_SELECT, Theme.UI_EDITOR_SELECT_LINE_W)
+                              *Theme.UI_EDITOR_ELEMENT_SELECT,
+                              _metric(ctx, Theme.UI_EDITOR_SELECT_LINE_W))
 
             top_mid_x, top_mid_y = self._selection_geometry['top_mid']
             rotate_x, rotate_y = self._selection_geometry['rotate_handle']
             ctx.draw_line(top_mid_x, top_mid_y, rotate_x, rotate_y,
-                          *Theme.UI_EDITOR_ELEMENT_SELECT, Theme.UI_EDITOR_ROTATE_LINE_W)
-            ctx.draw_filled_circle(rotate_x, rotate_y, Theme.UI_EDITOR_ROTATE_RADIUS,
+                          *Theme.UI_EDITOR_ELEMENT_SELECT,
+                          _metric(ctx, Theme.UI_EDITOR_ROTATE_LINE_W))
+            rotate_radius = _metric(ctx, Theme.UI_EDITOR_ROTATE_RADIUS)
+            ctx.draw_filled_circle(rotate_x, rotate_y, rotate_radius,
                                    *Theme.UI_EDITOR_HANDLE_COLOR, 0)
-            ctx.draw_circle(rotate_x, rotate_y, Theme.UI_EDITOR_ROTATE_RADIUS,
-                            *Theme.UI_EDITOR_ELEMENT_SELECT, 1.0, 0)
+            ctx.draw_circle(rotate_x, rotate_y, rotate_radius,
+                            *Theme.UI_EDITOR_ELEMENT_SELECT, _metric(ctx, 1.0), 0)
 
             hs2 = _HS * 2
             for px, py in self._handle_positions:
@@ -1063,7 +1099,8 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
                     ctx.draw_filled_rect(px, py, h_x1, h_y1,
                                          *Theme.UI_EDITOR_HANDLE_COLOR, 0.0)
                     ctx.draw_rect(px, py, h_x1, h_y1,
-                                  *Theme.UI_EDITOR_ELEMENT_SELECT, 1.0, 0.0)
+                                  *Theme.UI_EDITOR_ELEMENT_SELECT,
+                                  _metric(ctx, 1.0), 0.0)
         else:
             self._selection_geometry = None
 
@@ -1080,7 +1117,9 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         else:
             foc_ref_w = foc_ref_h = 1.0
 
-        clicked_kind, clicked_handle = self._hit_test_handle(inp.mouse_x, inp.mouse_y)
+        clicked_kind, clicked_handle = self._hit_test_handle(
+            inp.ctx, inp.mouse_x, inp.mouse_y
+        )
         if clicked_kind in ("corner", "edge") and self._selected_element_comp is not None:
             sel = self._selected_element_comp
             if not self._begin_element_manipulation("resize", sel):
@@ -1241,23 +1280,25 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
     # Resize handle helpers
     # ------------------------------------------------------------------
 
-    def _hit_test_handle(self, mx: float, my: float):
+    def _hit_test_handle(self, ctx: InxGUIContext, mx: float, my: float):
         """Return (kind, index) for corner, edge, or rotate zones."""
         geom = getattr(self, '_selection_geometry', None)
         if geom is None:
             return None, -1
-        hs = Theme.UI_EDITOR_HANDLE_SIZE + 2
+        hs = _metric(ctx, Theme.UI_EDITOR_HANDLE_SIZE + 2.0)
 
         for idx, (cx, cy) in enumerate(geom['corners']):
             if abs(mx - cx) <= hs and abs(my - cy) <= hs:
                 return "corner", idx
 
         rotate_x, rotate_y = geom['rotate_handle']
-        if math.hypot(mx - rotate_x, my - rotate_y) <= Theme.UI_EDITOR_ROTATE_HIT_R:
+        if math.hypot(mx - rotate_x, my - rotate_y) <= _metric(
+            ctx, Theme.UI_EDITOR_ROTATE_HIT_R
+        ):
             return "rotate", -1
 
         inside = self._point_in_quad(mx, my, geom['corners'])
-        edge_tol = max(Theme.UI_EDITOR_EDGE_HIT_TOL, hs)
+        edge_tol = max(_metric(ctx, Theme.UI_EDITOR_EDGE_HIT_TOL), hs)
         edges = [(0, 1, 4), (1, 2, 7), (2, 3, 5), (3, 0, 6)]
         for a_idx, b_idx, handle_idx in edges:
             ax, ay = geom['corners'][a_idx]
@@ -1273,7 +1314,7 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
     def _update_hover_cursor(self, ctx: InxGUIContext, area_hovered: bool, mouse_x: float, mouse_y: float):
         if not area_hovered or self._selected_element_comp is None:
             return
-        kind, idx = self._hit_test_handle(mouse_x, mouse_y)
+        kind, idx = self._hit_test_handle(ctx, mouse_x, mouse_y)
         if kind == "corner":
             ctx.set_mouse_cursor(ImGuiMouseCursor.ResizeNWSE if idx in (0, 3) else ImGuiMouseCursor.ResizeNESW)
         elif kind == "edge":
@@ -1475,7 +1516,7 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             wx, wy = pos[0], pos[1]
             rw = float(cv.reference_width)
             rh = float(cv.reference_height)
-            hdr_h = Theme.UI_EDITOR_CANVAS_HEADER_H  # approximate in workspace
+            hdr_h = _metric(ctx, Theme.UI_EDITOR_CANVAS_HEADER_H)
             min_x = min(min_x, wx)
             min_y = min(min_y, wy - hdr_h)
             max_x = max(max_x, wx + rw)
@@ -1484,7 +1525,7 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         bbox_h = max_y - min_y
         if bbox_w < 1 or bbox_h < 1:
             return
-        margin = Theme.UI_EDITOR_FIT_MARGIN
+        margin = _metric(ctx, Theme.UI_EDITOR_FIT_MARGIN)
         zoom_w = (avail_w - margin) / bbox_w
         zoom_h = (avail_h - margin) / bbox_h
         self._zoom = max(Theme.UI_EDITOR_MIN_ZOOM,

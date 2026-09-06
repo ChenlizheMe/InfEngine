@@ -8,6 +8,8 @@ Regression coverage for the animation-audit fixes:
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from Infernux.core.anim_state_machine import (
@@ -84,9 +86,13 @@ class _HierarchyOwner:
 class _NativePoseRecorder:
     def __init__(self):
         self.calls = []
+        self.pose_stacks = []
 
     def submit_animation_pose(self, *args):
         self.calls.append(args)
+
+    def submit_pose_stack(self, layers):
+        self.pose_stacks.append(layers)
 
 
 def test_skeletal_animator_reacquires_renderer_after_scene_replacement(monkeypatch):
@@ -110,6 +116,22 @@ def test_skeletal_animator_has_no_same_object_renderer_requirement():
     assert SkinnedMeshRenderer not in tuple(
         getattr(SkeletalAnimator, "_require_components_", ()) or ()
     )
+
+
+def test_skinned_mesh_renderer_exposes_authoritative_runtime_pose_time(monkeypatch):
+    renderer = SkinnedMeshRenderer()
+    native = SimpleNamespace(
+        runtime_animation_time=1.25,
+        runtime_animation_normalized_time=0.625,
+    )
+    monkeypatch.setattr(renderer, "_get_bound_native_component", lambda: native)
+
+    assert renderer.runtime_animation_time == pytest.approx(1.25)
+    assert renderer.runtime_animation_normalized_time == pytest.approx(0.625)
+
+    monkeypatch.setattr(renderer, "_get_bound_native_component", lambda: None)
+    with pytest.raises(ReferenceError, match="not bound"):
+        _ = renderer.runtime_animation_time
 
 
 def test_skeletal_animator_uses_local_renderer_for_single_node_model(monkeypatch):
@@ -181,7 +203,7 @@ def test_skeletal_animator_submits_clip_source_separately_from_render_model(monk
         default_state="Walk",
     )
     animator._current_state_name = "Walk"
-    animator._current_clip = _FakeClip("Walk", source_model_guid="animation-fbx-guid")
+    animator._current_clip = _FakeClip("Walk", source_model_guid="d" * 32)
     animator._elapsed = 0.5
     animator._playing = True
     animator._last_native_pose_key = None
@@ -189,7 +211,94 @@ def test_skeletal_animator_submits_clip_source_separately_from_render_model(monk
     animator._sync_native_runtime_playback()
 
     assert len(native.calls) == 1
-    assert native.calls[0][7] == "animation-fbx-guid"
+    assert native.calls[0][7] == "d" * 32
+
+
+def test_blend_state_uses_pose_stack_as_its_only_native_path(monkeypatch):
+    animator = _make_animator()
+    native = _NativePoseRecorder()
+    monkeypatch.setattr(
+        animator,
+        "_resolve_clip_b",
+        lambda _state: _FakeClip("Run", source_model_guid="e" * 32),
+    )
+    state = AnimState(name="Locomotion", kind="blend", blend_value=0.25)
+    animator._current_clip = _FakeClip("Walk", source_model_guid="d" * 32)
+    animator._elapsed = 0.5
+
+    assert animator._submit_blend_state([native], state) is True
+    assert native.calls == []
+    assert native.pose_stacks == [[
+        {
+            "take_name": "Walk",
+            "source_model_guid": "d" * 32,
+            "time": 0.5,
+            "weight": 0.75,
+            "loop": True,
+        },
+        {
+            "take_name": "Run",
+            "source_model_guid": "e" * 32,
+            "time": 0.5,
+            "weight": 0.25,
+            "loop": True,
+        },
+    ]]
+
+
+def test_blend_state_does_not_fall_back_when_pose_stack_is_missing(monkeypatch):
+    animator = _make_animator()
+    native = SimpleNamespace(submit_animation_pose=lambda *_args: None)
+    monkeypatch.setattr(animator, "_resolve_clip_b", lambda _state: _FakeClip("Run"))
+    animator._current_clip = _FakeClip("Walk")
+
+    with pytest.raises(AttributeError, match="submit_pose_stack"):
+        animator._submit_blend_state([native], AnimState(name="Locomotion", kind="blend"))
+
+
+def test_native_pose_submission_failure_propagates(monkeypatch):
+    animator = _make_animator()
+
+    class Native:
+        @staticmethod
+        def submit_animation_pose(*_args):
+            raise RuntimeError("native pose rejected")
+
+    owner = _HierarchyOwner(renderer=_RendererBinding(Native()))
+    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
+    animator._fsm = AnimStateMachine(states=[AnimState(name="Walk")], default_state="Walk")
+    animator._current_state_name = "Walk"
+    animator._current_clip = _FakeClip("Walk")
+
+    with pytest.raises(RuntimeError, match="native pose rejected"):
+        animator._sync_native_runtime_playback()
+
+
+def test_blend_parameter_type_error_propagates() -> None:
+    animator = _make_animator()
+    state = AnimState(name="Locomotion", kind="blend")
+    animator._parameters["Locomotion/Lerp"] = "not-a-number"
+
+    with pytest.raises(ValueError):
+        animator._blend_state_lerp(state)
+
+
+def test_native_duration_query_failure_propagates(monkeypatch) -> None:
+    animator = _make_animator()
+
+    class Native:
+        @staticmethod
+        def get_animation_duration_seconds(_take_name, _source_guid):
+            raise RuntimeError("duration query rejected")
+
+    monkeypatch.setattr(
+        animator,
+        "_resolve_skinned_renderer",
+        lambda: _RendererBinding(Native()),
+    )
+
+    with pytest.raises(RuntimeError, match="duration query rejected"):
+        animator._clip_duration(_FakeClip("Walk", duration_hint=0.0))
 
 
 class TestTriggerConsumption:
@@ -754,7 +863,18 @@ class TestAnimationClipSpriteFrameReferences:
     FRAME_B = "2" * 32
     TEXTURE_GUID = "a" * 32
 
-    def test_valid_sprite_frame_references_resolve_project_relative_path(self, tmp_path):
+    def test_sprite_frames_require_texture_guid(self):
+        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
+
+        clip = AnimationClip(
+            authoring_texture_path="Assets/Sprites/sheet.png",
+            frames=[AnimationFrame(sprite_frame_id=self.FRAME_A)],
+        )
+
+        with pytest.raises(ValueError, match="texture GUID"):
+            clip.validate_sprite_frame_references()
+
+    def test_valid_sprite_frame_references_resolve_guid_mapping(self, tmp_path):
         from Infernux.core.animation_clip import AnimationClip, AnimationFrame
         from Infernux.core.asset_types import TextureType
 
@@ -767,11 +887,15 @@ class TestAnimationClipSpriteFrameReferences:
             sprite_frame_ids=(self.FRAME_A, self.FRAME_B),
         )
         clip = AnimationClip(
+            authoring_texture_guid=self.TEXTURE_GUID,
             authoring_texture_path="Assets/Sprites/sheet.png",
             frames=[AnimationFrame(sprite_frame_id=self.FRAME_B)],
         )
 
-        resolved = clip.validate_sprite_frame_references(project_root=str(project))
+        resolved = clip.validate_sprite_frame_references(
+            project_root=str(project),
+            guid_paths={self.TEXTURE_GUID: "Assets/Sprites/sheet.png"},
+        )
 
         assert resolved == str(texture)
 
@@ -787,12 +911,15 @@ class TestAnimationClipSpriteFrameReferences:
             sprite_frame_ids=(self.FRAME_A,),
         )
         clip = AnimationClip(
+            authoring_texture_guid=self.TEXTURE_GUID,
             authoring_texture_path=str(texture),
             frames=[AnimationFrame(sprite_frame_id=self.FRAME_B)],
         )
 
         with pytest.raises(ValueError, match=self.FRAME_B):
-            clip.validate_sprite_frame_references()
+            clip.validate_sprite_frame_references(
+                guid_paths={self.TEXTURE_GUID: str(texture)}
+            )
 
     def test_non_sprite_texture_is_rejected_before_frame_lookup(self, tmp_path):
         from Infernux.core.animation_clip import AnimationClip, AnimationFrame
@@ -805,18 +932,22 @@ class TestAnimationClipSpriteFrameReferences:
             texture_type=TextureType.DEFAULT,
         )
         clip = AnimationClip(
+            authoring_texture_guid=self.TEXTURE_GUID,
             authoring_texture_path=str(texture),
             frames=[AnimationFrame(sprite_frame_id=self.FRAME_A)],
         )
 
         with pytest.raises(ValueError, match="not imported as Sprite"):
-            clip.validate_sprite_frame_references()
+            clip.validate_sprite_frame_references(
+                guid_paths={self.TEXTURE_GUID: str(texture)}
+            )
 
-    def test_path_and_guid_survive_file_round_trip_and_guid_resolves_moved_texture(
-        self, tmp_path
+    def test_guid_survives_file_round_trip_and_resolves_moved_texture(
+        self, tmp_path, monkeypatch
     ):
         from Infernux.core.animation_clip import AnimationClip, AnimationFrame
         from Infernux.core.asset_types import TextureType
+        from Infernux.core.assets import AssetManager
 
         project = tmp_path / "project"
         texture = project / "Assets" / "Sprites" / "sheet.png"
@@ -834,6 +965,16 @@ class TestAnimationClipSpriteFrameReferences:
             authoring_texture_path="Assets/Sprites/sheet.png",
             frames=[AnimationFrame(sprite_frame_id=self.FRAME_A)],
         )
+        database = type(
+            "Database",
+            (),
+            {
+                "get_path_from_guid": staticmethod(
+                    lambda guid: str(texture) if guid == self.TEXTURE_GUID else ""
+                )
+            },
+        )()
+        monkeypatch.setattr(AssetManager, "_asset_database", database)
         assert clip.save(str(clip_path)) is True
 
         loaded = AnimationClip.load(str(clip_path))
@@ -846,6 +987,51 @@ class TestAnimationClipSpriteFrameReferences:
             project_root=str(project),
             guid_paths={self.TEXTURE_GUID: str(texture)},
         ) == str(texture)
+
+
+def test_spirit_animator_guid_does_not_fall_back_to_stale_path(monkeypatch, tmp_path):
+    from Infernux.components import spirit_animator as animator_module
+    from Infernux.core.anim_state_machine import AnimState
+
+    stale_path = tmp_path / "stale.animclip2d"
+    stale_path.write_text("{}", encoding="utf-8")
+    database = type(
+        "Database",
+        (),
+        {"get_path_from_guid": staticmethod(lambda _guid: "")},
+    )()
+    monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
+
+    state = AnimState(
+        name="Walk",
+        clip_guid="b" * 32,
+        clip_path=str(stale_path),
+    )
+
+    assert animator_module._resolve_clip_path(state) is None
+
+
+def test_skeletal_animator_asset_database_failure_is_not_suppressed(monkeypatch):
+    from Infernux.components import skeletal_animator as animator_module
+
+    class Database:
+        @staticmethod
+        def get_path_from_guid(_guid):
+            raise RuntimeError("catalog unavailable")
+
+    monkeypatch.setattr(animator_module, "_get_asset_database", lambda: Database())
+
+    with pytest.raises(RuntimeError, match="catalog unavailable"):
+        animator_module._resolve_clip_path_from("c" * 32)
+
+
+def test_skeletal_animator_does_not_derive_model_identity_from_path():
+    from Infernux.components import skeletal_animator as animator_module
+    from Infernux.core.animation_clip3d import AnimationClip3D
+
+    clip = AnimationClip3D(source_model_path="Assets/Models/stale.fbx")
+
+    assert animator_module._animation_source_guid(clip) == ""
 
 
 class TestSpiritAnimatorAssetReload:
@@ -861,14 +1047,24 @@ class TestSpiritAnimatorAssetReload:
             fps=fps,
         )
 
-    def test_clip_hot_reload_preserves_state_progress_and_playback(self, tmp_path):
+    def test_clip_hot_reload_preserves_state_progress_and_playback(
+        self, tmp_path, monkeypatch
+    ):
         import json
+        from Infernux.components import spirit_animator as animator_module
 
         path = tmp_path / "walk.animclip2d"
+        clip_guid = "a" * 32
         old_clip = self._clip(4, 4.0)
         path.write_text(json.dumps(old_clip.to_dict()), encoding="utf-8")
+        database = type(
+            "Database",
+            (),
+            {"get_path_from_guid": staticmethod(lambda guid: str(path) if guid == clip_guid else "")},
+        )()
+        monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
 
-        state = AnimState(name="Walk", clip_path=str(path))
+        state = AnimState(name="Walk", clip_guid=clip_guid, clip_path=str(path))
         animator = SpiritAnimator()
         animator._fsm = AnimStateMachine(
             states=[state],
@@ -908,13 +1104,23 @@ class TestSpiritAnimatorAssetReload:
         assert renderer.frame_id == replacement.frames[4].sprite_frame_id
         assert renderer.sync_count == 1
 
-    def test_invalid_clip_hot_reload_keeps_previous_runtime_clip(self, tmp_path):
+    def test_invalid_clip_hot_reload_keeps_previous_runtime_clip(
+        self, tmp_path, monkeypatch
+    ):
         import json
+        from Infernux.components import spirit_animator as animator_module
 
         path = tmp_path / "walk.animclip2d"
+        clip_guid = "b" * 32
         clip = self._clip(2, 2.0)
         path.write_text(json.dumps(clip.to_dict()), encoding="utf-8")
-        state = AnimState(name="Walk", clip_path=str(path))
+        database = type(
+            "Database",
+            (),
+            {"get_path_from_guid": staticmethod(lambda guid: str(path) if guid == clip_guid else "")},
+        )()
+        monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
+        state = AnimState(name="Walk", clip_guid=clip_guid, clip_path=str(path))
         animator = SpiritAnimator()
         animator._fsm = AnimStateMachine(states=[state], default_state="Walk")
         animator._clip_cache = {"Walk": clip}
@@ -944,11 +1150,20 @@ class TestSpiritAnimatorAssetReload:
 
         controller_path = tmp_path / "controller.animfsm"
         timeline_path = tmp_path / "motion.animtimeline"
+        timeline_guid = "c" * 32
+        from Infernux.components import spirit_animator as animator_module
+        database = type(
+            "Database",
+            (),
+            {"get_path_from_guid": staticmethod(lambda guid: str(timeline_path) if guid == timeline_guid else "")},
+        )()
+        monkeypatch.setattr(animator_module, "_get_asset_database", lambda: database)
         timeline = AnimationTimeline(name="motion", duration=4.0)
         assert timeline.save(str(timeline_path)) is True
         state = AnimState(
             name="Timeline",
             kind="timeline",
+            timeline_guid=timeline_guid,
             timeline_path=str(timeline_path),
         )
         current_fsm = AnimStateMachine(
@@ -979,6 +1194,7 @@ class TestSpiritAnimatorAssetReload:
                 AnimState(
                     name="Timeline",
                     kind="timeline",
+                    timeline_guid=timeline_guid,
                     timeline_path=str(timeline_path),
                 )
             ],

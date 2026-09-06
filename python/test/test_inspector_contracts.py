@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from Infernux.core.asset_types import SpriteFrame, TextureImportSettings, TextureType
 from Infernux.engine.ui import asset_details_renderer as details
 from Infernux.engine.ui import inspector_material
+from Infernux.engine.ui import inspector_support
 from Infernux.engine.ui import inspector_utils
 
 
@@ -18,6 +20,53 @@ class _FakeSemanticContext:
 
     def record_semantic_item(self, kind, label, enabled, semantic_id):
         self.semantic_items.append((kind, label, enabled, semantic_id))
+
+
+def test_material_guid_resolution_requires_asset_database(monkeypatch):
+    import Infernux.lib as lib
+
+    class _Registry:
+        @staticmethod
+        def get_asset_database():
+            return None
+
+    class _AssetRegistry:
+        @staticmethod
+        def instance():
+            return _Registry()
+
+    monkeypatch.setattr(lib, "AssetRegistry", _AssetRegistry)
+
+    with pytest.raises(RuntimeError, match="requires an AssetDatabase"):
+        inspector_support.ensure_material_file_path(
+            SimpleNamespace(file_path="", guid="material-guid")
+        )
+
+
+def test_material_guid_resolution_rejects_unregistered_guid(monkeypatch):
+    import Infernux.lib as lib
+
+    class _AssetDatabase:
+        @staticmethod
+        def get_path_from_guid(_guid):
+            return ""
+
+    class _Registry:
+        @staticmethod
+        def get_asset_database():
+            return _AssetDatabase()
+
+    class _AssetRegistry:
+        @staticmethod
+        def instance():
+            return _Registry()
+
+    monkeypatch.setattr(lib, "AssetRegistry", _AssetRegistry)
+
+    with pytest.raises(LookupError, match="material-guid"):
+        inspector_support.ensure_material_file_path(
+            SimpleNamespace(file_path="", guid="material-guid")
+        )
 
 
 class _FakeTextContext(_FakeSemanticContext):
@@ -891,10 +940,27 @@ def test_scene_reference_fields_use_hierarchy_ping_contract(monkeypatch):
     assert pinged == [41, 52]
 
 
-def test_builtin_asset_reference_field_records_native_property(monkeypatch):
+def test_builtin_asset_reference_field_records_native_property(monkeypatch, tmp_path):
     import Infernux.engine.ui._inspector_references as module
     from Infernux.components.fields import FieldType
     from Infernux.core.asset_ref import PhysicMaterialRef
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine import project_context
+
+    project_root = tmp_path / "project"
+    material_path = str(project_root / "Assets" / "Bouncy.physicMaterial")
+    monkeypatch.setattr(project_context, "_project_root", str(project_root))
+
+    class _AssetDatabase:
+        @staticmethod
+        def get_guid_from_path(path):
+            return "bouncy-guid" if Path(path) == Path(material_path) else ""
+
+        @staticmethod
+        def get_path_from_guid(guid):
+            return material_path if guid == "bouncy-guid" else ""
+
+    monkeypatch.setattr(AssetManager, "_asset_database", _AssetDatabase())
 
     captured = {}
     monkeypatch.setattr(module, "field_label", lambda *_args, **_kwargs: None)
@@ -921,11 +987,12 @@ def test_builtin_asset_reference_field_records_native_property(monkeypatch):
             builtin_attr="physic_material",
         )
         transaction = captured["transaction"]
-        assert transaction.commit(
-            "C:/project/Assets/Bouncy.physicMaterial"
-        ).value == "applied"
+        errors = []
+        transaction.on_rejected = errors.append
+        assert transaction.commit(material_path).value == "applied", errors
 
         assert isinstance(component.physic_material, PhysicMaterialRef)
+        assert component.physic_material.guid == "bouncy-guid"
         assert component.physic_material.path_hint.endswith("Bouncy.physicMaterial")
         assert len(manager.action_journal.applied_entries()) == 1
     finally:
@@ -1183,6 +1250,44 @@ def test_texture_live_preview_can_be_released(monkeypatch, tmp_path):
     asset_resource_preview.invalidate_live_texture_preview(str(path))
 
     assert native.released == [f"tex|{os.path.normpath(path)}"]
+
+
+def test_texture_preview_query_failure_is_not_suppressed(tmp_path):
+    from Infernux.engine.ui import asset_resource_preview
+
+    path = tmp_path / "Broken.png"
+    path.write_bytes(b"preview-source")
+
+    class _Native:
+        @staticmethod
+        def query_or_schedule_texture_preview(*_args, **_kwargs):
+            raise RuntimeError("preview device failure")
+
+    with pytest.raises(RuntimeError, match="preview device failure"):
+        asset_resource_preview._try_get_cpp_texture_preview(
+            _Native(), str(path), TextureImportSettings()
+        )
+
+
+def test_preview_authoring_release_failure_preserves_owner(monkeypatch):
+    from Infernux.engine.ui import asset_resource_preview
+
+    class _Native:
+        @staticmethod
+        def release_preview_authoring(_key):
+            raise RuntimeError("preview release failure")
+
+    key = "mat|Assets/Broken.mat"
+    asset_resource_preview._AUTHORING_PREVIEW_KEYS.add(key)
+    monkeypatch.setattr(
+        asset_resource_preview, "_resolve_native_engine", lambda _panel: _Native()
+    )
+    try:
+        with pytest.raises(RuntimeError, match="preview release failure"):
+            asset_resource_preview.release_all_preview_authoring()
+        assert key in asset_resource_preview._AUTHORING_PREVIEW_KEYS
+    finally:
+        asset_resource_preview._AUTHORING_PREVIEW_KEYS.discard(key)
 
 
 def test_material_undo_snapshot_is_decoded_only_when_edit_occurs():
@@ -2056,3 +2161,118 @@ def test_color_inspector_respects_field_hdr_metadata(monkeypatch):
     enabled = render(True)
     assert enabled["allow_hdr"] is True
     assert enabled["default_hdr_enabled"] is True
+
+
+def test_animation_curve_serialized_field_uses_shared_popup_editor(monkeypatch):
+    from Infernux.components.fields import FieldMetadata, FieldType
+    from Infernux.engine.ui import curve_editor
+    from Infernux.graph.ramp import AnimationCurve, Keyframe
+
+    captured = {}
+    monkeypatch.setattr(inspector_utils, "_label_or_fullwidth", lambda *_args: None)
+
+    def render_curve(_ctx, widget_id, document, **kwargs):
+        captured.update(widget_id=widget_id, document=document, **kwargs)
+        return AnimationCurve(
+            (Keyframe(0.0, 1.0), Keyframe(1.0, 2.0))
+        ).to_dict()
+
+    monkeypatch.setattr(curve_editor, "render_curve_property", render_curve)
+    metadata = FieldMetadata(
+        name="curve",
+        field_type=FieldType.ANIMATION_CURVE,
+        default=AnimationCurve(),
+        curve_non_negative=True,
+    )
+
+    result = inspector_utils.render_serialized_field(
+        SimpleNamespace(),
+        "##curve",
+        "Curve",
+        metadata,
+        AnimationCurve(),
+        80.0,
+    )
+
+    assert isinstance(result, AnimationCurve)
+    assert result.keys[-1].value == 2.0
+    assert captured["widget_id"] == "##curve"
+    assert captured["non_negative"] is True
+
+
+def test_builtin_list_field_is_planned_and_committed_generically(monkeypatch):
+    from Infernux.components.fields import FieldMetadata, FieldType
+    from Infernux.engine.ui import inspector_components as module
+
+    metadata = FieldMetadata(
+        name="points",
+        field_type=FieldType.LIST,
+        default=[],
+        element_type=FieldType.VEC3,
+    )
+    prop = SimpleNamespace(metadata=metadata, cpp_attr="points")
+    comp = SimpleNamespace(points=[(0.0, 0.0, 0.0)])
+    ctx = SimpleNamespace(create_property_batch_plan=lambda descriptors: descriptors)
+    cache = {"values": {}, "field_revisions": {}}
+
+    plan = module._build_builtin_cached_plan(
+        ctx, comp, [("points", prop)], 80.0, None, cache, True
+    )
+
+    assert [op["kind"] for op in plan["ops"]] == ["list"]
+
+    recorded = []
+    monkeypatch.setattr(
+        module,
+        "_render_list_field",
+        lambda _ctx, target, field, _meta, current, _lw, **kwargs: kwargs[
+            "on_change"
+        ](target, field, current, [(1.0, 2.0, 3.0)]),
+    )
+    monkeypatch.setattr(module, "_tooltip_and_info", lambda *_args: None)
+    monkeypatch.setattr(
+        module,
+        "_record_builtin_property",
+        lambda target, field, old, new, description: recorded.append(
+            (target, field, old, new, description)
+        ),
+    )
+
+    assert module._replay_builtin_cached_plan(ctx, comp, plan, cache) is True
+    assert recorded == [
+        (
+            comp,
+            "points",
+            [(0.0, 0.0, 0.0)],
+            [(1.0, 2.0, 3.0)],
+            "Set points",
+        )
+    ]
+
+
+def test_builtin_field_visibility_failure_is_not_treated_as_visible():
+    from Infernux.components.fields import FieldMetadata, FieldType
+    from Infernux.engine.ui import inspector_components as module
+
+    def invalid_visibility(_component):
+        raise RuntimeError("invalid visibility dependency")
+
+    metadata = FieldMetadata(
+        name="value",
+        field_type=FieldType.FLOAT,
+        default=0.0,
+        visible_when=invalid_visibility,
+    )
+    prop = SimpleNamespace(metadata=metadata, cpp_attr="value")
+    ctx = SimpleNamespace(create_property_batch_plan=lambda descriptors: descriptors)
+
+    with pytest.raises(RuntimeError, match="invalid visibility dependency"):
+        module._build_builtin_cached_plan(
+            ctx,
+            SimpleNamespace(value=1.0),
+            [("value", prop)],
+            80.0,
+            None,
+            {"values": {}, "field_revisions": {}},
+            True,
+        )

@@ -2,6 +2,7 @@
 
 #include "InxRenderStruct.h"
 #include "shader/ShaderReflection.h"
+#include "vk/VertexInputVulkan.h"
 
 #include <unordered_set>
 #include <vector>
@@ -15,7 +16,7 @@ namespace infernux
 inline std::vector<VkVertexInputAttributeDescription>
 FilterVertexAttributesForReflection(const ShaderReflection &vertexReflection)
 {
-    const auto allAttributes = Vertex::getAttributeDescriptions();
+    const auto allAttributes = vk::GetVertexAttributeDescriptions();
     const auto &shaderInputs = vertexReflection.GetInputs();
 
     if (shaderInputs.empty()) {

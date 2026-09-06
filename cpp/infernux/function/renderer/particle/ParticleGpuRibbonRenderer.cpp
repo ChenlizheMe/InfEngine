@@ -46,6 +46,7 @@ layout(location = 2) out vec4 out_tangent;
 layout(location = 3) out vec3 out_color;
 layout(location = 4) out vec2 out_uv;
 layout(location = 5) out float out_view_depth;
+layout(location = 6) out vec4 out_line_color;
 layout(location = 9) out vec2 out_particle_local_uv;
 layout(location = 10) out vec2 out_particle_next_uv;
 layout(location = 11) out float out_particle_blend;
@@ -130,6 +131,7 @@ void main() {
     out_color = particle_color.rgb;
     out_uv = ribbon_uv;
     out_view_depth = gl_Position.w;
+    out_line_color = vec4(1.0);
     out_particle_local_uv = segment_local_uv;
     out_particle_next_uv = segment_local_uv;
     out_particle_blend = 0.0;
@@ -387,18 +389,20 @@ bool ParticleGpuRibbonRenderer::Create(rhi::Device &device, const GpuRibbonRende
     m_semantics.sortMode = ParticleSortMode::None;
     m_uvMode = desc.uvMode;
     m_uvScale = desc.uvScale;
-    m_vertexShader = device.CreateShaderModule({desc.program.vertex.words, desc.program.vertex.wordCount});
-    m_fragmentShader = device.CreateShaderModule({linkedFragmentWords.data(), linkedFragmentWords.size()});
+    m_vertexShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.program.vertex.words, desc.program.vertex.wordCount));
+    m_fragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(linkedFragmentWords.data(), linkedFragmentWords.size()));
     if (m_semantics.receiveSceneLighting) {
-        m_forwardPlusFragmentShader =
-            device.CreateShaderModule({linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()});
+        m_forwardPlusFragmentShader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(
+            linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()));
     }
-    m_pickingFragmentShader =
-        device.CreateShaderModule({desc.program.pickingFragment.words, desc.program.pickingFragment.wordCount});
-    m_motionVertexShader =
-        device.CreateShaderModule({desc.program.motionVertex.words, desc.program.motionVertex.wordCount});
-    m_motionFragmentShader =
-        device.CreateShaderModule({desc.program.motionFragment.words, desc.program.motionFragment.wordCount});
+    m_pickingFragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.program.pickingFragment.words, desc.program.pickingFragment.wordCount));
+    m_motionVertexShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.program.motionVertex.words, desc.program.motionVertex.wordCount));
+    m_motionFragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.program.motionFragment.words, desc.program.motionFragment.wordCount));
     if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid() || !m_pickingFragmentShader.IsValid() ||
         !m_motionVertexShader.IsValid() || !m_motionFragmentShader.IsValid() ||
         (m_semantics.receiveSceneLighting && !m_forwardPlusFragmentShader.IsValid())) {
@@ -521,7 +525,6 @@ rhi::BindGroupHandle ParticleGpuRibbonRenderer::ResolveGeometryGroup(rhi::Buffer
 }
 
 bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                           rhi::RenderTargetLayoutHandle renderTargetLayout,
                                            const MaterialPassPipelineDescriptor &pass,
                                            rhi::BufferHandle indirectArguments, const GpuParticleViewConstants &view,
                                            rhi::BufferHandle renderIndices, rhi::TextureViewHandle sceneDepth,
@@ -538,8 +541,7 @@ bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &en
         pass.target == ShaderCompileTarget::Forward || pass.target == ShaderCompileTarget::ForwardPlus;
     if (usesPerViewBindings && !perView.IsValid())
         return false;
-    const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass,
-                                              usesPerViewBindings ? perView.layout : rhi::BindingLayoutHandle{});
+    const auto pipeline = GetOrCreatePipeline(pass, usesPerViewBindings ? perView.layout : rhi::BindingLayoutHandle{});
     const auto geometryGroup = ResolveGeometryGroup(renderIndices);
     const auto surfaceGroup = m_surface.ResolveBindGroup(sceneDepth, sceneDepthIsDepth);
     const bool usesBindlessTextures = m_surface.UsesBindlessTextures();
@@ -577,7 +579,6 @@ bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &en
 }
 
 bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                                  rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                   const MaterialPassPipelineDescriptor &pass,
                                                   rhi::BufferHandle indirectArguments,
                                                   const GpuParticleViewConstants &view, uint64_t ownerObjectId,
@@ -585,7 +586,7 @@ bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEnco
 {
     if (!IsValid() || !encoder.IsValid() || !indirectArguments.IsValid() || ownerObjectId == 0)
         return false;
-    const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
+    const auto pipeline = GetOrCreatePipeline(pass);
     const auto geometryGroup = ResolveGeometryGroup(renderIndices);
     const auto surfaceGroup = m_surface.ResolveBindGroup();
     if (!pipeline.IsValid() || !geometryGroup.IsValid() || !surfaceGroup.IsValid())
@@ -615,12 +616,10 @@ bool ParticleGpuRibbonRenderer::RecordPickingDraw(const rhi::GraphicsCommandEnco
     return true;
 }
 
-rhi::GraphicsPipelineHandle
-ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
-                                               const MaterialPassPipelineDescriptor &pass,
-                                               rhi::BindingLayoutHandle perViewLayout)
+rhi::GraphicsPipelineHandle ParticleGpuRibbonRenderer::GetOrCreatePipeline(const MaterialPassPipelineDescriptor &pass,
+                                                                           rhi::BindingLayoutHandle perViewLayout)
 {
-    if ((!pass.UsesDynamicRendering() && !renderTargetLayout.IsValid()) || !pass.IsValid() ||
+    if (!pass.IsValid() ||
         (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::ForwardPlus &&
          pass.target != ShaderCompileTarget::Picking && pass.target != ShaderCompileTarget::Motion))
         return {};
@@ -637,8 +636,7 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
                                 : m_surface.ResolveMaterialState();
     const uint8_t signature = PipelineStateSignature(state);
     const auto found = std::find_if(m_pipelines.begin(), m_pipelines.end(), [&](const auto &entry) {
-        return entry.renderTargetLayout == renderTargetLayout && entry.pass == pass &&
-               entry.perViewLayout == perViewLayout && entry.materialStateSignature == signature;
+        return entry.pass == pass && entry.perViewLayout == perViewLayout && entry.materialStateSignature == signature;
     });
     if (found != m_pipelines.end())
         return found->pipeline;
@@ -648,7 +646,7 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
     desc.fragmentShader = picking  ? m_pickingFragmentShader
                           : motion ? m_motionFragmentShader
                                    : (usesForwardPlusLighting ? m_forwardPlusFragmentShader : m_fragmentShader);
-    pass.ApplyRenderingContract(desc, renderTargetLayout);
+    pass.ApplyRenderingContract(desc);
     desc.raster.cullMode = rhi::CullMode::None;
     desc.depth.testEnabled = state.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.depth.writeEnabled =
@@ -670,7 +668,7 @@ ParticleGpuRibbonRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle ren
     desc.pushConstantBytes = sizeof(GpuParticleViewConstants);
     const auto pipeline = m_device->CreateGraphicsPipeline(desc);
     if (pipeline.IsValid())
-        m_pipelines.push_back({renderTargetLayout, pass, perViewLayout, signature, pipeline});
+        m_pipelines.push_back({pass, perViewLayout, signature, pipeline});
     return pipeline;
 }
 

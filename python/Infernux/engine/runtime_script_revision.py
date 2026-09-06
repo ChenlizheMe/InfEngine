@@ -159,36 +159,6 @@ class ScriptRevisionJournal:
             state.pending = ScriptRevisionResult(request, bool(succeeded), diagnostic)
             return True
 
-    def claim_ready(
-        self,
-        path: str | os.PathLike[str] | Iterable[str] | None = None,
-    ) -> tuple[ScriptRevisionResult, ...]:
-        """Claim current successful results without changing the LKG."""
-        if path is not None and not isinstance(path, (str, bytes, os.PathLike)):
-            return self.claim_ready_batch(path)
-        with self._lock:
-            keys = (_path_key(path),) if path is not None else tuple(self._states)
-            claimed: list[ScriptRevisionResult] = []
-            for key in keys:
-                state = self._states.get(key)
-                result = state.pending if state else None
-                if state is None or result is None:
-                    continue
-                if not result.succeeded or state.latest != result.request.revision:
-                    state.pending = None
-                    continue
-                if state.claimed is not None:
-                    if state.claimed.request.revision == state.latest:
-                        continue
-                    # A newer completed generation supersedes an older
-                    # in-flight publish claim; the old claim can no longer
-                    # commit and must not block the current candidate.
-                    state.claimed = None
-                state.pending = None
-                state.claimed = result
-                claimed.append(result)
-            return tuple(claimed)
-
     @staticmethod
     def _batch_paths(paths: Iterable[str]) -> tuple[tuple[str, str], ...]:
         values = tuple(paths)
@@ -211,8 +181,7 @@ class ScriptRevisionJournal:
     ) -> tuple[ScriptRevisionResult, ...]:
         """Atomically claim successful current results for every path.
 
-        Unlike the legacy single-path method, this method never drops stale
-        entries while checking.  A missing, failed, pending, stale, or already
+        A missing, failed, pending, stale, or already
         claimed member rejects the complete batch without changing any state.
         Results follow the caller's path order.
         """

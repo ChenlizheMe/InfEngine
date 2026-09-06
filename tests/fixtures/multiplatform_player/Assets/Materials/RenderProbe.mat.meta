@@ -1,0 +1,28 @@
+{
+    "metadata": {
+        "content_hash": {
+            "type": "string",
+            "value": "359ab2db071a1115"
+        },
+        "file_path": {
+            "type": "string",
+            "value": "E:/project/InfEngine/tests/fixtures/multiplatform_player/Assets/Materials/RenderProbe.mat"
+        },
+        "guid": {
+            "type": "string",
+            "value": "04000000000000000000000000000003"
+        },
+        "last_modified": {
+            "type": "string",
+            "value": "1788044618"
+        },
+        "material_name": {
+            "type": "string",
+            "value": "RenderProbe"
+        },
+        "resource_type": {
+            "type": "enum infernux::ResourceType",
+            "value": "Material"
+        }
+    }
+}

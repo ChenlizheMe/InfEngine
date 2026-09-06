@@ -17,19 +17,21 @@
  *   * Free-list pools of VkFence / VkCommandBuffer mirror the Phase 5b
  *     pattern in VkResourceManager so steady-state uploads hit zero
  *     kernel allocations.
- *   * Submission goes to the transfer queue if HasDedicatedTransferQueue();
- *     otherwise it transparently falls back to the graphics queue so call
- *     sites never need to branch. Runtime construction always supplies a
- *     VulkanQueueManager; the raw queue fallback exists only for isolated
- *     backend tests that do not construct the full renderer.
+ *   * Submission uses the dedicated transfer queue when one exists.
+ *     Otherwise the device aliases the transfer
+ * role to its graphics queue.
+ *     Both cases pass through VulkanQueueManager, giving queue ordering and
  *
- * Queue family ownership transfer is the caller's responsibility. The
+ * completion publication one authoritative path.
+ *
+ * Queue family ownership transfer is the caller's responsibility.
+ * The
  * recommended pattern is documented on Begin/End below: emit a release
- * barrier with srcQueueFamilyIndex = transferFamily,
- * dstQueueFamilyIndex = graphicsFamily before EndAsync(), then on the
- * graphics queue (typically inside the next render frame) emit the
- * matching acquire barrier with the same family pair before the first
- * sample/draw that uses the resource.
+ * barrier with srcQueueFamilyIndex =
+ * transferFamily and
+ * dstQueueFamilyIndex = graphicsFamily before EndAsync(), then emit the
+ * matching acquire
+ * barrier on the graphics queue before first use.
  */
 
 #pragma once
@@ -88,11 +90,11 @@ class AsyncTransferContext
      *
      * Builds the upload command pool against the transfer queue family if
      * the device advertises a dedicated one, otherwise against the graphics
-     * family (legacy fallback path).
+     * family. This is a Vulkan device capability choice, not a second upload
+     * implementation.
      */
-    bool Initialize(VkDevice device, uint32_t transferQueueFamily, VkQueue transferQueue,
-                    bool hasDedicatedTransferQueue, bool enableTimelineSemaphore = false,
-                    VulkanQueueManager *queueManager = nullptr,
+    bool Initialize(VkDevice device, uint32_t transferQueueFamily, bool hasDedicatedTransferQueue,
+                    bool enableTimelineSemaphore, VulkanQueueManager &queueManager,
                     rhi::QueueRole submissionRole = rhi::QueueRole::Transfer);
 
     /**
@@ -125,7 +127,7 @@ class AsyncTransferContext
 
     /**
      * @brief Submit a recorded command buffer and block until the GPU
-     *        signals completion. Use for the legacy synchronous path.
+     *        signals completion.
      */
     void EndSync(VkCommandBuffer cmd);
 
@@ -200,7 +202,6 @@ class AsyncTransferContext
 
     VkDevice m_device = VK_NULL_HANDLE;
     VkCommandPool m_pool = VK_NULL_HANDLE;
-    VkQueue m_queue = VK_NULL_HANDLE;
     uint32_t m_queueFamily = 0;
     bool m_hasDedicatedQueue = false;
     VulkanQueueManager *m_queueManager = nullptr;

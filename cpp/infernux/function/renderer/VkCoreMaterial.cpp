@@ -17,6 +17,7 @@
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
 #include "vk/DescriptorBindTrace.h"
+#include "vk/MaterialRenderStateVulkan.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
@@ -115,22 +116,26 @@ void InxVkCoreModular::PumpPendingTextureLoads()
 }
 
 TextureResolveResult InxVkCoreModular::ResolveTextureForMaterial(const std::string &textureRef,
-                                                                 const std::string &bindingName)
+                                                                 const std::string &bindingName,
+                                                                 bool waitForPreparation)
 {
-    return ResolveTextureAsset(textureRef, bindingName, TextureDimension::Texture2D, nullptr, nullptr);
+    return ResolveTextureAsset(textureRef, bindingName, TextureDimension::Texture2D, nullptr, nullptr,
+                               waitForPreparation);
 }
 
 TextureResolveResult InxVkCoreModular::ResolveTextureForVectorField(const std::string &textureGuid,
-                                                                    bool linearFiltering, bool repeat)
+                                                                    bool linearFiltering, bool repeat,
+                                                                    bool waitForPreparation)
 {
     return ResolveTextureAsset(textureGuid, "ParticleVectorField", TextureDimension::Texture3D,
-                               linearFiltering ? "bilinear" : "point", repeat ? "repeat" : "clamp");
+                               linearFiltering ? "bilinear" : "point", repeat ? "repeat" : "clamp", waitForPreparation);
 }
 
 TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &textureGuid,
                                                            const std::string &bindingName,
                                                            TextureDimension expectedDimension,
-                                                           const char *filterOverride, const char *wrapOverride)
+                                                           const char *filterOverride, const char *wrapOverride,
+                                                           bool waitForPreparation)
 {
     // Material texture properties store asset GUIDs. Path normalization belongs
     // at the public material/asset boundary, never in the renderer.
@@ -181,6 +186,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
             }
         }
         try {
+            if (waitForPreparation)
+                pending->second->Wait();
             if (!registry.TryCommitAssetLoad(pending->second))
                 return {TextureResolveStatus::Pending, {}};
             m_pendingTextureAssetLoads.erase(pending);
@@ -266,6 +273,10 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
             }
         }
         try {
+            // A synchronous graph publication owns this CPU preparation dependency.
+            // Wait on its worker ticket, not on a frame, retry timer, or GPU idle.
+            if (waitForPreparation)
+                pendingStaging->second->Wait();
             auto staging = registry.TryConsumeTextureUploadStaging(pendingStaging->second);
             if (!staging)
                 return {TextureResolveStatus::Pending, {}};
@@ -569,9 +580,7 @@ void InxVkCoreModular::InitializeMaterialSystem()
         m_materialPipelineManager.Initialize(
             m_backend.Device().GetVmaAllocator(), GetDevice(), GetPhysicalDevice(), colorFormat, depthFormat,
             m_msaaSampleCount, m_shaderCache.GetProgramCache(), &m_deletionQueue,
-            m_backend.Device().IsDescriptorIndexingEnabled(),
-            m_backend.Device().GetRhiDevice().GetCapabilityState().dynamicRendering.IsEnabled(),
-            &m_backend.Device().GetRhiDevice().GetDescriptorManager(),
+            m_backend.Device().IsDescriptorIndexingEnabled(), &m_backend.Device().GetRhiDevice().GetDescriptorManager(),
             rhi::ComputeDeviceShaderContractKey(m_backend.Device().GetRhiDevice().GetCapabilityState()));
         m_materialPipelineManagerInitialized = true;
 
@@ -623,9 +632,6 @@ void InxVkCoreModular::InitializeMaterialSystem()
             // project shader catalog exists.  This is not a failed material:
             // the normal material publication path reflects DefaultLit as
             // soon as Standard|Lit enters the shader cache.
-            INXLOG_DEBUG("InitializeMaterialSystem: default material shader SPIR-V not yet in cache "
-                         "(vert='",
-                         vertId, "', frag='", fragId, "'), deferring reflection until first use");
         }
     }
 
@@ -808,8 +814,7 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     return false;
 }
 
-MaterialPassRenderData *InxVkCoreModular::GetOrCreatePreviewMaterialPass(std::shared_ptr<InxMaterial> material,
-                                                                         bool useDynamicRendering)
+MaterialPassRenderData *InxVkCoreModular::GetOrCreatePreviewMaterialPass(std::shared_ptr<InxMaterial> material)
 {
     if (!material)
         return nullptr;
@@ -820,8 +825,6 @@ MaterialPassRenderData *InxVkCoreModular::GetOrCreatePreviewMaterialPass(std::sh
         return nullptr;
 
     auto descriptor = pipelineManager.GetDefaultPassPipelineDescriptor(ShaderCompileTarget::Forward);
-    if (useDynamicRendering)
-        descriptor.renderingMode = MaterialPassRenderingMode::DynamicRendering;
     return pipelineManager.GetOrCreatePassRenderData(std::move(material), forward->shaderProgram, descriptor);
 }
 
@@ -832,7 +835,6 @@ MaterialPassRenderData *InxVkCoreModular::GetOrCreatePreviewMaterialPass(std::sh
 void InxVkCoreModular::SetAmbientColor(const glm::vec3 &color, float intensity)
 {
     m_lightCollector.SetAmbientColor(color, intensity);
-    INXLOG_DEBUG("SetAmbientColor: (", color.r, ", ", color.g, ", ", color.b, ") intensity=", intensity);
 }
 
 void InxVkCoreModular::UpdateLightingState()
@@ -1293,8 +1295,7 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
 
 VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared_ptr<InxMaterial> &material,
                                                                const std::string &vertShaderName,
-                                                               const std::string &fragShaderName,
-                                                               VkRenderPass compatibleRenderPass, VkFormat depthFormat)
+                                                               const std::string &fragShaderName, VkFormat depthFormat)
 {
     // Shared shadow resources must be ready
     if (m_shadowPipelineLayout == VK_NULL_HANDLE || depthFormat == VK_FORMAT_UNDEFINED)
@@ -1315,80 +1316,50 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     const ShaderProgram *forwardProgram = forwardRenderData ? forwardRenderData->shaderProgram.get() : nullptr;
     const ShaderStagePair stagePair{vertShaderName, fragShaderName};
     const ShaderProgramArtifact *linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
-    ShaderProgramPublication linkedShadowPublication;
-    if (linkedArtifact && linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) {
-        linkedShadowPublication = m_shaderCache.MaterializeProgramVariant(stagePair, ShaderCompileTarget::Shadow);
-    }
-    const ShaderProgram *linkedShadowProgram = linkedShadowPublication.get();
-    material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
-
-    // Structured programs consume the semantic Shadow variant directly. The
-    // suffix lookup remains only for legacy independently compiled stages.
-    std::string shadowVertName = vertShaderName + "/shadow";
-    std::string shadowFragName = fragShaderName + "/shadow";
-
-    VkShaderModule vertModule =
-        linkedShadowProgram ? linkedShadowProgram->GetVertexModule() : GetShaderModule(shadowVertName, "vertex");
-    if (vertModule == VK_NULL_HANDLE && !linkedArtifact)
-        vertModule = GetShaderModule(vertShaderName, "vertex");
-
-    VkShaderModule fragModule =
-        linkedShadowProgram ? linkedShadowProgram->GetFragmentModule() : GetShaderModule(shadowFragName, "fragment");
-    if (fragModule == VK_NULL_HANDLE) {
-        static std::unordered_set<std::string> s_warnedShadowFragShaders;
-        const std::string missingName = linkedArtifact ? linkedArtifact->key.ToString() + ":Shadow" : shadowFragName;
-        if (s_warnedShadowFragShaders.insert(missingName).second) {
-            INXLOG_WARN("EnsureMaterialShadowPipeline: missing shadow fragment program '", missingName,
-                        "' — materials using this shader will use default shadow pass");
-        }
+    if (!linkedArtifact || !linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) {
+        INXLOG_ERROR("EnsureMaterialShadowPipeline: linked Shadow variant is unavailable for material '",
+                     material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
+    ShaderProgramPublication linkedShadowPublication =
+        m_shaderCache.MaterializeProgramVariant(stagePair, ShaderCompileTarget::Shadow);
+    const ShaderProgram *linkedShadowProgram = linkedShadowPublication.get();
+    if (!linkedShadowProgram) {
+        INXLOG_ERROR("EnsureMaterialShadowPipeline: failed to materialize linked Shadow variant '",
+                     linkedArtifact->key.ToString(), "'");
+        return VK_NULL_HANDLE;
+    }
+    material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
 
+    const VkShaderModule vertModule = linkedShadowProgram->GetVertexModule();
+    const VkShaderModule fragModule = linkedShadowProgram->GetFragmentModule();
     if (vertModule == VK_NULL_HANDLE || fragModule == VK_NULL_HANDLE) {
-        static int s_missingShadowModuleWarnCount = 0;
-        if (s_missingShadowModuleWarnCount++ < 16) {
-            INXLOG_WARN("EnsureMaterialShadowPipeline: shader modules unavailable for material '", material->GetName(),
-                        "' (vert='", shadowVertName, "' fallback='", vertShaderName, "', frag='", shadowFragName, "')");
-        }
+        INXLOG_ERROR("EnsureMaterialShadowPipeline: linked Shadow modules are unavailable for material '",
+                     material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
 
     // ---- Shadow pipeline cache: share VkPipeline across materials with same shader + cull mode ----
-    VkCullModeFlags matCullMode = material->GetRenderState().cullMode;
-    std::string shadowShaderKey = vertShaderName + "|" + fragShaderName + "|";
-    shadowShaderKey += linkedArtifact ? std::to_string(linkedArtifact->key.revision) + ":Shadow" : "legacy-shadow";
+    VkCullModeFlags matCullMode = vk::ToVkCullMode(material->GetRenderState().cullMode);
+    std::string shadowShaderKey = linkedArtifact->key.stages.ToString() + "|";
+    shadowShaderKey += std::to_string(linkedArtifact->key.revision) + ":Shadow";
     shadowShaderKey += "|cull" + std::to_string(matCullMode);
     shadowShaderKey += "|depth" + std::to_string(static_cast<uint32_t>(depthFormat));
-    shadowShaderKey += "|renderPass" + std::to_string(VulkanHandleBits(compatibleRenderPass));
     auto cacheIt = m_shadowPipelineCache.find(shadowShaderKey);
     if (cacheIt != m_shadowPipelineCache.end()) {
         material->SetPassPipeline(ShaderCompileTarget::Shadow, cacheIt->second);
         material->SetPassPipelineLayout(ShaderCompileTarget::Shadow, m_shadowPipelineLayout);
         material->SetPassShaderProgram(ShaderCompileTarget::Shadow, linkedShadowPublication);
         return EnsureShadowMaterialBinding(material, forwardMaterialDesc, forwardProgram, linkedShadowProgram,
-                                           linkedArtifact ? linkedArtifact->key.revision : 0);
+                                           linkedArtifact->key.revision);
     }
 
     // Shader stages
     auto shaderStages = vkrender::MakeVertFragStages(vertModule, fragModule);
 
     // Vertex input — only attributes consumed by the shadow vertex shader (full mesh buffer still bound).
-    auto bindingDesc = Vertex::getBindingDescription();
-    ShaderReflection shadowVertRefl;
-    bool haveVertRefl = linkedShadowProgram != nullptr;
-    if (linkedShadowProgram)
-        shadowVertRefl = linkedShadowProgram->GetVertexReflection();
-    if (!haveVertRefl) {
-        if (const auto *spv = m_shaderCache.FindVertCode(shadowVertName))
-            haveVertRefl = shadowVertRefl.Reflect(*spv, VK_SHADER_STAGE_VERTEX_BIT);
-    }
-    if (!haveVertRefl && !linkedArtifact) {
-        if (const auto *spv = m_shaderCache.FindVertCode(vertShaderName))
-            haveVertRefl = shadowVertRefl.Reflect(*spv, VK_SHADER_STAGE_VERTEX_BIT);
-    }
-    if (!haveVertRefl && forwardProgram != nullptr && vertModule == forwardProgram->GetVertexModule()) {
-        shadowVertRefl = forwardProgram->GetVertexReflection();
-    }
+    auto bindingDesc = vk::GetVertexBindingDescription();
+    const ShaderReflection &shadowVertRefl = linkedShadowProgram->GetVertexReflection();
     std::vector<VkVertexInputAttributeDescription> attrDescs = FilterVertexAttributesForReflection(shadowVertRefl);
 
     VkPipelineVertexInputStateCreateInfo vertexInput{};
@@ -1451,26 +1422,24 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     pipelineInfo.layout = m_shadowPipelineLayout;
     std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> dynamicColorFormats{};
     VkPipelineRenderingCreateInfo dynamicRenderingInfo{};
-    if (compatibleRenderPass == VK_NULL_HANDLE) {
-        rhi::GraphicsRenderingSignature signature;
-        signature.depthFormat = rhi::FromVkFormat(depthFormat);
-        signature.stencilFormat =
-            rhi::IsStencilFormat(signature.depthFormat) ? signature.depthFormat : rhi::PixelFormat::Undefined;
-        signature.samples = rhi::SampleCount::One;
-        if (!rhi::BuildVkPipelineRenderingInfo(signature, dynamicColorFormats, dynamicRenderingInfo)) {
-            INXLOG_WARN("Failed to build Dynamic Rendering signature for shadow pipeline");
-            return VK_NULL_HANDLE;
-        }
-        pipelineInfo.pNext = &dynamicRenderingInfo;
+    rhi::GraphicsRenderingSignature signature;
+    signature.depthFormat = rhi::FromVkFormat(depthFormat);
+    signature.stencilFormat =
+        rhi::IsStencilFormat(signature.depthFormat) ? signature.depthFormat : rhi::PixelFormat::Undefined;
+    signature.samples = rhi::SampleCount::One;
+    if (!rhi::BuildVkPipelineRenderingInfo(signature, dynamicColorFormats, dynamicRenderingInfo)) {
+        INXLOG_WARN("Failed to build Dynamic Rendering signature for shadow pipeline");
+        return VK_NULL_HANDLE;
     }
-    pipelineInfo.renderPass = compatibleRenderPass;
+    pipelineInfo.pNext = &dynamicRenderingInfo;
+    pipelineInfo.renderPass = VK_NULL_HANDLE;
     pipelineInfo.subpass = 0;
 
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
     VkPipelineCache pipelineCache = m_materialPipelineManager.GetVkPipelineCache();
     if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &shadowPipeline) != VK_SUCCESS) {
-        INXLOG_WARN("Failed to create shared shadow pipeline for '", material->GetName(), "' (vert='", shadowVertName,
-                    "', frag='", shadowFragName, "')");
+        INXLOG_WARN("Failed to create linked shadow pipeline for '", material->GetName(), "' (program='",
+                    linkedArtifact->key.ToString(), "')");
         return VK_NULL_HANDLE;
     }
 
@@ -1478,9 +1447,8 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     material->SetPassPipeline(ShaderCompileTarget::Shadow, shadowPipeline);
     material->SetPassPipelineLayout(ShaderCompileTarget::Shadow, m_shadowPipelineLayout);
     material->SetPassShaderProgram(ShaderCompileTarget::Shadow, linkedShadowPublication);
-    INXLOG_DEBUG("Created shared shadow pipeline for '", material->GetName(), "'");
     return EnsureShadowMaterialBinding(material, forwardMaterialDesc, forwardProgram, linkedShadowProgram,
-                                       linkedArtifact ? linkedArtifact->key.revision : 0);
+                                       linkedArtifact->key.revision);
 }
 
 // ============================================================================

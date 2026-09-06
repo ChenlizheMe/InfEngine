@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import time
 import uuid
 from typing import Iterable, Mapping
 
 from packaging.utils import canonicalize_name
 
+from Infernux.core.document_store import write_document_text
 from Infernux.engine.path_utils import resolved_path
 
 from .content import normalize_locale, normalize_page_descriptor
@@ -20,7 +20,6 @@ from .package import validate_reference
 REGISTRY_RELATIVE_PATH = os.path.join("ProjectSettings", "InxPlugins.json")
 LOCK_RELATIVE_PATH = os.path.join("ProjectSettings", "InxPackages.lock.json")
 REGISTRY_SCHEMA = "infernux.plugin_registry"
-REGISTRY_VERSION = 2
 
 
 class PluginRegistry:
@@ -42,18 +41,19 @@ class PluginRegistry:
         if (
             not isinstance(value, dict)
             or value.get("$schema") != REGISTRY_SCHEMA
-            or value.get("registry_version") != REGISTRY_VERSION
+            or set(value) != {
+                "$schema", "packages", "installed", "python_installs",
+                "python_dependencies",
+            }
         ):
             raise ValueError("Unsupported plugin registry schema")
         if (
             not isinstance(value.get("packages"), list)
             or not isinstance(value.get("installed"), list)
-            or not isinstance(value.get("python_installs", []), list)
-            or not isinstance(value.get("python_dependencies", []), list)
+            or not isinstance(value.get("python_installs"), list)
+            or not isinstance(value.get("python_dependencies"), list)
         ):
             raise ValueError("Plugin registry catalog, install, and Python fields must be lists")
-        value.setdefault("python_installs", [])
-        value.setdefault("python_dependencies", [])
         self._validate_installed(value["installed"])
         _validate_python_dependencies(value["python_dependencies"])
         return value
@@ -61,11 +61,11 @@ class PluginRegistry:
     def save(self, value: Mapping[str, object]) -> None:
         document = dict(value)
         document["$schema"] = REGISTRY_SCHEMA
-        document["registry_version"] = REGISTRY_VERSION
-        document.setdefault("packages", [])
-        document.setdefault("installed", [])
-        document.setdefault("python_installs", [])
-        document.setdefault("python_dependencies", [])
+        if set(document) != {
+            "$schema", "packages", "installed", "python_installs",
+            "python_dependencies",
+        }:
+            raise ValueError("Unsupported plugin registry schema")
         if (
             not isinstance(document["packages"], list)
             or not isinstance(document["installed"], list)
@@ -76,22 +76,13 @@ class PluginRegistry:
         self._validate_installed(document["installed"])
         _validate_python_dependencies(document["python_dependencies"])
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        fd, temporary = tempfile.mkstemp(
-            prefix="InxPlugins.json.tmp.", dir=os.path.dirname(self.path)
+        # Registry readers include the UI, script scanner and preload workers.
+        # Use the shared IO service's durable publication and Windows sharing
+        # semantics instead of a separate, immediate os.replace implementation.
+        write_document_text(
+            self.path, json.dumps(document, indent=2, ensure_ascii=False) + "\n"
         )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-                json.dump(document, stream, indent=2, ensure_ascii=False)
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-            self._write_lock(document)
-        finally:
-            try:
-                os.remove(temporary)
-            except FileNotFoundError:
-                pass
+        self._write_lock(document)
 
     def available(self) -> tuple[dict[str, object], ...]:
         return tuple(
@@ -152,6 +143,43 @@ class PluginRegistry:
                     result.append((package, dict(item)))
         return tuple(result)
 
+    @staticmethod
+    def build_package_entry(
+        reference: str,
+        *,
+        intro: str = "",
+        intros: Mapping[str, object] | None = None,
+        source: Mapping[str, object],
+        version: str = "",
+        engine: str = "",
+        dependencies: Iterable[str] = (),
+        name: str = "",
+        pages: Iterable[Mapping[str, object] | str] = (),
+        category: str = "Other",
+        targets: Iterable[str] = (),
+    ) -> dict[str, object]:
+        """Normalize one catalog entry exactly as add_package() would store it."""
+
+        reference = validate_reference(reference)
+        source_value = dict(source)
+        if not str(source_value.get("type", "")).strip() or not str(
+            source_value.get("location", "")
+        ).strip():
+            raise ValueError("Registry package requires a typed source with a location")
+        return {
+            "reference": reference,
+            "name": str(name or reference),
+            "intro": str(intro),
+            "intros": _normalize_intros(intros or {}),
+            "version": str(version),
+            "engine": str(engine),
+            "dependencies": sorted({validate_reference(item) for item in dependencies}),
+            "source": source_value,
+            "pages": [normalize_page_descriptor(page) for page in pages],
+            "category": str(category or "Other"),
+            "targets": sorted({str(target) for target in targets if str(target)}),
+        }
+
     def add_package(
         self,
         reference: str,
@@ -164,25 +192,24 @@ class PluginRegistry:
         dependencies: Iterable[str] = (),
         name: str = "",
         pages: Iterable[Mapping[str, object] | str] = (),
+        category: str = "Other",
+        targets: Iterable[str] = (),
     ) -> dict[str, object]:
-        reference = validate_reference(reference)
-        source_value = dict(source)
-        if not str(source_value.get("type", "")).strip() or not str(
-            source_value.get("location", "")
-        ).strip():
-            raise ValueError("Registry package requires a typed source with a location")
+        item = self.build_package_entry(
+            reference,
+            intro=intro,
+            intros=intros,
+            source=source,
+            version=version,
+            engine=engine,
+            dependencies=dependencies,
+            name=name,
+            pages=pages,
+            category=category,
+            targets=targets,
+        )
+        reference = str(item["reference"])
         document = self.load()
-        item = {
-            "reference": reference,
-            "name": str(name or reference),
-            "intro": str(intro),
-            "intros": _normalize_intros(intros or {}),
-            "version": str(version),
-            "engine": str(engine),
-            "dependencies": sorted({validate_reference(item) for item in dependencies}),
-            "source": source_value,
-            "pages": [normalize_page_descriptor(page) for page in pages],
-        }
         packages = [
             entry
             for entry in document["packages"]
@@ -206,7 +233,6 @@ class PluginRegistry:
         dependencies: Iterable[str] = (),
         enabled: bool = True,
         transaction_id: str = "",
-        package_sha256: str = "",
         python_requirements: Iterable[Mapping[str, object]] = (),
         python_changes: Iterable[Mapping[str, object]] = (),
         python_install: Mapping[str, object] | None = None,
@@ -232,7 +258,6 @@ class PluginRegistry:
             "dependencies": sorted({validate_reference(item) for item in dependencies}),
             "transaction_id": str(transaction_id or uuid.uuid4().hex),
             "installed_at": time.time(),
-            "package_sha256": str(package_sha256).casefold(),
             "enabled": bool(enabled),
             "python_requirements": normalized_python_requirements,
             "python_changes": normalized_python_changes,
@@ -240,6 +265,15 @@ class PluginRegistry:
             "control": dict(control),
         }
         document = self.load()
+        names = {requirement["name"] for requirement in normalized_python_requirements}
+        # The manager has released dropped requirements before replacing this
+        # installed owner. Other packages and their baseline versions stay intact.
+        for dependency in document["python_dependencies"]:
+            if str(dependency["name"]) not in names:
+                dependency["owners"] = [owner for owner in dependency.get("owners", [])
+                                        if str(owner.get("reference", "")).casefold() != reference.casefold()]
+        document["python_dependencies"] = [dependency for dependency in document["python_dependencies"]
+                                           if dependency.get("owners")]
         _register_python_dependency_owner(
             document,
             reference,
@@ -283,6 +317,18 @@ class PluginRegistry:
             for entry in document["installed"]
             if str(entry.get("reference", "")).casefold() != reference.casefold()
         ]
+        previous = next((entry for entry in document["installed"]
+                         if str(entry.get("reference", "")).casefold() == reference.casefold()), None)
+        if previous:
+            retained = {str(file["guid"]).casefold() for file in item["files"]}
+            for old in previous["files"]:
+                guid = str(old["guid"]).casefold()
+                if not bool(old.get("owned", True)) or guid in retained:
+                    continue
+                replacement = next((file for package in installed for file in package["files"]
+                                    if str(file["guid"]).casefold() == guid), None)
+                if replacement is not None:
+                    replacement["owned"] = True
         installed.append(item)
         document["installed"] = sorted(
             installed, key=lambda entry: str(entry.get("reference", "")).casefold()
@@ -324,6 +370,60 @@ class PluginRegistry:
                 normalized_requirements,
                 normalized_changes,
             )
+        self.save(document)
+        return item
+
+    def record_python_reconciliation(
+        self,
+        *,
+        requirements: Iterable[str],
+        changes: Iterable[Mapping[str, object]],
+        owners: Mapping[str, Iterable[Mapping[str, object]]] | None = None,
+    ) -> dict[str, object]:
+        """Record dependency repair in the active project Python environment."""
+
+        document = self.load()
+        normalized_changes = _normalize_python_changes(changes)
+        item = {
+            "transaction_id": uuid.uuid4().hex,
+            "installed_at": time.time(),
+            "syntax": "startup dependency reconciliation",
+            "command": [],
+            "requirements": [str(value) for value in requirements],
+            "output": "",
+            "owner": "@environment",
+            "changes": normalized_changes,
+        }
+        document["python_installs"].append(item)
+        installed_by_reference = {
+            str(record.get("reference", "")).casefold(): record
+            for record in document.get("installed", [])
+            if isinstance(record, dict)
+        }
+        for reference, raw_requirements in (owners or {}).items():
+            normalized_requirements = _normalize_python_requirements(raw_requirements)
+            if not normalized_requirements:
+                continue
+            _register_python_dependency_owner(
+                document,
+                reference,
+                normalized_requirements,
+                normalized_changes,
+            )
+            installed = installed_by_reference.get(str(reference).casefold())
+            if installed is not None:
+                installed["python_requirements"] = normalized_requirements
+        changes_by_name = {change["name"]: change for change in normalized_changes}
+        for raw in document.get("python_dependencies", []):
+            if not isinstance(raw, dict):
+                continue
+            name = canonicalize_name(str(raw.get("name", "")))
+            change = changes_by_name.get(name)
+            if change is None:
+                continue
+            raw["managed"] = True
+            raw["baseline_version"] = change["before"]
+            raw["installed_version"] = change["after"]
         self.save(document)
         return item
 
@@ -457,7 +557,6 @@ class PluginRegistry:
     def _empty() -> dict[str, object]:
         return {
             "$schema": REGISTRY_SCHEMA,
-            "registry_version": REGISTRY_VERSION,
             "packages": [],
             "installed": [],
             "python_installs": [],
@@ -476,7 +575,6 @@ class PluginRegistry:
                         "reference",
                         "version",
                         "engine",
-                        "package_sha256",
                         "transaction_id",
                         "installed_at",
                         "source",
@@ -489,7 +587,6 @@ class PluginRegistry:
             )
         document = {
             "$schema": "infernux.package_lock",
-            "lock_version": 1,
             "packages": packages,
             "python": list(registry.get("python_installs", [])),
             "python_dependencies": list(
@@ -497,22 +594,9 @@ class PluginRegistry:
             ),
         }
         os.makedirs(os.path.dirname(self.lock_path), exist_ok=True)
-        fd, temporary = tempfile.mkstemp(
-            prefix="InxPackages.lock.json.tmp.",
-            dir=os.path.dirname(self.lock_path),
+        write_document_text(
+            self.lock_path, json.dumps(document, indent=2, ensure_ascii=False) + "\n"
         )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-                json.dump(document, stream, indent=2, ensure_ascii=False)
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.lock_path)
-        finally:
-            try:
-                os.remove(temporary)
-            except FileNotFoundError:
-                pass
 
 
 def _normalize_python_requirements(
@@ -658,5 +742,4 @@ __all__ = [
     "LOCK_RELATIVE_PATH",
     "PluginRegistry",
     "REGISTRY_RELATIVE_PATH",
-    "REGISTRY_VERSION",
 ]

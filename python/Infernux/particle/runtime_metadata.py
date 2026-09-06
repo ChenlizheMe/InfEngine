@@ -178,17 +178,16 @@ def _decode_parameter(value: Any, index: int) -> ParticleParameterRuntimeMetadat
         "slot",
         "category",
         "tooltip",
+        "hdr",
     }
     fields = set(value) if type(value) is dict else set()
-    if type(value) is not dict or (
-        fields != expected and fields != expected | {"hdr"}
-    ):
+    if type(value) is not dict or fields != expected:
         raise ParticleRuntimeMetadataError(f"{location} does not match the schema")
     try:
         value_type = TypeRef.from_dict(value["type"])
     except (TypeError, ValueError) as exc:
         raise ParticleRuntimeMetadataError(f"{location} type is invalid") from exc
-    hdr = value.get("hdr", False)
+    hdr = value["hdr"]
     if (
         type(value["stable_id"]) is not str
         or not value["stable_id"]

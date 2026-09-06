@@ -9,6 +9,7 @@ from Infernux.engine.interaction.command_palette import (
 )
 
 from .editor_modal import begin_editor_modal, end_editor_modal
+from .dpi import scaled_editor_metric
 
 
 class CommandPalettePresenter:
@@ -69,7 +70,7 @@ class CommandPalettePresenter:
                         f"{entry.display_name}    [{category}]{shortcut}##palette_{entry.command_id}",
                         index == self._service.selected_index,
                         width=0.0,
-                        height=30.0,
+                        height=scaled_editor_metric(ctx, 30.0),
                     )
                     ctx.record_semantic_item(
                         "command",

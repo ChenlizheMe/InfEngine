@@ -397,6 +397,16 @@ class EditorPanel(ClosablePanel):
             )
             panel_state.delete(f"panel:{self.window_id}")
 
+    def _scaled_initial_size(self, ctx) -> Optional[tuple[float, float]]:
+        """Resolve an authored 100%-DPI initial size for the active monitor."""
+        init_size = self._initial_size()
+        if init_size is None:
+            return None
+        from .dpi import editor_dpi_scale
+
+        dpi = editor_dpi_scale(ctx)
+        return init_size[0] * dpi, init_size[1] * dpi
+
     # ------------------------------------------------------------------
     # Unified Render Frame
     # ------------------------------------------------------------------
@@ -420,10 +430,14 @@ class EditorPanel(ClosablePanel):
             self.on_enable()
 
         # Apply the initial size on first use if provided.
-        init_size = self._initial_size()
+        init_size = self._scaled_initial_size(ctx)
         if init_size is not None:
             from .theme import Theme
-            ctx.set_next_window_size(init_size[0], init_size[1], Theme.COND_FIRST_USE_EVER)
+            ctx.set_next_window_size(
+                init_size[0],
+                init_size[1],
+                Theme.COND_FIRST_USE_EVER,
+            )
 
         # Run pre-frame logic before the window begins.
         self._pre_render(ctx)

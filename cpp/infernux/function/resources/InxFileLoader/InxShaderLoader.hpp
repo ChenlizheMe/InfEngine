@@ -145,6 +145,14 @@ class InxShaderLoader
     [[nodiscard]] std::vector<char> CompileFragmentGlsl(const std::string &source,
                                                         const std::string &virtualPath = "<generated-fragment>");
 
+    /// Generate the backend-neutral Vulkan GLSL stage source used before
+    /// SPIR-V compilation. Cross-platform cooks use this entry point so
+    /// ShaderInfo parsing, imports, templates, resource bindings, and pass
+    /// semantics stay identical to the desktop renderer before translating
+    /// the generated source to a platform shader language such as WGSL.
+    [[nodiscard]] std::string PrepareAuthoredStageGlsl(const std::string &source, const std::string &filePath,
+                                                       ShaderCompileTarget target = ShaderCompileTarget::Forward);
+
     /// Parse shader source into a structured ShaderDescriptor (single pass, no code generation).
     ShaderDescriptor ParseShaderSource(const std::string &source, const std::string &filePath) const;
 

@@ -158,6 +158,11 @@ enum class TextureLayout : uint8_t
            format == PixelFormat::BC3Srgb || format == PixelFormat::BC7Srgb;
 }
 
+[[nodiscard]] constexpr bool IsBlockCompressedFormat(PixelFormat format) noexcept
+{
+    return format >= PixelFormat::BC1RgbaUNorm && format <= PixelFormat::BC7Srgb;
+}
+
 [[nodiscard]] constexpr PixelFormat LinearColorFormat(PixelFormat format) noexcept
 {
     switch (format) {

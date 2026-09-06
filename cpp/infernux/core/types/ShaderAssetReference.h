@@ -27,4 +27,17 @@ struct ShaderAssetReference
     }
 };
 
+/// @brief True when the two references identify the same shader *asset*.
+/// GUID is the only durable identity: moving the file refreshes pathHint and
+/// shader metadata may refresh shaderId, neither of which changes the asset.
+/// Symbolic built-in shaders identify themselves by shaderId because they do
+/// not carry an asset GUID.
+[[nodiscard]] inline bool ReferencesSameShader(const ShaderAssetReference &lhs,
+                                               const ShaderAssetReference &rhs) noexcept
+{
+    if (!lhs.guid.empty() && !rhs.guid.empty())
+        return lhs.guid == rhs.guid;
+    return lhs.shaderId == rhs.shaderId;
+}
+
 } // namespace infernux

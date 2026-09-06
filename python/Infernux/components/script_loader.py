@@ -12,7 +12,6 @@ import sys
 import importlib
 import importlib.util
 import inspect
-import time
 import tokenize
 import types
 from dataclasses import dataclass, fields as dataclass_fields
@@ -89,8 +88,8 @@ class ComponentBodyReloadTransaction:
     Candidate modules live in a transaction-private import table while
     staging. No candidate module is published to ``sys.modules`` until
     ``commit`` succeeds. A precise before-image is retained for the component
-    registry, class bodies, class dispatch caches, instance dispatch caches
-    and script diagnostics, so a later owner-side rollback can restore the
+    registry, class bodies, epoch publication and script diagnostics, so a
+    later owner-side rollback can restore the
     exact pre-commit state without touching unrelated modules.
     """
 
@@ -137,43 +136,6 @@ class ComponentBodyReloadTransaction:
             )
             for target_type, operations in plans
         )
-        instances = {}
-        for request in requests:
-            for target_type, values in (request.instances_by_type or {}).items():
-                instances.setdefault(target_type, tuple(values))
-        for migration in self.schema_migrations:
-            discovered = collect_live_instances(migration.target_type)
-            if discovered:
-                merged = tuple(
-                    dict.fromkeys(
-                        (*instances.get(migration.target_type, ()), *discovered)
-                    )
-                )
-                instances[migration.target_type] = merged
-        self._dispatch_snapshots = tuple(
-            (
-                target_type,
-                _snapshot_object_attributes(
-                    target_type,
-                    (
-                        "_runtime_phase_dispatch",
-                        "_runtime_phase_invokers",
-                        "_runtime_dispatch_compatibility_descriptor",
-                    ),
-                ),
-                tuple(
-                    (
-                        instance,
-                        _snapshot_object_attributes(
-                            instance,
-                            ("_runtime_phase_invokers_instance",),
-                        ),
-                    )
-                    for instance in values
-                ),
-            )
-            for target_type, values in instances.items()
-        )
         self._committed = False
         self._rolled_back = False
         self._result: dict[type, tuple[str, ...]] = {}
@@ -219,14 +181,7 @@ class ComponentBodyReloadTransaction:
             # failure must never leave a body patch visible in an active frame.
             assert_runtime_dispatch_safe_point()
             _prepare_transaction_schema_state(self)
-            self._result = _apply_component_body_patch_plans(
-                self.plans,
-                instances_by_type={
-                    target_type: tuple(values)
-                    for request in self.requests
-                    for target_type, values in (request.instances_by_type or {}).items()
-                },
-            )
+            self._result = _apply_component_body_patch_plans(self.plans)
             if self._cds_publication is not None:
                 self._cds_publication.commit()
             _publish_transaction_instance_schemas(self)
@@ -244,18 +199,18 @@ class ComponentBodyReloadTransaction:
                 )
             from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
 
-            instances_by_type = {
-                target_type: tuple(values)
-                for request in self.requests
-                for target_type, values in (request.instances_by_type or {}).items()
-            }
-            # Class/instance compatibility mirrors were staged above.  The
-            # immutable epoch is published only after registry and every body
-            # operation in this transaction has succeeded.
+            # The immutable epoch is published only after registry and every
+            # body operation in this transaction has succeeded.
+            dispatch_types = tuple(dict.fromkeys(
+                [target_type for target_type, _operations in self.plans]
+                + [
+                    component_type
+                    for _path, component_types in self.registry_entries
+                    for component_type in component_types
+                ]
+            ))
             self._dispatch_publication = publish_runtime_dispatch_epoch(
-                tuple(target_type for target_type, _operations in self.plans),
-                instances_by_type,
-                sync_compatibility=False,
+                dispatch_types,
                 retired_types=self._retired_types,
                 defer_commit=True,
             )
@@ -318,10 +273,6 @@ class ComponentBodyReloadTransaction:
             _invalidate_serialized_field_caches(
                 target_type for target_type, _snapshot in self._class_snapshots
             )
-            for target_type, class_snapshot, instance_snapshots in self._dispatch_snapshots:
-                _restore_object_attributes(target_type, class_snapshot)
-                for instance, snapshot in instance_snapshots:
-                    _restore_object_attributes(instance, snapshot)
             for component_type, snapshot in self._registration_pending_snapshots:
                 _restore_object_attributes(component_type, snapshot)
             _restore_transaction_instance_schemas(self)
@@ -686,20 +637,6 @@ def _restore_transaction_instance_schemas(
                 values.pop(name, None)
 
 
-def _capture_module_before_image(
-    before: dict[str, object],
-    after: dict[str, object],
-    image: dict[str, object],
-) -> None:
-    """Record only module keys whose table entry changed during one candidate."""
-    for name in set(before) | set(after):
-        previous = before.get(name, _MODULE_ABSENT)
-        current = after.get(name, _MODULE_ABSENT)
-        if previous is current:
-            continue
-        image.setdefault(name, previous)
-
-
 def _restore_sys_modules(before_image: dict[str, object]) -> None:
     """Restore only module entries captured as touched by this transaction."""
     for name, previous in before_image.items():
@@ -869,12 +806,6 @@ def stage_component_body_reload_batch(
     requests: Iterable[ComponentBodyReloadRequest],
 ) -> ComponentBodyReloadTransaction:
     """Stage all script candidates before touching any live class body."""
-    profile_started = time.perf_counter()
-    profile_marks: list[tuple[str, float]] = []
-
-    def mark(label: str) -> None:
-        profile_marks.append((label, time.perf_counter()))
-
     incoming_requests = tuple(requests)
     if not incoming_requests:
         raise ValueError("at least one reload request is required")
@@ -911,7 +842,6 @@ def stage_component_body_reload_batch(
         request_modules.append(module_name)
     normalized_requests = tuple(normalized_requests)
     request_modules = tuple(request_modules)
-    mark("normalize")
 
     from .registry import (
         restore_component_registry_state,
@@ -920,7 +850,6 @@ def stage_component_body_reload_batch(
 
     registry_snapshot = snapshot_component_registry_state()
     diagnostic_snapshot = _snapshot_script_diagnostics()
-    mark("snapshots")
     module_snapshot: dict[str, object] = {}
     plans: list[tuple[type, tuple[tuple[str, bool, object], ...]]] = []
     matched_types: list[tuple[type, type]] = []
@@ -939,7 +868,6 @@ def stage_component_body_reload_batch(
             source=request.source,
             code=request.code,
         )
-    mark("register_candidates")
 
     try:
         for request, module_name in zip(normalized_requests, request_modules):
@@ -997,8 +925,6 @@ def stage_component_body_reload_batch(
                     # Loading a candidate must not publish diagnostics. The
                     # outer collector clears errors after durable commit.
                     _restore_script_diagnostics(diagnostic_snapshot)
-
-            mark(f"load_candidate:{os.path.basename(file_path)}")
 
             if diagnostic:
                 raise ScriptLoadError(
@@ -1103,7 +1029,6 @@ def stage_component_body_reload_batch(
             candidate_import.publishable_modules,
             replacements,
         )
-        mark("rebind")
         schema_migrations.extend(
             build_class_schema_migration(target_type, candidate_type)
             for target_type, candidate_type in matched_types
@@ -1115,8 +1040,6 @@ def stage_component_body_reload_batch(
             )
             for target_type, candidate_type in matched_types
         )
-        mark("schema_and_plans")
-
         transaction = ComponentBodyReloadTransaction(
             normalized_requests,
             tuple(plans),
@@ -1131,18 +1054,6 @@ def stage_component_body_reload_batch(
             cds_publish_types=tuple(cds_publish_types),
             registration_publish_types=tuple(registration_publish_types),
         )
-        mark("transaction_snapshot")
-        total_ms = (time.perf_counter() - profile_started) * 1000.0
-        if total_ms >= 25.0:
-            previous = profile_started
-            pieces = []
-            for label, current in profile_marks:
-                pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
-                previous = current
-            Debug.log_internal(
-                f"[ScriptReloadProfile] stage_detail total={total_ms:.2f}ms "
-                + " ".join(pieces)
-            )
         return transaction
     except Exception:
         candidate_import.rollback()
@@ -1186,8 +1097,6 @@ def retire_script_module(file_path: str) -> object | None:
 
 _BODY_PATCH_GENERATED_KEYS = frozenset({
     "_serialized_fields_",
-    "_runtime_phase_dispatch",
-    "_runtime_phase_invokers",
     "_intrinsic_script_guid_",
     "_type_guid_",
     "_asset_script_guid_",
@@ -1335,7 +1244,6 @@ def _plan_component_class_body_patch(
 
 def _apply_component_body_patch_plans(
     plans: tuple[tuple[type, tuple[tuple[str, bool, object], ...]], ...],
-    instances_by_type: Optional[dict[type, tuple[object, ...]]] = None,
 ) -> dict[type, tuple[str, ...]]:
     """Publish all validated class patches, rolling back on mutation failure."""
     snapshots = {}
@@ -1361,13 +1269,6 @@ def _apply_component_body_patch_plans(
         )
         result = {}
         for target_type, operations in plans:
-            from ._component_lifecycle import refresh_runtime_dispatch_cache
-
-            refresh_runtime_dispatch_cache(
-                target_type,
-                (instances_by_type or {}).get(target_type, ()),
-                publish_epoch=False,
-            )
             result[target_type] = tuple(name for name, _candidate_has, _value in operations)
         return result
     except Exception:
@@ -1378,13 +1279,6 @@ def _apply_component_body_patch_plans(
                 elif name in target_type.__dict__:
                     delattr(target_type, name)
         _invalidate_serialized_field_caches(snapshots)
-        from ._component_lifecycle import refresh_runtime_dispatch_cache
-        for target_type, _operations in plans:
-            refresh_runtime_dispatch_cache(
-                target_type,
-                (instances_by_type or {}).get(target_type, ()),
-                publish_epoch=False,
-            )
         raise
 
 
@@ -1398,35 +1292,6 @@ def patch_component_class_body(target_type: type, candidate_type: type) -> tuple
         name: (name in target_type.__dict__, target_type.__dict__.get(name))
         for name, _candidate_has, _value in plan
     }
-    dispatch_snapshot = _snapshot_object_attributes(
-        target_type,
-        (
-            "_runtime_phase_dispatch",
-            "_runtime_phase_invokers",
-            "_runtime_dispatch_compatibility_descriptor",
-        ),
-    )
-    active_instances = []
-    for values in getattr(target_type, "_active_instances", {}).values():
-        active_instances.extend(tuple(values))
-    seen_instances: set[int] = set()
-    instance_snapshots = []
-    for instance in active_instances:
-        if id(instance) in seen_instances or type(instance) is not target_type:
-            continue
-        seen_instances.add(id(instance))
-        instance_snapshots.append(
-            (
-                instance,
-                _snapshot_object_attributes(
-                    instance,
-                    (
-                        "_runtime_phase_invokers_instance",
-                        "_lifecycle_dispatch_cache",
-                    ),
-                ),
-            )
-        )
     publication = None
     try:
         result = _apply_component_body_patch_plans(((target_type, plan),))
@@ -1434,7 +1299,6 @@ def patch_component_class_body(target_type: type, candidate_type: type) -> tuple
 
         publication = publish_runtime_dispatch_epoch(
             (target_type,),
-            sync_compatibility=False,
             defer_commit=True,
         )
         publication.commit()
@@ -1443,17 +1307,7 @@ def patch_component_class_body(target_type: type, candidate_type: type) -> tuple
         if publication is not None:
             publication.rollback()
         _restore_object_attributes(target_type, body_snapshot)
-        _restore_object_attributes(target_type, dispatch_snapshot)
         _invalidate_serialized_field_caches((target_type,))
-        for instance, snapshot in instance_snapshots:
-            _restore_object_attributes(instance, snapshot)
-            native = getattr(instance, "_cpp_component", None)
-            refresh_native = getattr(native, "refresh_python_lifecycle_dispatch", None)
-            if callable(refresh_native):
-                try:
-                    refresh_native()
-                except (AttributeError, ReferenceError, RuntimeError):
-                    pass
         raise
 
 
@@ -1483,22 +1337,6 @@ def reload_component_bodies(
     result = transaction.commit()
     transaction.finalize()
     return result
-
-
-def reload_component_body(
-    file_path: str,
-    target_type: type,
-    *,
-    script_guid: str = "",
-    source: bytes | str | None = None,
-) -> tuple[str, ...]:
-    """Compatibility wrapper for a one-target body-only reload."""
-    return reload_component_bodies(
-        file_path,
-        (target_type,),
-        script_guid=script_guid,
-        source=source,
-    )[target_type]
 
 
 # ---------------------------------------------------------------------------

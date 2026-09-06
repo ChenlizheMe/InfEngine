@@ -36,6 +36,8 @@ class CppProperty:
         range: Optional[tuple] = ...,
         enum_type: Any = ...,
         enum_labels: Optional[list] = ...,
+        element_type: Optional[FieldType] = ...,
+        element_class: Any = ...,
         visible_when: Any = ...,
         asset_type: Optional[str] = ...,
         get_converter: Any = ...,
@@ -43,6 +45,7 @@ class CppProperty:
         native_getter: Any = ...,
         native_setter: Any = ...,
         hdr: bool = ...,
+        curve_non_negative: bool = ...,
         slider: bool = ...,
     ) -> None: ...
     def __set_name__(self, owner: type, name: str) -> None: ...

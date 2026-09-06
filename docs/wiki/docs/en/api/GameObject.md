@@ -9,7 +9,7 @@ class in <b>Infernux</b>
 Game object in the scene hierarchy.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.7
+**Status:** Preview · **Verified with:** 0.4.0
 
 A GameObject owns a Transform and a set of components. Distinguish `active_self` from the derived `active_in_hierarchy`, and prefer component lookup by type.
 <!-- USER CONTENT END -->
@@ -99,11 +99,11 @@ A GameObject owns a Transform and a set of components. Distinguish `active_self`
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import GameObject, Rigidbody
+import infernux as inx
 
-player = GameObject.find("Player")
+player = inx.GameObject.find("Player")
 if player is not None and player.active_in_hierarchy:
-    body = player.get_component(Rigidbody)
+    body = player.get_component(inx.Rigidbody)
     if body is not None:
         body.use_gravity = True
 ```

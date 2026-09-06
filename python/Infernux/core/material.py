@@ -139,38 +139,33 @@ class Material:
     @staticmethod
     def _load_embedded_model_material_slot(model_path: str, slot: int, virtual_path: str) -> Optional["Material"]:
         """Build a DefaultLit material from Assimp-extracted slot data (FBX inline materials)."""
-        try:
-            from Infernux.lib import AssetRegistry, InxMaterial
-            reg = AssetRegistry.instance()
-            mesh = reg.load_mesh(model_path)
-            if mesh is None:
-                return None
-            slots = mesh.get_material_slot_data()
-            if slot < 0 or slot >= len(slots):
-                return None
-            sd = slots[slot]
-            nat = InxMaterial.create_default_lit()
-            nat.is_builtin = False
-            bc = sd["base_color"]
-            ec = sd["emission_color"]
-            nat.set_color("baseColor", (float(bc[0]), float(bc[1]), float(bc[2]), float(bc[3])))
-            nat.set_color("emissionColor", (float(ec[0]), float(ec[1]), float(ec[2]), float(ec[3])))
-            nat.set_float("metallic", float(sd["metallic"]))
-            nat.set_float("smoothness", float(sd["smoothness"]))
-            try:
-                names = mesh.material_slot_names
-                if slot < len(names) and names[slot]:
-                    nat.name = str(names[slot])
-                else:
-                    nat.name = f"EmbeddedMaterial_{slot}"
-            except (TypeError, IndexError, AttributeError):
-                nat.name = f"EmbeddedMaterial_{slot}"
-            nat.file_path = virtual_path
-            return Material.from_native(nat)
-        except (RuntimeError, AttributeError, KeyError, TypeError) as _exc:
-            from Infernux.debug import Debug
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        from Infernux.lib import AssetRegistry, InxMaterial
+
+        mesh = AssetRegistry.instance().load_mesh(model_path)
+        if mesh is None:
             return None
+        slots = mesh.get_material_slot_data()
+        if slot >= len(slots):
+            return None
+        slot_data = slots[slot]
+        native = InxMaterial.create_default_lit()
+        native.is_builtin = False
+        base_color = slot_data["base_color"]
+        emission_color = slot_data["emission_color"]
+        native.set_color("baseColor", tuple(float(value) for value in base_color))
+        native.set_color(
+            "emissionColor", tuple(float(value) for value in emission_color)
+        )
+        native.set_float("metallic", float(slot_data["metallic"]))
+        native.set_float("smoothness", float(slot_data["smoothness"]))
+        names = mesh.material_slot_names
+        native.name = (
+            str(names[slot])
+            if slot < len(names) and names[slot]
+            else f"EmbeddedMaterial_{slot}"
+        )
+        native.file_path = virtual_path
+        return Material.from_native(native)
 
     @staticmethod
     def load(file_path: str) -> Optional["Material"]:
@@ -186,27 +181,10 @@ class Material:
             model_path, slot = embedded
             return Material._load_embedded_model_material_slot(model_path, slot, file_path)
 
-        try:
-            from Infernux.lib import AssetRegistry
-            registry = AssetRegistry.instance()
-            native = registry.load_material(file_path)
-            if native is not None:
-                return Material(native)
-        except (RuntimeError, AttributeError, ImportError) as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        from Infernux.lib import AssetRegistry
 
-        # Fallback: standalone load (not registered in AssetRegistry)
-        import os
-        if not os.path.isfile(file_path):
-            return None
-        with open(file_path, "r", encoding="utf-8") as f:
-            json_str = f.read()
-        native = InxMaterial(file_path)
-        if native.deserialize(json_str):
-            native.file_path = file_path
-            return Material(native)
-        return None
+        native = AssetRegistry.instance().load_material(file_path)
+        return Material(native) if native is not None else None
 
     @staticmethod
     def get(name: str) -> Optional["Material"]:
@@ -215,16 +193,10 @@ class Material:
         Queries AssetRegistry's builtin material map (keyed by name,
         e.g. 'DefaultLit', 'ErrorMaterial').  Returns None if not found.
         """
-        try:
-            from Infernux.lib import AssetRegistry
-            registry = AssetRegistry.instance()
-            native = registry.get_builtin_material(name)
-            if native is not None:
-                return Material(native)
-        except (RuntimeError, AttributeError, ImportError) as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
-        return None
+        from Infernux.lib import AssetRegistry
+
+        native = AssetRegistry.instance().get_builtin_material(name)
+        return Material(native) if native is not None else None
 
     # ==========================================================================
     # Context Manager (scoped lifecycle)
@@ -314,17 +286,27 @@ class Material:
     # Render State Convenience Properties
     # ==========================================================================
 
-    def _set_render_state_field(self, field: str, value, override_name: str) -> None:
-        """Set one render-state field, commit it back, and mark the override.
+    def _commit_render_state(self, state, *override_names: str) -> None:
+        """Write back a mutated RenderState, claiming only the given overrides.
 
-        This eliminates the repeated get→mutate→set→mark boilerplate from
-        each individual render-state property setter.
+        The native set_render_state marks *every* field as authored (a full
+        explicit assignment). A single-field Inspector/Python edit must only
+        claim its own field so the untouched ones keep following the shader's
+        annotation defaults, so restore the previous override mask and add
+        just the edited bits.
         """
         from Infernux.lib import RenderStateOverride
+        overrides = self._native.render_state_overrides
+        self._native.set_render_state(state)
+        for name in override_names:
+            overrides |= int(getattr(RenderStateOverride, name))
+        self._native.render_state_overrides = overrides
+
+    def _set_render_state_field(self, field: str, value, override_name: str) -> None:
+        """Set one render-state field, commit it back, and mark the override."""
         state = self._native.get_render_state()
         setattr(state, field, value)
-        self._native.set_render_state(state)
-        self._native.mark_override(getattr(RenderStateOverride, override_name))
+        self._commit_render_state(state, override_name)
 
     @property
     def render_state_overrides(self) -> int:
@@ -384,7 +366,6 @@ class Material:
 
     @surface_type.setter
     def surface_type(self, value: str):
-        from Infernux.lib import RenderStateOverride
         state = self._native.get_render_state()
         if value == "transparent":
             state.blend_enable = True
@@ -397,11 +378,9 @@ class Material:
             state.blend_enable = False
             state.depth_write_enable = True
             state.render_queue = _RENDER_QUEUE_OPAQUE
-        self._native.set_render_state(state)
-        self._native.mark_override(RenderStateOverride.SURFACE_TYPE)
-        self._native.mark_override(RenderStateOverride.BLEND_ENABLE)
-        self._native.mark_override(RenderStateOverride.DEPTH_WRITE)
-        self._native.mark_override(RenderStateOverride.RENDER_QUEUE)
+        self._commit_render_state(
+            state, "SURFACE_TYPE", "BLEND_ENABLE", "BLEND_MODE", "DEPTH_WRITE", "RENDER_QUEUE"
+        )
         # Older tooling could accidentally create shader properties with the
         # same names as render-state fields. Keep a single source of truth.
         self._native.remove_property("blend_enable")
@@ -414,14 +393,12 @@ class Material:
 
     @alpha_clip_enabled.setter
     def alpha_clip_enabled(self, value: bool):
-        from Infernux.lib import RenderStateOverride
         state = self._native.get_render_state()
         state.alpha_clip_enabled = value
         if value and state.alpha_clip_threshold <= 0.0:
             state.alpha_clip_threshold = _DEFAULT_ALPHA_CLIP_THRESHOLD
-        self._native.set_render_state(state)
+        self._commit_render_state(state, "ALPHA_CLIP")
         self._native.sync_alpha_clip_property()
-        self._native.mark_override(RenderStateOverride.ALPHA_CLIP)
 
     @property
     def alpha_clip_threshold(self) -> float:
@@ -430,13 +407,11 @@ class Material:
 
     @alpha_clip_threshold.setter
     def alpha_clip_threshold(self, value: float):
-        from Infernux.lib import RenderStateOverride
         state = self._native.get_render_state()
         state.alpha_clip_threshold = max(0.0, min(1.0, value))
         state.alpha_clip_enabled = True
-        self._native.set_render_state(state)
+        self._commit_render_state(state, "ALPHA_CLIP")
         self._native.sync_alpha_clip_property()
-        self._native.mark_override(RenderStateOverride.ALPHA_CLIP)
 
     # ==========================================================================
     # Auto-save (Unity-like dirty-flag persistence)

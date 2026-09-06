@@ -1114,12 +1114,13 @@ rhi::SamplerHandle VulkanRhiDevice::CreateSampler(const rhi::SamplerDesc &desc)
 
 rhi::ShaderModuleHandle VulkanRhiDevice::CreateShaderModule(const rhi::ShaderModuleDesc &desc)
 {
-    if (m_device == VK_NULL_HANDLE || !desc.spirv || desc.wordCount == 0)
+    if (m_device == VK_NULL_HANDLE || desc.language != rhi::ShaderSourceLanguage::SpirV || !desc.code ||
+        desc.byteSize == 0 || desc.byteSize % sizeof(uint32_t) != 0)
         return {};
     VkShaderModuleCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    createInfo.codeSize = desc.wordCount * sizeof(uint32_t);
-    createInfo.pCode = desc.spirv;
+    createInfo.codeSize = desc.byteSize;
+    createInfo.pCode = static_cast<const uint32_t *>(desc.code);
     VkShaderModule module = VK_NULL_HANDLE;
     if (vkCreateShaderModule(m_device, &createInfo, nullptr, &module) != VK_SUCCESS)
         return {};

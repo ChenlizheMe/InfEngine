@@ -1,0 +1,146 @@
+{
+  "version": 6,
+  "include": ["Base.json"],
+  "configurePresets": [
+    {
+      "name": "windows-msvc-base",
+      "hidden": true,
+      "inherits": "infernux-base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-msvc-dev",
+      "displayName": "Windows MSVC Development",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "INFERNUX_BUILD_PLAYER_HOST": "ON",
+        "INFERNUX_BUILD_TESTS": "ON",
+        "INFERNUX_RUNTIME_STATIC": "OFF"
+      }
+    },
+    {
+      "name": "windows-msvc-release",
+      "displayName": "Windows MSVC Release",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "INFERNUX_BUILD_PLAYER_HOST": "ON",
+        "INFERNUX_BUILD_TESTS": "ON",
+        "INFERNUX_RUNTIME_STATIC": "ON"
+      }
+    },
+    {
+      "name": "windows-msvc-headless",
+      "displayName": "Windows MSVC Headless Validation",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "INFERNUX_BUILD_PLAYER_HOST": "OFF",
+        "INFERNUX_BUILD_TESTS": "ON",
+        "INFERNUX_RUNTIME_STATIC": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-msvc-dev",
+      "configurePreset": "windows-msvc-dev",
+      "configuration": "RelWithDebInfo",
+      "jobs": 4
+    },
+    {
+      "name": "windows-msvc-release",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "jobs": 4
+    },
+    {
+      "name": "windows-msvc-headless",
+      "configurePreset": "windows-msvc-headless",
+      "configuration": "RelWithDebInfo",
+      "jobs": 4
+    },
+    {
+      "name": "windows-msvc-stage",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "jobs": 4,
+      "targets": ["stage_python_package"]
+    },
+    {
+      "name": "windows-msvc-player",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "jobs": 4,
+      "targets": ["prebuild_player_runtime"]
+    },
+    {
+      "name": "windows-msvc-wheel",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "jobs": 4,
+      "targets": ["package_python"]
+    },
+    {
+      "name": "windows-msvc-install-wheel",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "jobs": 4,
+      "targets": ["install_python_wheel"]
+    },
+    {
+      "name": "windows-format",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "targets": ["clang_format"]
+    },
+    {
+      "name": "windows-wiki",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "targets": ["build_wiki_html"]
+    },
+    {
+      "name": "windows-hub",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "targets": ["infernux_hub"]
+    },
+    {
+      "name": "windows-hub-installer",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "targets": ["infernux_hub_installer"]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-msvc-dev",
+      "configurePreset": "windows-msvc-dev",
+      "configuration": "RelWithDebInfo",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "windows-msvc-release",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "windows-msvc-headless",
+      "configurePreset": "windows-msvc-headless",
+      "configuration": "RelWithDebInfo",
+      "filter": {
+        "exclude": {"label": "requires_vulkan_device"}
+      },
+      "output": {"outputOnFailure": true}
+    }
+  ]
+}

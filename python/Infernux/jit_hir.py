@@ -450,10 +450,6 @@ def _affine(node: ast.AST, *, known_calls: Mapping[str, str] | None = None) -> A
     return None
 
 
-def _is_simple_name(node: ast.AST) -> bool:
-    return isinstance(node, ast.Name)
-
-
 def _annotation_name(node: ast.AST | None) -> str | None:
     if node is None:
         return None
@@ -471,14 +467,6 @@ def _type_from_annotation(annotation: ast.AST | None) -> TypeRef:
     if "ndarray" in name or "array" in name or "buffer" in name:
         return TypeRef(ValueType.ARRAY, mutable=True)
     return TypeRef(ValueType.UNKNOWN)
-
-
-def _target_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
-        return node.value.id
-    return None
 
 
 def _index_node(node: ast.Subscript) -> ast.AST:

@@ -25,8 +25,8 @@ from functools import lru_cache
 from typing import Any
 
 from Infernux.lib import InxGUIContext
+from .dpi import editor_dpi_scale
 from .theme import Theme, ImGuiCol, ImGuiStyleVar, ImGuiTreeNodeFlags
-from Infernux.debug import Debug
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -303,8 +303,7 @@ def find_enum_index(members, current_value) -> int:
             try:
                 if int(get_enum_member_value(member)) == current_int:
                     return idx
-            except (ValueError, TypeError) as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+            except (ValueError, TypeError):
                 continue
     return 0
 
@@ -427,6 +426,55 @@ def _render_color_sf(ctx, wid, display_name, metadata, current_value, lw, has_vi
     return current_value
 
 
+def _render_animation_curve_sf(
+    ctx, wid, display_name, metadata, current_value, lw, has_visible_label
+):
+    """Render a reusable AnimationCurve preview and popup editor."""
+    from Infernux.graph.ramp import AnimationCurve
+    from .curve_editor import render_curve_property
+
+    curve = (
+        current_value
+        if isinstance(current_value, AnimationCurve)
+        else AnimationCurve.from_dict(current_value)
+    )
+    _label_or_fullwidth(ctx, display_name, lw, has_visible_label)
+    document = render_curve_property(
+        ctx,
+        str(wid),
+        curve.to_dict(),
+        semantic_prefix=f"serialized_field.{wid}",
+        non_negative=bool(getattr(metadata, "curve_non_negative", False)),
+    )
+    return AnimationCurve.from_dict(document)
+
+
+def _render_gradient_sf(ctx, wid, display_name, metadata, current_value):
+    """Render a reusable collapsible Gradient editor."""
+    from Infernux.graph.ramp import Gradient
+    from .gradient_editor import render_gradient_property
+
+    gradient = (
+        current_value
+        if isinstance(current_value, Gradient)
+        else Gradient.from_dict(current_value)
+    )
+    ctx.push_id_str(str(wid))
+    try:
+        if not render_compact_section_header(ctx, display_name or "Gradient", level="secondary"):
+            return gradient
+        document = render_gradient_property(
+            ctx,
+            str(wid),
+            gradient.to_dict(),
+            semantic_prefix=f"serialized_field.{wid}",
+            hdr=bool(getattr(metadata, "hdr", False)),
+        )
+        return Gradient.from_dict(document)
+    finally:
+        ctx.pop_id()
+
+
 def render_serialized_field(
     ctx: InxGUIContext,
     wid: str,
@@ -439,7 +487,7 @@ def render_serialized_field(
 
     Handles **scalar / value types** only:
     ``FLOAT``, ``INT``, ``BOOL``, ``STRING``, ``VEC2``, ``VEC3``, ``VEC4``,
-    ``ENUM``, ``COLOR``.
+    ``ENUM``, ``COLOR``, ``ANIMATION_CURVE``, ``GRADIENT``.
     """
     from Infernux.components.fields import FieldType
 
@@ -470,6 +518,12 @@ def render_serialized_field(
         return _render_enum_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label)
     if ft == FieldType.COLOR:
         return _render_color_sf(ctx, wid, display_name, metadata, current_value, lw, has_visible_label)
+    if ft == FieldType.ANIMATION_CURVE:
+        return _render_animation_curve_sf(
+            ctx, wid, display_name, metadata, current_value, lw, has_visible_label
+        )
+    if ft == FieldType.GRADIENT:
+        return _render_gradient_sf(ctx, wid, display_name, metadata, current_value)
 
     ctx.label(f"{display_name}: {current_value}")
     return current_value
@@ -771,16 +825,19 @@ def render_component_header(
     """
     from .theme import Theme
 
+    dpi = editor_dpi_scale(ctx)
     display_name = format_display_name(f"{type_name}{suffix}")
     new_enabled = is_enabled
+    frame_pad = tuple(value * dpi for value in Theme.INSPECTOR_HEADER_PRIMARY_FRAME_PAD)
+    item_spacing = tuple(value * dpi for value in Theme.INSPECTOR_HEADER_ITEM_SPC)
 
     # ── styling ──
     ctx.push_style_color(ImGuiCol.Header, *Theme.INSPECTOR_HEADER_PRIMARY)
     ctx.push_style_color(ImGuiCol.HeaderHovered, *Theme.INSPECTOR_HEADER_PRIMARY_HOVERED)
     ctx.push_style_color(ImGuiCol.HeaderActive, *Theme.INSPECTOR_HEADER_PRIMARY_ACTIVE)
-    ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *Theme.INSPECTOR_HEADER_PRIMARY_FRAME_PAD)
-    ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_HEADER_ITEM_SPC)
-    ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, Theme.INSPECTOR_HEADER_BORDER_SIZE)
+    ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *frame_pad)
+    ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *item_spacing)
+    ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, Theme.INSPECTOR_HEADER_BORDER_SIZE * dpi)
     ctx.set_window_font_scale(Theme.INSPECTOR_HEADER_PRIMARY_FONT_SCALE)
 
     # ── full-width collapsing header (arrow + hidden label) ──
@@ -793,7 +850,7 @@ def render_component_header(
     _clip_wx = ctx.get_window_pos_x()
     _clip_cx = ctx.get_cursor_pos_x()
     _clip_avail = ctx.get_content_region_avail_width()
-    _clip_max_x = _clip_wx + _clip_cx + _clip_avail - Theme.INSPECTOR_HEADER_RIGHT_MARGIN
+    _clip_max_x = _clip_wx + _clip_cx + _clip_avail - Theme.INSPECTOR_HEADER_RIGHT_MARGIN * dpi
     ctx.push_draw_list_clip_rect(0.0, 0.0, _clip_max_x, 1e7, True)
     header_open = ctx.collapsing_header(f"##comp_{header_key}")
     ctx.pop_draw_list_clip_rect()
@@ -802,12 +859,12 @@ def render_component_header(
     header_height = max(0.0, ctx.get_item_rect_max_y() - header_min_y)
 
     # ── overlay icon / checkbox / label on the same row ──
-    indent = Theme.INSPECTOR_HEADER_CONTENT_INDENT
+    indent = Theme.INSPECTOR_HEADER_CONTENT_INDENT * dpi
     overlay_x = ctx.get_window_pos_x() + indent
     ctx.set_cursor_screen_pos(overlay_x, header_min_y)
 
     if icon_id:
-        icon_size = float(Theme.COMPONENT_ICON_SIZE)
+        icon_size = float(Theme.COMPONENT_ICON_SIZE) * dpi
         ctx.dummy(icon_size, max(header_height, icon_size))
         slot_min_x = ctx.get_item_rect_min_x()
         slot_min_y = ctx.get_item_rect_min_y()
@@ -817,24 +874,24 @@ def render_component_header(
         draw_x = slot_min_x + max(0.0, (slot_max_x - slot_min_x - draw_size) * 0.5)
         draw_y = slot_min_y + max(0.0, (slot_max_y - slot_min_y - draw_size) * 0.5)
         ctx.draw_image_rect(icon_id, draw_x, draw_y, draw_x + draw_size, draw_y + draw_size)
-        ctx.same_line(0, Theme.INSPECTOR_HEADER_ITEM_SPC[0])
+        ctx.same_line(0, item_spacing[0])
 
     if show_enabled:
         # Position the fixed-size square vertically centered in the header row.
-        box_size = float(Theme.INSPECTOR_CHECKBOX_BOX_PX)
+        box_size = float(Theme.INSPECTOR_CHECKBOX_BOX_PX) * dpi
         ctx.set_cursor_screen_pos(
-            ctx.get_item_rect_max_x() + Theme.INSPECTOR_HEADER_ITEM_SPC[0]
+            ctx.get_item_rect_max_x() + item_spacing[0]
             if icon_id else overlay_x,
             header_min_y + (header_height - box_size) * 0.5,
         )
         new_enabled = bool(ctx.checkbox("##hdr_en", is_enabled))
-        ctx.same_line(0, Theme.INSPECTOR_HEADER_ITEM_SPC[0])
+        ctx.same_line(0, item_spacing[0])
         # Center the component name on the checkbox's center line.
         cb_top = ctx.get_item_rect_min_y()
         cb_bot = ctx.get_item_rect_max_y()
         name_h = ctx.calc_text_size(display_name)[1]
         ctx.set_cursor_screen_pos(
-            ctx.get_item_rect_max_x() + Theme.INSPECTOR_HEADER_ITEM_SPC[0],
+            ctx.get_item_rect_max_x() + item_spacing[0],
             (cb_top + cb_bot) * 0.5 - name_h * 0.5,
         )
         ctx.label(display_name)
@@ -857,13 +914,11 @@ def render_component_header(
 def render_inspector_checkbox(ctx: InxGUIContext, label: str, value: bool) -> bool:
     """Render a compact checkbox: one fixed square size, ambient-size label."""
     checkbox_inspector = getattr(ctx, "checkbox_inspector", None)
-    if callable(checkbox_inspector):
-        return bool(checkbox_inspector(label, value))
-
-    # Fallback before the native binding is rebuilt: ctx.checkbox shares the
-    # same fixed-square renderer, so passing the full label keeps size and
-    # text alignment consistent with the native path.
-    return bool(ctx.checkbox(str(label or ""), value))
+    if not callable(checkbox_inspector):
+        raise RuntimeError(
+            "Inspector rendering requires the native checkbox_inspector binding"
+        )
+    return bool(checkbox_inspector(label, value))
 
 
 def render_compact_section_header(
@@ -877,11 +932,6 @@ def render_compact_section_header(
     allow_overlap: bool = False,
 ) -> bool:
     """Render a compact framed tree header shared by inspector-style panels."""
-    if default_open:
-        ctx.set_next_item_open(True, Theme.COND_FIRST_USE_EVER)
-    if allow_overlap:
-        ctx.set_next_item_allow_overlap()
-
     if level == "primary":
         frame_pad = Theme.INSPECTOR_HEADER_PRIMARY_FRAME_PAD
         font_scale = Theme.INSPECTOR_HEADER_PRIMARY_FONT_SCALE
@@ -908,60 +958,34 @@ def render_compact_section_header(
         active_color = Theme.INSPECTOR_HEADER_SECONDARY_ACTIVE
 
     native_header = getattr(ctx, "render_compact_section_header", None)
-    if callable(native_header):
-        effective_text_color = text_color if text_color is not None else Theme.TEXT
-        return bool(native_header(
-            label,
-            int(icon_id or 0),
-            bool(default_open),
-            Theme.COND_FIRST_USE_EVER,
-            bool(allow_overlap),
-            frame_pad[0],
-            frame_pad[1],
-            Theme.INSPECTOR_HEADER_ITEM_SPC[0],
-            Theme.INSPECTOR_HEADER_ITEM_SPC[1],
-            Theme.INSPECTOR_HEADER_BORDER_SIZE,
-            level in ("secondary", "list", "tertiary"),
-            font_scale,
-            Theme.INSPECTOR_HEADER_RIGHT_MARGIN,
-            Theme.COMPONENT_ICON_SIZE,
-            base_color,
-            hover_color,
-            active_color,
-            text_color is not None,
-            effective_text_color,
-        ))
+    if not callable(native_header):
+        raise RuntimeError(
+            "Inspector rendering requires the native render_compact_section_header binding"
+        )
 
-    ctx.push_style_color(ImGuiCol.Header, *base_color)
-    ctx.push_style_color(ImGuiCol.HeaderHovered, *hover_color)
-    ctx.push_style_color(ImGuiCol.HeaderActive, *active_color)
-    ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, *frame_pad)
-    ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.INSPECTOR_HEADER_ITEM_SPC)
-    ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, Theme.INSPECTOR_HEADER_BORDER_SIZE)
-    if level in ("secondary", "list", "tertiary"):
-        ctx.push_style_var_float(ImGuiStyleVar.IndentSpacing, 0.0)
-    ctx.set_window_font_scale(font_scale)
-    if text_color is not None:
-        ctx.push_style_color(ImGuiCol.Text, *text_color)
-
-    if icon_id:
-        ctx.image(icon_id, Theme.COMPONENT_ICON_SIZE, Theme.COMPONENT_ICON_SIZE)
-        ctx.same_line()
-
-    _cs_wx = ctx.get_window_pos_x()
-    _cs_cx = ctx.get_cursor_pos_x()
-    _cs_avail = ctx.get_content_region_avail_width()
-    _cs_max_x = _cs_wx + _cs_cx + _cs_avail - Theme.INSPECTOR_HEADER_RIGHT_MARGIN
-    ctx.push_draw_list_clip_rect(0.0, 0.0, _cs_max_x, 1e7, True)
-    header_open = ctx.collapsing_header(label)
-    ctx.pop_draw_list_clip_rect()
-
-    if text_color is not None:
-        ctx.pop_style_color(1)
-    ctx.set_window_font_scale(1.0)
-    ctx.pop_style_color(3)
-    ctx.pop_style_var(4 if level in ("secondary", "list", "tertiary") else 3)
-    return header_open
+    dpi = editor_dpi_scale(ctx)
+    effective_text_color = text_color if text_color is not None else Theme.TEXT
+    return bool(native_header(
+        label,
+        int(icon_id or 0),
+        bool(default_open),
+        Theme.COND_FIRST_USE_EVER,
+        bool(allow_overlap),
+        frame_pad[0] * dpi,
+        frame_pad[1] * dpi,
+        Theme.INSPECTOR_HEADER_ITEM_SPC[0] * dpi,
+        Theme.INSPECTOR_HEADER_ITEM_SPC[1] * dpi,
+        Theme.INSPECTOR_HEADER_BORDER_SIZE * dpi,
+        level in ("secondary", "list", "tertiary"),
+        font_scale,
+        Theme.INSPECTOR_HEADER_RIGHT_MARGIN * dpi,
+        Theme.COMPONENT_ICON_SIZE * dpi,
+        base_color,
+        hover_color,
+        active_color,
+        text_color is not None,
+        effective_text_color,
+    ))
 
 
 def render_compact_section_title(
@@ -980,7 +1004,7 @@ def render_compact_section_title(
         default_color = Theme.TEXT_DIM
 
     color = text_color if text_color is not None else default_color
-    ctx.dummy(0.0, Theme.INSPECTOR_SECTION_GAP * 0.5)
+    ctx.dummy(0.0, Theme.INSPECTOR_SECTION_GAP * 0.5 * editor_dpi_scale(ctx))
     ctx.set_window_font_scale(font_scale)
     ctx.push_style_color(ImGuiCol.Text, *color)
     ctx.label(label)

@@ -35,15 +35,15 @@ if(_forbidden_files)
     )
 endif()
 
-file(GLOB_RECURSE _legacy_runtime_archives LIST_DIRECTORIES false
+file(GLOB_RECURSE _unsupported_runtime_archives LIST_DIRECTORIES false
     "${_verify_root}/*.zip"
     "${_verify_root}/*.inxpack"
 )
-if(_legacy_runtime_archives)
-    list(JOIN _legacy_runtime_archives "\n  " _legacy_runtime_report)
+if(_unsupported_runtime_archives)
+    list(JOIN _unsupported_runtime_archives "\n  " _unsupported_runtime_report)
     message(FATAL_ERROR
-        "Wheel contains a legacy ZIP/InxPack runtime payload; native Runtime.inxrt/"
-        "Parallel.inxmod is required:\n  ${_legacy_runtime_report}"
+        "Wheel contains unsupported runtime containers; Runtime.inxrt/"
+        "Parallel.inxmod is required:\n  ${_unsupported_runtime_report}"
     )
 endif()
 
@@ -89,13 +89,13 @@ foreach(_source_file IN LISTS _native_files)
         message(FATAL_ERROR "Wheel is missing native package file: ${_relative_path}")
     endif()
 
-    file(SHA256 "${_source_file}" _source_hash)
-    file(SHA256 "${_wheel_file}" _wheel_hash)
-    if(NOT _source_hash STREQUAL _wheel_hash)
+    execute_process(
+        COMMAND "${CMAKE_COMMAND}" -E compare_files "${_source_file}" "${_wheel_file}"
+        RESULT_VARIABLE _compare_result
+    )
+    if(NOT _compare_result EQUAL 0)
         message(FATAL_ERROR
-            "Wheel contains a stale native package file: ${_relative_path}\n"
-            "  current: ${_source_hash}\n"
-            "  wheel:   ${_wheel_hash}"
+            "Wheel contains a stale native package file: ${_relative_path}"
         )
     endif()
 endforeach()
@@ -106,6 +106,51 @@ foreach(_bootstrap_source_file IN LISTS _bootstrap_source_files)
         message(FATAL_ERROR "Wheel is missing bootstrap native package file: ${_bootstrap_relative_path}")
     endif()
 endforeach()
+
+file(GLOB_RECURSE _bundled_plugins LIST_DIRECTORIES false
+    "${_verify_root}/*.inxpkg"
+)
+list(LENGTH _bundled_plugins _bundled_plugin_count)
+if(NOT _bundled_plugin_count EQUAL 1)
+    message(FATAL_ERROR
+        "Wheel must contain exactly the default MCP plugin, found "
+        "${_bundled_plugin_count} InxPackages"
+    )
+endif()
+list(GET _bundled_plugins 0 _bundled_plugin)
+get_filename_component(_bundled_plugin_name "${_bundled_plugin}" NAME)
+if(NOT _bundled_plugin_name STREQUAL "infernux.mcp.inxpkg")
+    message(FATAL_ERROR
+        "Wheel contains an unexpected built-in plugin: ${_bundled_plugin_name}"
+    )
+endif()
+
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+    find_program(_infernux_readelf NAMES readelf llvm-readelf REQUIRED)
+    file(GLOB _linux_binding_modules
+        "${_verify_root}/Infernux/lib/_Infernux*.so"
+    )
+    foreach(_linux_binding_module IN LISTS _linux_binding_modules)
+        execute_process(
+            COMMAND "${_infernux_readelf}" -d "${_linux_binding_module}"
+            RESULT_VARIABLE _readelf_result
+            OUTPUT_VARIABLE _dynamic_section
+            ERROR_VARIABLE _readelf_error
+        )
+        if(NOT _readelf_result EQUAL 0)
+            message(FATAL_ERROR
+                "Unable to inspect Linux wheel module ${_linux_binding_module}: "
+                "${_readelf_error}"
+            )
+        endif()
+        if(_dynamic_section MATCHES "Shared library: \\[libpython[^]]+\\]")
+            message(FATAL_ERROR
+                "Linux wheel module has a direct libpython dependency and will "
+                "not relocate into an ordinary venv: ${_linux_binding_module}"
+            )
+        endif()
+    endforeach()
+endif()
 
 file(REMOVE_RECURSE "${_verify_root}")
 message(STATUS "Verified native payload for ${_wheel}")

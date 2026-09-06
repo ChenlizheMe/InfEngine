@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:theme="@android:style/Theme.Material.NoActionBar" />
+    <instrumentation
+        android:name="com.infernux.acceptance.input.MultiTouchInstrumentation"
+        android:targetPackage="${infernuxTargetPackage}"
+        android:functionalTest="true"
+        android:handleProfiling="false" />
+</manifest>

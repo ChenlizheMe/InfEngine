@@ -62,6 +62,7 @@ const evidenceRoutes = [
     ...precacheRoutes,
     "/api-index.json",
     "/docs-manifest.json",
+    "/hub-catalog.json",
     "/release.json",
     "/release-notes.json",
     ...await namedRoutes("css", /\.css$/),

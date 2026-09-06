@@ -14,7 +14,7 @@
 #include "GameObject.h"
 #include "MeshRenderer.h"
 #include "Transform.h"
-#include <InxLog.h>
+#include <core/log/InxLog.h>
 
 #include <algorithm>
 #include <cmath>
@@ -63,19 +63,16 @@ void CylinderCollider::AutoFitToMesh()
     const glm::vec3 extent = boundsMax - boundsMin;
     DataMut().center = (boundsMin + boundsMax) * 0.5f;
 
-    // A cylinder's axis is normally the shortest mesh extent. This makes
-    // AutoFit suitable for coins and discs while remaining deterministic for
-    // equal-sided geometry.
-    if (extent.x <= extent.y && extent.x <= extent.z) {
-        m_direction = 0;
+    // Direction is an authored collider property (Y by default), not a mesh
+    // inference.  Choosing the shortest extent changed an equal-bounds
+    // primitive from Y to X and silently rotated its physics shape.
+    if (m_direction == 0) {
         m_height = std::max(extent.x, 0.001f);
         m_radius = std::max(std::max(extent.y, extent.z) * 0.5f, 0.001f);
-    } else if (extent.y <= extent.x && extent.y <= extent.z) {
-        m_direction = 1;
+    } else if (m_direction == 1) {
         m_height = std::max(extent.y, 0.001f);
         m_radius = std::max(std::max(extent.x, extent.z) * 0.5f, 0.001f);
     } else {
-        m_direction = 2;
         m_height = std::max(extent.z, 0.001f);
         m_radius = std::max(std::max(extent.x, extent.y) * 0.5f, 0.001f);
     }

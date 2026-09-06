@@ -1,6 +1,8 @@
+import os
 import sys
 
 import hub_utils
+import pytest
 
 
 def test_is_frozen_detects_pyinstaller(monkeypatch):
@@ -25,3 +27,226 @@ def test_is_frozen_is_false_for_source_python(monkeypatch):
     monkeypatch.delattr(main_module, "__compiled__", raising=False)
 
     assert hub_utils.is_frozen() is False
+
+
+def test_child_environment_owns_the_shared_package_cache(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        hub_utils,
+        "get_hub_shared_data_dir",
+        lambda: str(tmp_path / "HubData"),
+    )
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
+    monkeypatch.delenv("INFERNUX_SHARED_DATA_ROOT", raising=False)
+
+    merged = hub_utils.merge_child_env_utf8()
+
+    assert merged["INFERNUX_PACKAGE_CACHE_ROOT"] == os.path.join(
+        str(tmp_path / "HubData"), "Library", "Plugins"
+    )
+
+
+def test_explicit_package_cache_override_survives_hub_launch(monkeypatch, tmp_path):
+    explicit = str(tmp_path / "ManagedPackages")
+    monkeypatch.setenv("INFERNUX_PACKAGE_CACHE_ROOT", explicit)
+
+    merged = hub_utils.merge_child_env_utf8()
+
+    assert merged["INFERNUX_PACKAGE_CACHE_ROOT"] == explicit
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+def test_pip_cache_is_shared_by_source_and_installed_hub(monkeypatch, tmp_path, frozen):
+    monkeypatch.setattr(hub_utils, "is_frozen", lambda: frozen)
+    monkeypatch.setattr(hub_utils, "__file__", str(tmp_path / "source/packaging/hub_utils.py"))
+    monkeypatch.setattr(hub_utils.sys, "executable", str(tmp_path / "installed/Hub.exe"))
+    monkeypatch.delenv("PIP_CACHE_DIR", raising=False)
+    monkeypatch.delenv("INFERNUX_SHARED_DATA_ROOT", raising=False)
+    expected = tmp_path / ("installed" if frozen else "source/packaging")
+
+    merged = hub_utils.merge_child_env_utf8()
+
+    assert merged["PIP_CACHE_DIR"] == os.path.join(str(expected), "InfernuxHubData", "Shared", "Cache", "Python", "Pip")
+    assert "PIP_CACHE_DIR" not in os.environ
+
+
+def test_explicit_pip_cache_is_preserved(monkeypatch, tmp_path):
+    explicit = str(tmp_path / "pip-cache")
+    monkeypatch.setenv("PIP_CACHE_DIR", explicit)
+    assert hub_utils.merge_child_env_utf8()["PIP_CACHE_DIR"] == explicit
+
+
+def test_empty_pip_cache_does_not_restore_system_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("PIP_CACHE_DIR", "")
+    shared = str(tmp_path / "Shared")
+    merged = hub_utils.merge_child_env_utf8({"INFERNUX_SHARED_DATA_ROOT": shared})
+    assert merged["PIP_CACHE_DIR"] == os.path.join(shared, "Cache", "Python", "Pip")
+
+
+def test_windows_hub_user_data_uses_local_app_data(monkeypatch, tmp_path):
+    monkeypatch.setattr(hub_utils.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+
+    assert hub_utils.get_hub_user_data_dir() == os.path.join(
+        str(tmp_path / "local"), "InfernuxHub"
+    )
+
+
+def test_linux_hub_user_data_uses_xdg_data_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(hub_utils.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+
+    assert hub_utils.get_hub_user_data_dir() == os.path.join(
+        str(tmp_path / "xdg"), "InfernuxHub"
+    )
+
+
+def test_explicit_hub_data_root_owns_every_child_launch(monkeypatch, tmp_path):
+    root = tmp_path / "shared-data"
+    monkeypatch.setenv("INFERNUX_DATA_ROOT", str(root))
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
+    monkeypatch.setenv("INFERNUX_SHARED_DATA_ROOT", str(tmp_path / "shared"))
+
+    assert hub_utils.get_hub_user_data_dir() == str(root.resolve())
+    merged = hub_utils.merge_child_env_utf8()
+    assert merged["INFERNUX_DATA_ROOT"] == str(root.resolve())
+    assert merged["INFERNUX_PACKAGE_CACHE_ROOT"] == os.path.join(
+        str(tmp_path / "shared"), "Library", "Plugins"
+    )
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+def test_shared_root_uses_source_or_installed_hub_location(tmp_path, monkeypatch, frozen):
+    monkeypatch.delenv("INFERNUX_SHARED_DATA_ROOT", raising=False)
+    monkeypatch.setattr(hub_utils, "is_frozen", lambda: frozen)
+    monkeypatch.setattr(hub_utils, "__file__", str(tmp_path / "source/packaging/hub_utils.py"))
+    monkeypatch.setattr(hub_utils.sys, "executable", str(tmp_path / "installed/Hub.exe"))
+    expected = tmp_path / ("installed" if frozen else "source/packaging") / "InfernuxHubData/Shared"
+    assert hub_utils.get_hub_shared_data_dir() == str(expected)
+    child = hub_utils.merge_child_env_utf8()
+    assert child["INFERNUX_SHARED_DATA_ROOT"] == str(expected)
+
+
+def test_explicit_shared_root_is_propagated_to_children(tmp_path, monkeypatch):
+    root = str(tmp_path / "managed")
+    monkeypatch.setenv("INFERNUX_SHARED_DATA_ROOT", root)
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
+    assert hub_utils.get_hub_shared_data_dir() == root
+    child = hub_utils.merge_child_env_utf8()
+    assert child["INFERNUX_SHARED_DATA_ROOT"] == root
+    assert child["INFERNUX_PACKAGE_CACHE_ROOT"] == os.path.join(root, "Library", "Plugins")
+    assert hub_utils.get_hub_shared_data_dir(str(tmp_path / "target")) == str(
+        tmp_path / "target/InfernuxHubData/Shared"
+    )
+
+
+def test_non_windows_pid_probe_distinguishes_missing_and_inaccessible_processes(
+    monkeypatch,
+):
+    monkeypatch.setattr(hub_utils.sys, "platform", "linux")
+
+    monkeypatch.setattr(
+        hub_utils.os,
+        "kill",
+        lambda _pid, _signal: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    assert hub_utils.is_pid_running(42) is False
+
+    monkeypatch.setattr(
+        hub_utils.os,
+        "kill",
+        lambda _pid, _signal: (_ for _ in ()).throw(PermissionError()),
+    )
+    assert hub_utils.is_pid_running(42) is True
+
+
+def test_non_windows_pid_probe_propagates_unclassified_os_failure(monkeypatch):
+    monkeypatch.setattr(hub_utils.sys, "platform", "linux")
+    monkeypatch.setattr(
+        hub_utils.os,
+        "kill",
+        lambda _pid, _signal: (_ for _ in ()).throw(OSError("probe failed")),
+    )
+
+    with pytest.raises(OSError, match="probe failed"):
+        hub_utils.is_pid_running(42)
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    (
+        ("{", "Expecting property name"),
+        ("[]", "must contain a JSON object"),
+        ('{"pid": true, "token": "owned"}', "invalid process identity"),
+        ('{"pid": 42, "token": ""}', "invalid process identity"),
+    ),
+)
+def test_project_lock_requires_current_process_identity(tmp_path, payload, message):
+    lock_path = tmp_path / "ProjectSettings" / ".infernux-engine-lock.json"
+    lock_path.parent.mkdir()
+    lock_path.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        hub_utils.read_project_lock(str(tmp_path))
+
+    assert lock_path.is_file()
+
+
+def test_project_lock_removes_only_a_confirmed_stale_lock(monkeypatch, tmp_path):
+    lock_path = hub_utils.write_project_lock(
+        str(tmp_path),
+        42,
+        "owned",
+        "editor",
+        "running",
+    )
+    monkeypatch.setattr(hub_utils, "is_pid_running", lambda _pid: False)
+
+    assert hub_utils.read_project_lock(str(tmp_path)) is None
+    assert not os.path.exists(lock_path)
+
+
+def test_project_lock_keeps_a_confirmed_live_lock(monkeypatch, tmp_path):
+    lock_path = hub_utils.write_project_lock(
+        str(tmp_path),
+        42,
+        "owned",
+        "editor",
+        "running",
+    )
+    monkeypatch.setattr(hub_utils, "is_pid_running", lambda _pid: True)
+
+    lock = hub_utils.read_project_lock(str(tmp_path))
+
+    assert lock is not None
+    assert lock["pid"] == 42
+    assert os.path.isfile(lock_path)
+
+
+def test_project_lock_deletion_failure_is_not_hidden(monkeypatch, tmp_path):
+    hub_utils.write_project_lock(
+        str(tmp_path),
+        42,
+        "owned",
+        "editor",
+        "running",
+    )
+    monkeypatch.setattr(hub_utils, "is_pid_running", lambda _pid: False)
+    monkeypatch.setattr(
+        hub_utils.os,
+        "remove",
+        lambda _path: (_ for _ in ()).throw(PermissionError("locked")),
+    )
+
+    with pytest.raises(PermissionError, match="locked"):
+        hub_utils.read_project_lock(str(tmp_path))
+
+
+def test_owned_project_lock_removal_requires_a_valid_lock_document(tmp_path):
+    lock_path = tmp_path / "ProjectSettings" / ".infernux-engine-lock.json"
+    lock_path.parent.mkdir()
+    lock_path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must contain a JSON object"):
+        hub_utils.remove_project_lock(str(tmp_path), "owned")
+
+    assert lock_path.is_file()

@@ -8,9 +8,7 @@ methods, and panel/manager references live on the bootstrap instance.
 
 from __future__ import annotations
 
-import logging
 import os
-import pathlib
 import threading
 import time
 from typing import Optional
@@ -21,7 +19,6 @@ from Infernux.engine.engine import Engine, LogLevel
 from Infernux.engine.resources_manager import ResourcesManager
 from Infernux.engine.play_mode import PlayModeManager, PlayModeState
 from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.ui import (
     SceneViewPanel,
     GameViewPanel,
@@ -36,23 +33,7 @@ from Infernux.engine.ui import (
 )
 from Infernux.engine.ui import panel_state as _panel_state
 
-_log = logging.getLogger("Infernux.bootstrap")
-
-_LAYOUT_VERSION = 6
-_TOTAL_STEPS = 13
-
-
-def _iter_project_material_paths(project_path: str):
-    """Yield user material assets without walking project runtimes or caches."""
-    assets_root = os.path.join(resolved_path(project_path), "Assets")
-    if not os.path.isdir(assets_root):
-        return
-
-    for dirpath, dirnames, filenames in os.walk(assets_root):
-        dirnames[:] = [name for name in dirnames if not name.startswith(".")]
-        for name in filenames:
-            if name.lower().endswith(".mat"):
-                yield os.path.join(dirpath, name)
+_TOTAL_STEPS = 14
 
 
 def _signal_progress(current_step: int, total: int, message: str) -> None:
@@ -126,6 +107,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._report_progress("Initializing renderer\u2026")
         self._init_engine()
 
+        self._report_progress("Publishing asset catalog\u2026")
+        self._complete_initial_asset_catalog()
+
         self._report_progress("Creating managers\u2026")
         self._create_managers()
 
@@ -159,20 +143,21 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._report_progress("Refreshing project resources\u2026")
         if self.engine:
             self.engine.prepare_startup_refresh()
+            # Lifecycle scripts created without a .meta sidecar only enter the
+            # GUID catalog with this refresh commit; load them now instead of
+            # on the next editor restart.
+            if self.plugin_manager is not None:
+                self.plugin_manager.catch_up_preloads()
 
         self._finish_progress()
 
-        if self.engine:
-            try:
-                self.engine.set_game_camera_enabled(True)
-            except Exception as _exc:
-                pass
-            try:
-                ne = self.engine.get_native_engine()
-                if ne:
-                    ne.request_full_speed_frame()
-            except Exception as _exc:
-                pass
+        if self.engine is None:
+            raise RuntimeError("Editor startup completed without an Engine")
+        self.engine.set_game_camera_enabled(True)
+        native = self.engine.get_native_engine()
+        if native is None:
+            raise RuntimeError("Editor startup completed without a native Engine")
+        native.request_full_speed_frame()
 
     def _report_progress(self, message: str):
         """Notify the launcher splash of the current bootstrap step."""
@@ -204,32 +189,15 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
     def _log_startup_profile(message: str) -> None:
         if os.environ.get("INFERNUX_PROFILE_STARTUP", "").strip() == "1":
             Debug.log(message)
-        else:
-            Debug.log_internal(message)
-
 
     def _ensure_particle_artifacts(self) -> None:
         """Compile missing or stale particle Library products before the first frame."""
-        try:
-            from Infernux.particle.artifact import ParticleArtifactRegistry
+        from Infernux.particle.artifact import ParticleArtifactRegistry
 
-            summary = ParticleArtifactRegistry.ensure_project_compiled(
-                self.project_path,
-                raise_on_error=False,
-            )
-        except Exception as exc:
-            Debug.log_warning(f"Particle artifact startup compile skipped: {exc}")
-            return
-        compiled = summary.get("compiled") or []
-        failed = summary.get("failed") or []
-        if compiled:
-            Debug.log_internal(
-                f"Particle artifacts compiled on startup: {len(compiled)}"
-            )
-        if failed:
-            Debug.log_error(
-                f"Particle artifacts failed on startup: {len(failed)}"
-            )
+        ParticleArtifactRegistry.ensure_project_compiled(
+            self.project_path,
+            raise_on_error=True,
+        )
 
     def _ensure_project_requirements(self):
         from Infernux.engine.project_requirements import ensure_project_requirements
@@ -255,6 +223,17 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         # uses the same base size; explicit project UIText sizes stay unchanged.
         self.engine.set_gui_font(_resources.engine_font_path, 18)
 
+    def _complete_initial_asset_catalog(self) -> None:
+        """Publish the native catalog before any scene or icon consumes it."""
+
+        if self.engine is None:
+            raise RuntimeError("Asset catalog publication requires an Engine")
+        database = self.engine.get_asset_database()
+        if database is None:
+            raise RuntimeError("Asset catalog publication requires an AssetDatabase")
+        if bool(database.refresh_pending):
+            database.complete_pending_refresh()
+
     def _prewarm_builtin_pipelines(self):
         """Compile builtin material shader programs during startup.
 
@@ -265,79 +244,19 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         thread — a multi-second stall. Moving it here folds the cost into
         the splash screen, where the launcher already shows progress.
         """
-        if not self.engine:
-            return
+        if self.engine is None:
+            raise RuntimeError("Builtin pipeline prewarm requires an Engine")
         native = self.engine.get_native_engine()
         if native is None:
-            return
-        try:
-            from Infernux.lib import AssetRegistry
-        except Exception as exc:
-            Debug.log_suppressed("EditorBootstrap.builtin_pipeline_prewarm.import", exc)
-            return
+            raise RuntimeError("Builtin pipeline prewarm requires a native Engine")
+        from Infernux.lib import AssetRegistry
+
+        registry = AssetRegistry.instance()
         for name in ("DefaultLit", "SkyboxProcedural"):
-            try:
-                material = AssetRegistry.instance().get_builtin_material(name)
-                if material is not None:
-                    native.refresh_material_pipeline(material)
-            except Exception as exc:
-                Debug.log_suppressed(f"EditorBootstrap.builtin_pipeline_prewarm[{name}]", exc)
-
-    def _prewarm_material_previews(self):
-        """Prewarm material preview textures once at startup.
-
-        Uses the same Python preview API path as inspector runtime so first click
-        can hit the exact same cache key (size/tag) and avoid a second load.
-        """
-        if not self.engine:
-            return
-
-        native = self.engine.get_native_engine()
-        if native is None:
-            return
-
-        material_paths = list(_iter_project_material_paths(self.project_path))
-
-        if not material_paths:
-            return
-
-        # Route through the same preview cache API used by inspector.
-        try:
-            from Infernux.engine.ui.asset_resource_preview import get_resource_preview_texture_id
-        except Exception as exc:
-            Debug.log_suppressed("EditorBootstrap.material_preview_prewarm.import", exc)
-            return
-
-        class _BootstrapPreviewPanel:
-            def __init__(self, native_engine):
-                self._native_engine = native_engine
-
-            def get_native_engine(self):
-                return self._native_engine
-
-        preview_panel = _BootstrapPreviewPanel(native)
-
-        warmed = 0
-        for mat_path in material_paths:
-            try:
-                # Keep cache_tag empty to match first inspector draw.
-                tex_id = int(get_resource_preview_texture_id(
-                    preview_panel,
-                    mat_path,
-                    preview_size=256,
-                    cache_tag="",
-                    material_async=False,
-                ))
-                if tex_id:
-                    warmed += 1
-            except Exception as exc:
-                Debug.log_suppressed(
-                    f"EditorBootstrap.material_preview_prewarm[{os.path.basename(mat_path)}]",
-                    exc,
-                )
-                continue
-
-        Debug.log_internal(f"Material preview prewarm: {warmed}/{len(material_paths)}")
+            material = registry.get_builtin_material(name)
+            if material is None:
+                raise RuntimeError(f"Required builtin material is unavailable: {name}")
+            native.refresh_material_pipeline(material)
 
     def _create_managers(self):
         from Infernux.engine.interaction import EditorInteractionCore
@@ -347,10 +266,10 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         from Infernux.particle.artifact import ParticleArtifactRegistry
         from Infernux.engine.ui import project_file_ops
 
-        self.interaction_core.asset_mutations.add_listener(
+        self.interaction_core.asset_mutations.add_observer(
             ParticleArtifactRegistry.on_asset_mutation
         )
-        self.interaction_core.asset_mutations.add_listener(
+        self.interaction_core.asset_mutations.add_observer(
             project_file_ops.on_asset_mutation
         )
         self.undo_manager = UndoManager(self.interaction_core.action_journal)
@@ -359,8 +278,12 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.scene_file_manager.set_asset_database(self.engine.get_asset_database())
         self.scene_file_manager.set_engine(self.engine.get_native_engine())
 
-        self.window_manager = WindowManager(self.engine)
-        self.interaction_core.asset_mutations.add_listener(
+        self.window_manager = WindowManager(
+            self.engine,
+            self.interaction_core.panels,
+            self.engine._register_editor_panel_gui,
+        )
+        self.interaction_core.asset_mutations.add_observer(
             self.window_manager.on_asset_mutation
         )
 
@@ -375,12 +298,9 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         # Pin editor UI icons early so Inspector/object fields never bind
         # descriptors from the unpinned texture-preview LRU cache.
-        try:
-            from Infernux.engine.ui.editor_icons import EditorIcons
+        from Infernux.engine.ui.editor_icons import EditorIcons
 
-            EditorIcons.preload(self.engine.get_native_engine())
-        except Exception as exc:
-            Debug.log_warning(f"EditorIcons preload skipped: {exc}")
+        EditorIcons.preload(self.engine.get_native_engine())
 
     def _load_plugins(self):
         from Infernux.plugins import PluginManager
@@ -570,52 +490,14 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.scene_file_manager.set_on_scene_changed(on_scene_changed)
 
     def _setup_layout_persistence(self):
-        project_name = os.path.basename(self.project_path)
+        from Infernux.engine.user_data import get_project_editor_layout_root
 
-        docs_dir = None
-        if os.name == "nt":
-            try:
-                import ctypes
-                import ctypes.wintypes
-                buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
-                ctypes.windll.shell32.SHGetFolderPathW(None, 0x0005, None, 0, buf)
-                if buf.value:
-                    docs_dir = pathlib.Path(buf.value)
-            except (OSError, ValueError) as _exc:
-                pass
-        if docs_dir is None:
-            docs_dir = pathlib.Path.home() / "Documents"
-
-        layout_dir = docs_dir / "Infernux" / project_name
+        layout_dir = get_project_editor_layout_root(self.project_path)
         os.makedirs(layout_dir, exist_ok=True)
         _panel_state.init(str(layout_dir))
 
-        layout_ver_path = str(layout_dir / ".layout_version")
-        imgui_ini_path = str(layout_dir / "imgui.ini")
+        imgui_ini_path = os.path.join(layout_dir, "imgui.ini")
         self.window_manager.set_imgui_ini_path(imgui_ini_path)
-
-        # Clean up old project-local imgui.ini
-        old_ini = os.path.join(self.project_path, "imgui.ini")
-        if os.path.isfile(old_ini):
-            try:
-                os.remove(old_ini)
-            except OSError as _exc:
-                pass
-
-        need_reset = True
-        if os.path.isfile(layout_ver_path):
-            try:
-                with open(layout_ver_path, "r", encoding="utf-8") as f:
-                    if f.read().strip() == str(_LAYOUT_VERSION):
-                        need_reset = False
-            except OSError as _exc:
-                pass
-        if need_reset:
-            if os.path.isfile(imgui_ini_path):
-                os.remove(imgui_ini_path)
-            os.makedirs(os.path.dirname(layout_ver_path), exist_ok=True)
-            with open(layout_ver_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(str(_LAYOUT_VERSION))
 
     def _persist_editor_state(self, *, include_scene_draft: bool = False):
         if bool(getattr(self, "_suspend_persist_state", False)):

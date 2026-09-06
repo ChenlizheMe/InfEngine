@@ -5,7 +5,7 @@ Build with:
     cd packaging
     pyinstaller infernux_hub.spec --clean
 or via CMake:
-    cmake --build --preset release --target infernux_hub
+    cmake --build --preset windows-hub
 """
 
 import os
@@ -48,6 +48,7 @@ a = Analysis(
     hiddenimports=[
         "hub_resources",
         "hub_utils",
+        "android_support",
         "installer_safety",
         "python_runtime",
         "version_manager",

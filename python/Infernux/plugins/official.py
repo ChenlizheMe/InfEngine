@@ -3,28 +3,52 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from typing import Mapping
+from urllib.request import Request, urlopen
 
+from Infernux.core.document_store import write_document_text
 from Infernux.engine.path_utils import resolved_path
 
+from .cache import package_cache_root
 from .content import normalize_page_descriptor
 from .manager import PluginManager, PluginState
-from .package import validate_reference
+from .package import (
+    InxPackage,
+    InxPackagePreview,
+    PACKAGE_EXTENSION,
+    validate_reference,
+)
 from .registry import PluginRegistry
 
 
 OFFICIAL_REGISTRY_FILENAME = "official-registry.json"
 DEFAULT_LIBRARIES_FILENAME = "default-libraries.json"
 OFFICIAL_REGISTRY_SCHEMA = "infernux.official_plugin_registry"
+OFFICIAL_REGISTRY_URL = (
+    "https://raw.githubusercontent.com/ChenlizheMe/Infernux/codex/plugin-catalog/"
+    "python/Infernux/resources/official_packages/official-registry.json"
+)
 DEFAULT_LIBRARIES_SCHEMA = "infernux.default_libraries"
-CATALOG_VERSION = 1
+_REMOTE_SOURCE_TYPES = {"git", "github", "url"}
+
+
+def migrate_official_repository(reference: str, location: str) -> str:
+    """Compatibility mapping for the four former engine-subdirectory plugins."""
+    platform = reference.casefold().removeprefix("infernux/platform-")
+    if (
+        platform in {"windows", "linux", "android", "web"}
+        and reference.casefold().startswith("infernux/platform-")
+        and location.rstrip("/").removesuffix(".git").casefold()
+        == "https://github.com/chenlizheme/infernux"
+    ):
+        return f"https://github.com/ChenlizheMe/infernux_{platform}"
+    return location
 
 
 class OfficialCatalogError(RuntimeError):
-    """The optional engine-provided package catalog cannot be trusted."""
+    """The optional engine-provided compatibility catalog is not usable."""
 
 
 def _official_packages_root(resources_root: str | None = None) -> str:
@@ -35,7 +59,15 @@ def _official_packages_root(resources_root: str | None = None) -> str:
     return os.path.join(get_package_resources_path(), "official_packages")
 
 
-def _read_document(path: str, schema: str) -> dict[str, object]:
+def _package_resources_root(resources_root: str | None = None) -> str:
+    if resources_root:
+        return resolved_path(resources_root)
+    from Infernux.resources import get_package_resources_path
+
+    return get_package_resources_path()
+
+
+def _read_document(path: str, schema: str, collection: str) -> dict[str, object]:
     try:
         with open(path, "r", encoding="utf-8") as stream:
             document = json.load(stream)
@@ -43,13 +75,38 @@ def _read_document(path: str, schema: str) -> dict[str, object]:
         raise OfficialCatalogError(
             f"Official plugin catalog is unavailable: {path}"
         ) from exc
+    return _validate_document(document, schema, collection, path)
+
+
+def _validate_document(document, schema: str, collection: str, origin: str) -> dict[str, object]:
     if (
         not isinstance(document, dict)
         or document.get("$schema") != schema
-        or document.get("catalog_version") != CATALOG_VERSION
+        or set(document) != {"$schema", collection}
     ):
-        raise OfficialCatalogError(f"Unsupported official plugin catalog: {path}")
+        raise OfficialCatalogError(f"Unsupported official plugin catalog: {origin}")
     return document
+
+
+def _remote_source(raw: object, *, reference: str) -> dict[str, object]:
+    if not isinstance(raw, Mapping):
+        raise OfficialCatalogError(
+            f"Official plugin has no downloadable source: {reference}"
+        )
+    source = dict(raw)
+    source_type = str(source.get("type", "")).strip().casefold()
+    location = str(source.get("location", "")).strip()
+    if source_type not in _REMOTE_SOURCE_TYPES or not location:
+        raise OfficialCatalogError(
+            f"Official plugin source is invalid: {reference}"
+        )
+    source["type"] = source_type
+    source["location"] = migrate_official_repository(reference, location)
+    if source["location"] != location:
+        source.pop("subdirectory", None)
+        source.pop("revision", None)
+    source["official"] = True
+    return source
 
 
 def sync_official_registry(
@@ -57,14 +114,47 @@ def sync_official_registry(
     *,
     resources_root: str | None = None,
 ) -> tuple[dict[str, object], ...]:
-    """Merge the engine's official catalog into one project registry."""
+    """Load the shared catalog offline; the wheel seeds a not-yet-refreshed library."""
 
-    project = resolved_path(project_root)
     official_packages = _official_packages_root(resources_root)
+    cached = os.path.join(package_cache_root(), OFFICIAL_REGISTRY_FILENAME)
+    use_cached = os.path.isfile(cached)
     document = _read_document(
-        os.path.join(official_packages, OFFICIAL_REGISTRY_FILENAME),
+        cached if use_cached else os.path.join(official_packages, OFFICIAL_REGISTRY_FILENAME),
         OFFICIAL_REGISTRY_SCHEMA,
+        "packages",
     )
+    return _merge_official_registry(
+        resolved_path(project_root),
+        _catalog_entries(document, "" if use_cached else official_packages),
+    )
+
+
+def refresh_official_registry(
+    project_root: str, *, url: str = OFFICIAL_REGISTRY_URL,
+) -> tuple[dict[str, object], ...]:
+    """Explicit network refresh, with no package download or installed-pin mutation."""
+    try:
+        request = Request(url, headers={"User-Agent": "Infernux-Plugin-Catalog", "Accept": "application/json"})
+        with urlopen(request, timeout=30) as response:
+            payload = response.read(2 * 1024 * 1024 + 1)
+        if len(payload) > 2 * 1024 * 1024:
+            raise OfficialCatalogError("Official plugin catalog exceeds the metadata size limit")
+        document = _validate_document(json.loads(payload), OFFICIAL_REGISTRY_SCHEMA, "packages", url)
+    except (OSError, ValueError) as exc:
+        raise OfficialCatalogError(f"Official plugin catalog refresh failed: {exc}") from exc
+    entries = _catalog_entries(document, "")
+    # Validate all entries before publishing either shared discovery or project state.
+    cache_root = package_cache_root()
+    os.makedirs(cache_root, exist_ok=True)
+    write_document_text(
+        os.path.join(cache_root, OFFICIAL_REGISTRY_FILENAME),
+        json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+    )
+    return _merge_official_registry(resolved_path(project_root), entries)
+
+
+def _catalog_entries(document: Mapping[str, object], official_packages: str) -> tuple[dict[str, object], ...]:
     packages = document.get("packages")
     if not isinstance(packages, list):
         raise OfficialCatalogError(
@@ -86,39 +176,47 @@ def sync_official_registry(
         if not artifact or os.path.basename(artifact) != artifact:
             raise OfficialCatalogError("Official plugin registry entry is invalid")
         package_path = os.path.join(official_packages, artifact)
-        if not os.path.isfile(package_path):
-            raise OfficialCatalogError(
-                f"Official plugin artifact is missing: {package_path}"
-            )
-        expected_sha256 = str(raw.get("artifact_sha256", "")).strip().casefold()
-        try:
-            actual_sha256 = _file_sha256(package_path)
-        except OSError as exc:
-            raise OfficialCatalogError(
-                f"Official plugin artifact is unreadable: {package_path}"
-            ) from exc
-        if not expected_sha256 or actual_sha256 != expected_sha256:
-            raise OfficialCatalogError(
-                f"Official plugin artifact hash mismatch: {reference}: {package_path}"
-            )
-        # Registry locations are project-relative and resolve through the
-        # Library/Resources mirror created from this exact engine version.
-        source = {
-            "type": "local",
-            "location": f"Library/Resources/official_packages/{artifact}",
-            "official": True,
-            "sha256": expected_sha256,
-        }
+        if official_packages and os.path.isfile(package_path):
+            try:
+                preview = InxPackage.inspect(package_path)
+            except Exception as exc:
+                raise OfficialCatalogError(
+                    f"Official plugin artifact is invalid: {package_path}"
+                ) from exc
+            metadata = preview.metadata
+            if (
+                str(metadata.get("reference", "")).casefold() != reference.casefold()
+                or str(metadata.get("version", "")) != str(raw.get("version", ""))
+                or str(metadata.get("engine", "")) != str(raw.get("engine", ""))
+            ):
+                raise OfficialCatalogError(
+                    f"Official plugin artifact metadata mismatch: {reference}: {package_path}"
+                )
+            # Development catalogs and release assembly may keep the artifact
+            # beside the catalog. Prefer that exact readable package when present.
+            source = {
+                "type": "local",
+                "location": f"Library/Resources/official_packages/{artifact}",
+                "official": True,
+            }
+        else:
+            # Host wheels intentionally carry only their direct built-in
+            # packages. Other official entries remain discoverable and are
+            # acquired on demand from their catalog-owned source.
+            source = _remote_source(raw.get("source"), reference=reference)
+            source["reference"] = reference
         repository = str(raw.get("repository", "")).strip()
         if repository:
-            source["repository"] = repository
+            source["repository"] = migrate_official_repository(reference, repository)
         dependencies = raw.get("dependencies", [])
         pages = raw.get("pages", [])
         intros = raw.get("intros", {})
+        targets = raw.get("targets", [])
         if (
             not isinstance(dependencies, list)
             or not isinstance(pages, list)
             or not isinstance(intros, Mapping)
+            or not isinstance(targets, list)
         ):
             raise OfficialCatalogError(
                 f"Official plugin registry entry has invalid content metadata: {reference}"
@@ -147,48 +245,150 @@ def sync_official_registry(
                 "intro": str(raw.get("intro", "")),
                 "intros": dict(intros),
                 "pages": normalized_pages,
+                "category": str(raw.get("category", "Other")),
+                "targets": [str(value) for value in targets],
                 "source": source,
             }
         )
+    references = [str(item["reference"]).casefold() for item in validated]
+    if len(set(references)) != len(references):
+        raise OfficialCatalogError("Official plugin catalog contains duplicate references")
+    try:
+        return tuple(PluginRegistry.build_package_entry(**item) for item in validated)
+    except ValueError as exc:
+        raise OfficialCatalogError(f"Invalid official plugin catalog entry: {exc}") from exc
 
+
+def _merge_official_registry(project: str, validated) -> tuple[dict[str, object], ...]:
     # Do not alter the project registry until every official artifact and
-    # catalog entry has passed validation.
+    # catalog entry has passed validation. Merge everything in memory and
+    # write at most once: the previous strip-save plus per-package add_package
+    # pattern rewrote (and fsynced) InxPlugins.json once per official plugin
+    # on every editor startup, even when nothing changed.
     registry = PluginRegistry(project)
     current = registry.load()
-    current["packages"] = [
+    kept = [
         item
         for item in current["packages"]
         if not (
             isinstance(item, Mapping)
             and isinstance(item.get("source"), Mapping)
-            and bool(item["source"].get("official", False))
-        )
-    ]
-    registry.save(current)
-    added: list[dict[str, object]] = []
-    for item in validated:
-        added.append(
-            registry.add_package(
-                str(item["reference"]),
-                name=str(item["name"]),
-                version=str(item["version"]),
-                engine=str(item["engine"]),
-                dependencies=item["dependencies"],
-                intro=str(item["intro"]),
-                intros=item["intros"],
-                pages=item["pages"],
-                source=item["source"],
+            and (
+                bool(item["source"].get("official", False))
+                or migrate_official_repository(str(item["reference"]), str(item["source"].get("location", "")))
+                != str(item["source"].get("location", ""))
             )
         )
+    ]
+    local_references = {str(entry["reference"]).casefold() for entry in kept}
+    added = [item for item in validated if str(item["reference"]).casefold() not in local_references]
+    merged = sorted(
+        [
+            *kept,
+            *added,
+        ],
+        key=lambda entry: str(entry.get("reference", "")).casefold(),
+    )
+    if merged != current["packages"]:
+        current["packages"] = merged
+        registry.save(current)
     return tuple(added)
 
 
-def _file_sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def install_bundled_packages(
+    project_root: str,
+    *,
+    resources_root: str | None = None,
+    manager: PluginManager | None = None,
+) -> tuple[PluginState, ...]:
+    """Install every wheel-mandatory InxPackage from the resources root.
+
+    A direct child named ``*.inxpkg`` is part of the host wheel's built-in
+    package set.  The set is authoritative and local for missing references:
+    startup never replaces a missing artifact with a network download.  An
+    existing project installation with the same reference is preserved because
+    it may be a newer release or originate from another supported source.
+    """
+
+    project = resolved_path(project_root)
+    root = _package_resources_root(resources_root)
+    try:
+        candidates = sorted(
+            (
+                os.path.join(root, name)
+                for name in os.listdir(root)
+                if name.casefold().endswith(PACKAGE_EXTENSION)
+                and os.path.isfile(os.path.join(root, name))
+            ),
+            key=lambda path: os.path.basename(path).casefold(),
+        )
+    except OSError as exc:
+        raise OfficialCatalogError(
+            f"Built-in package resources are unavailable: {root}"
+        ) from exc
+
+    previews: list[tuple[str, InxPackagePreview]] = []
+    references: dict[str, str] = {}
+    for package_path in candidates:
+        try:
+            preview = InxPackage.inspect(package_path)
+            reference = validate_reference(str(preview.metadata.get("reference", "")))
+        except Exception as exc:
+            raise OfficialCatalogError(
+                f"Built-in InxPackage is invalid: {package_path}"
+            ) from exc
+        key = reference.casefold()
+        if key in references:
+            raise OfficialCatalogError(
+                "Built-in package reference is duplicated: "
+                f"{reference}: {references[key]}, {package_path}"
+            )
+        references[key] = package_path
+        previews.append((package_path, preview))
+
+    active = PluginManager.instance()
+    if (
+        manager is None
+        and active is not None
+        and active.project_root == project
+        and not active.runtime
+    ):
+        manager = active
+    owned_manager = manager is None
+    manager = manager or PluginManager(project, runtime=False)
+    if manager.project_root != project:
+        raise ValueError("Built-in package manager belongs to another project")
+
+    try:
+        # Publish the complete local set before installation so one built-in
+        # package can resolve another regardless of filename ordering.
+        for package_path, preview in previews:
+            metadata = preview.metadata
+            manager.registry.add_package(
+                str(metadata["reference"]),
+                name=str(metadata.get("name", "")),
+                version=str(metadata.get("version", "")),
+                engine=str(metadata.get("engine", "")),
+                dependencies=metadata.get("dependencies", ()),
+                intro=str(metadata.get("intro", "")),
+                intros=metadata.get("intros", {}),
+                pages=metadata.get("pages", ()),
+                source={
+                    "type": "local",
+                    "location": package_path,
+                    "builtin": True,
+                },
+            )
+        installed: list[PluginState] = []
+        for _package_path, preview in previews:
+            reference = str(preview.metadata["reference"])
+            if manager.registry.installed_record(reference) is not None:
+                continue
+            installed.append(manager.install_reference(reference))
+        return tuple(installed)
+    finally:
+        if owned_manager:
+            manager.shutdown()
 
 
 def install_default_libraries(
@@ -206,6 +406,7 @@ def install_default_libraries(
             _official_packages_root(resources_root), DEFAULT_LIBRARIES_FILENAME
         ),
         DEFAULT_LIBRARIES_SCHEMA,
+        "libraries",
     )
     references = defaults.get("libraries")
     if not isinstance(references, list) or any(not isinstance(item, str) for item in references):
@@ -222,6 +423,11 @@ def install_default_libraries(
     manager = manager or PluginManager(project, runtime=False)
     if manager.project_root != project:
         raise ValueError("Default library manager belongs to another project")
+    install_bundled_packages(
+        project,
+        resources_root=resources_root,
+        manager=manager,
+    )
     installed = {
         str(item.get("reference", "")).casefold()
         for item in manager.registry.installed()
@@ -249,7 +455,12 @@ def bootstrap_new_project(project_root: str) -> tuple[PluginState, ...]:
     from Infernux.engine.library_sync import sync_resources
 
     sync_resources(project_root)
-    return install_default_libraries(project_root)
+    manager = PluginManager(project_root, runtime=False)
+    try:
+        install_bundled_packages(project_root, manager=manager)
+        return install_default_libraries(project_root, manager=manager)
+    finally:
+        manager.shutdown()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -270,6 +481,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "bootstrap_new_project",
+    "install_bundled_packages",
     "install_default_libraries",
     "OfficialCatalogError",
     "sync_official_registry",

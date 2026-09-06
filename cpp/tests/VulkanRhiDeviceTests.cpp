@@ -140,6 +140,12 @@ int main()
 
     vk::VulkanRhiDevice device;
     vk::VulkanRhiDevice secondDevice;
+    static constexpr char wgsl[] = "@compute @workgroup_size(1) fn main() {}";
+    static constexpr auto wgslDescriptor = rhi::ShaderModuleDesc::FromWgsl(wgsl, sizeof(wgsl) - 1);
+    static_assert(wgslDescriptor.language == rhi::ShaderSourceLanguage::Wgsl);
+    static_assert(wgslDescriptor.byteSize == sizeof(wgsl) - 1);
+    assert(wgslDescriptor.code == wgsl);
+    assert(!device.CreateShaderModule(wgslDescriptor).IsValid());
     assert(device.GetDeviceId() != rhi::InvalidDeviceId);
     assert(secondDevice.GetDeviceId() != rhi::InvalidDeviceId);
     assert(device.GetDeviceId() != secondDevice.GetDeviceId());

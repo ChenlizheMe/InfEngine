@@ -344,13 +344,8 @@ def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields,
         if getattr(meta, 'hidden', False):
             continue
 
-        if meta.visible_when is not None:
-            try:
-                if not meta.visible_when(comp):
-                    continue
-            except (RuntimeError, TypeError) as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
+        if meta.visible_when is not None and not meta.visible_when(comp):
+            continue
 
         current = _get_cached_component_value(
             cache_entry, refresh_values, cpp_attr,
@@ -363,6 +358,16 @@ def _build_builtin_cached_plan(ctx: InxGUIContext, comp, props, lw, skip_fields,
                 "kind": "readonly",
                 "py_name": py_name,
                 "current": current,
+            })
+            continue
+
+        if meta.field_type == FieldType.LIST:
+            _flush_batch()
+            ops.append({
+                "kind": "list",
+                "py_name": py_name,
+                "cpp_attr": cpp_attr,
+                "meta": meta,
             })
             continue
 
@@ -499,6 +504,37 @@ def _replay_builtin_cached_plan(ctx: InxGUIContext, comp, plan: dict, cache_entr
             )
             continue
 
+        if kind == "list":
+            current = _get_cached_component_value(
+                cache_entry,
+                False,
+                op["cpp_attr"],
+                lambda _attr=op["cpp_attr"]: getattr(comp, _attr),
+            )
+
+            def _commit_builtin_list(
+                _comp, _field_name, old_value, new_value,
+                *, _attr=op["cpp_attr"], _name=op["py_name"],
+            ):
+                nonlocal edited
+                _record_builtin_property(
+                    comp, _attr, old_value, new_value, f"Set {_name}"
+                )
+                edited = True
+
+            _render_list_field(
+                ctx,
+                comp,
+                op["py_name"],
+                op["meta"],
+                current,
+                lw,
+                display_name=_serialized_field_label(op["py_name"], op["meta"]),
+                on_change=_commit_builtin_list,
+            )
+            _tooltip_and_info(ctx, op["meta"])
+            continue
+
         if kind == "asset_reference":
             from Infernux.components.fields import FieldType
 
@@ -624,23 +660,16 @@ def render_component(ctx: InxGUIContext, comp):
             finally:
                 _record_profile_timing("bodyBuiltinTotal", _builtin_t0)
         except Exception as exc:
+            # A broken custom inspector is a bug in that inspector: surface it
+            # in place instead of silently re-rendering a generic table on top
+            # of unknown component state.
             import traceback
             from Infernux.debug import Debug
-            tb_str = traceback.format_exc()
-            Debug.log_warning(
-                f"[Inspector] render_component fallback for "
-                f"{getattr(raw_cpp, 'type_name', '?')}: {exc}\n{tb_str}"
+            Debug.log_error(
+                f"[Inspector] render_inspector failed for "
+                f"{getattr(raw_cpp, 'type_name', '?')}: {exc}\n{traceback.format_exc()}"
             )
-            try:
-                _record_profile_count("bodyCppGeneric_count")
-                _generic_t0 = _profile_start()
-                render_cpp_component_generic(ctx, raw_cpp)
-                _record_profile_timing("bodyCppGeneric", _generic_t0)
-            except Exception as fallback_exc:
-                Debug.log_warning(
-                    f"[Inspector] fallback also failed for "
-                    f"{getattr(raw_cpp, 'type_name', '?')}: {fallback_exc}"
-                )
+            ctx.label(f"Inspector error: {type(exc).__name__}: {exc}")
         return
 
     # 3. Fallback — generic property table
@@ -1390,13 +1419,8 @@ def render_py_component(ctx: InxGUIContext, py_comp):
         if getattr(metadata, 'hidden', False):
             continue
 
-        if metadata.visible_when is not None:
-            try:
-                if not metadata.visible_when(py_comp):
-                    continue
-            except (RuntimeError, TypeError) as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
+        if metadata.visible_when is not None and not metadata.visible_when(py_comp):
+            continue
 
         current_value = _get_py_field_value(py_comp, field_name, metadata, cache_entry, refresh_values, _REF_TYPES)
 

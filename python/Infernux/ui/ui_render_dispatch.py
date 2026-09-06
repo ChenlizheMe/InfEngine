@@ -14,7 +14,6 @@ from __future__ import annotations
 from typing import Callable, Dict, Optional
 
 from Infernux.ui.enums import TextAlignH, TextAlignV
-from Infernux.engine.ui.theme import Theme
 from Infernux.ui.ui_render_revision import get_runtime_ui_revision
 
 
@@ -56,10 +55,10 @@ def _extract_text_attrs(elem, scale: float = 1.0) -> dict:
     av = getattr(elem, "text_align_v", TextAlignV.Top)
     ax, ay = text_align_to_float(ah, av)
     return {
-        "font_path": str(getattr(elem, "font_path", "") or ""),
-        "font_size": float(getattr(elem, "font_size", Theme.UI_DEFAULT_FONT_SIZE)),
-        "line_height": float(getattr(elem, "line_height", Theme.UI_DEFAULT_LINE_HEIGHT)),
-        "letter_spacing": float(getattr(elem, "letter_spacing", Theme.UI_DEFAULT_LETTER_SPACING)) * scale,
+        "font_path": str(elem.font_path or ""),
+        "font_size": float(elem.font_size),
+        "line_height": float(elem.line_height),
+        "letter_spacing": float(elem.letter_spacing) * scale,
         "align_x": ax,
         "align_y": ay,
     }
@@ -197,6 +196,11 @@ def _editor_render_image(elem, ctx, base_sx, base_sy, base_sw, base_sh, zoom, ge
 
 def _draw_editor_placeholder(ctx, x, y, w, h, cr, cg, cb, ca, rounding, rect_rounding, rotation=0.0, mirror_h=False, mirror_v=False):
     """Draw a placeholder rect with tint + cross pattern (editor backend)."""
+    # Editor styling is an editor-only capability.  Keeping this import at the
+    # editor rendering boundary prevents Player/Web runtime UI from loading the
+    # native editor theme registry.
+    from Infernux.engine.ui.theme import Theme
+
     tint = Theme.UI_EDITOR_PLACEHOLDER_TINT
     alpha = Theme.UI_EDITOR_PLACEHOLDER_ALPHA
     ctx.draw_filled_rect_rotated(x, y, x + w, y + h,
@@ -288,8 +292,10 @@ def _runtime_render_text(elem, renderer, ui_list, sx, sy, sw, sh,
 def _runtime_render_image(elem, renderer, ui_list, sx, sy, sw, sh,
                           scale_x, scale_y, get_tex_id, **_kw):
     """Render a UIImage element via the GPU ScreenUI renderer."""
+    tex_path = getattr(elem, "texture_path", "") or ""
+    tex_id = get_tex_id(tex_path) if tex_path else 0
     revision = int(getattr(elem, "_ui_render_revision", 0))
-    packet_key = (id(renderer), ui_list, revision, sx, sy, sw, sh, scale_x, scale_y)
+    packet_key = (id(renderer), ui_list, revision, tex_id, sx, sy, sw, sh, scale_x, scale_y)
     packet = getattr(elem, "_runtime_image_packet", None)
     if packet is not None and packet[0] == packet_key:
         kind, arguments = packet[1]
@@ -303,8 +309,6 @@ def _runtime_render_image(elem, renderer, ui_list, sx, sy, sw, sh,
     color = attrs["color"]
     cr, cg, cb = color[0], color[1], color[2]
     ca = color[3] * attrs["opacity"]
-    tex_path = getattr(elem, "texture_path", "") or ""
-    tex_id = get_tex_id(tex_path) if tex_path else 0
     rounding = attrs["corner_radius"] * min(scale_x, scale_y)
     if tex_id:
         kind = "image"
@@ -345,24 +349,22 @@ register_ui_renderer("UIImage", "runtime", _runtime_render_image)
 
 def _get_button_bg(elem):
     """Return the button's background colour as a 4-element list."""
-    return _pad_rgba(getattr(elem, "background_color", None),
-                     default=Theme.UI_DEFAULT_BUTTON_BG)
+    return _pad_rgba(elem.background_color)
 
 
 def _get_label_attrs(elem, scale: float):
     """Return (label, color, text_attrs) for a button's label text."""
-    label = getattr(elem, "label", "") or ""
-    lc = _pad_rgba(getattr(elem, "label_color", None),
-                   default=Theme.UI_DEFAULT_LABEL_COLOR)
+    label = elem.label or ""
+    lc = _pad_rgba(elem.label_color)
     # Buttons default to Center/Center alignment
     ah = getattr(elem, "text_align_h", TextAlignH.Center)
     av = getattr(elem, "text_align_v", TextAlignV.Center)
     ax, ay = text_align_to_float(ah, av)
     ta = {
-        "font_path": str(getattr(elem, "font_path", "") or ""),
-        "font_size": float(getattr(elem, "font_size", Theme.UI_DEFAULT_FONT_SIZE)),
-        "line_height": float(getattr(elem, "line_height", Theme.UI_DEFAULT_LINE_HEIGHT)),
-        "letter_spacing": float(getattr(elem, "letter_spacing", Theme.UI_DEFAULT_LETTER_SPACING)) * scale,
+        "font_path": str(elem.font_path or ""),
+        "font_size": float(elem.font_size),
+        "line_height": float(elem.line_height),
+        "letter_spacing": float(elem.letter_spacing) * scale,
         "align_x": ax,
         "align_y": ay,
     }
@@ -413,9 +415,11 @@ def _editor_render_button(elem, ctx, base_sx, base_sy, base_sw, base_sh, zoom, g
 def _runtime_render_button(elem, renderer, ui_list, sx, sy, sw, sh,
                            scale_x, scale_y, text_scale, get_tex_id, **_kw):
     """Render a UIButton element via the GPU ScreenUI renderer."""
+    tex_path = getattr(elem, "texture_path", "") or ""
+    tex_id = get_tex_id(tex_path) if tex_path else 0
     revision = int(getattr(elem, "_ui_render_revision", 0))
     state = getattr(elem, "_current_state", None)
-    packet_key = (id(renderer), ui_list, revision, state, sx, sy, sw, sh, scale_x, scale_y, text_scale)
+    packet_key = (id(renderer), ui_list, revision, state, tex_id, sx, sy, sw, sh, scale_x, scale_y, text_scale)
     packet = getattr(elem, "_runtime_button_packet", None)
     if packet is not None and packet[0] == packet_key:
         for kind, arguments in packet[1]:
@@ -437,8 +441,6 @@ def _runtime_render_button(elem, renderer, ui_list, sx, sy, sw, sh,
     rounding = attrs["corner_radius"] * min(scale_x, scale_y)
 
     # Background: texture image or solid fill
-    tex_path = getattr(elem, "texture_path", "") or ""
-    tex_id = get_tex_id(tex_path) if tex_path else 0
     commands = []
     if tex_id:
         arguments = (

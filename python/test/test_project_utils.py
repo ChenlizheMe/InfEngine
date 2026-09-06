@@ -1,5 +1,7 @@
 import platform
 
+import pytest
+
 from Infernux.engine.ui import project_utils
 from Infernux.engine.ui.project_file_ops import copy_path_as_new_asset
 from Infernux.particle import ParticleGraphAsset
@@ -41,6 +43,34 @@ def test_code_file_open_refreshes_ides_and_uses_preference(tmp_path, monkeypatch
 
     assert refreshes == [True]
     assert launches == [("vscode", str(script), str(tmp_path))]
+
+
+def test_vscode_launch_failure_is_not_hidden(tmp_path, monkeypatch):
+    script = tmp_path / "player.py"
+    script.write_text("pass\n", encoding="utf-8")
+    monkeypatch.setattr(
+        project_utils,
+        "_find_vscode_executable",
+        lambda: str(tmp_path / "code.exe"),
+    )
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+
+    def reject_launch(*_args, **_kwargs):
+        raise OSError("launch failed")
+
+    monkeypatch.setattr("subprocess.Popen", reject_launch)
+
+    with pytest.raises(OSError, match="launch failed"):
+        project_utils.open_in_vscode(str(script))
+
+
+def test_pycharm_project_files_require_project_runtime(tmp_path):
+    (tmp_path / "Assets").mkdir()
+
+    with pytest.raises(FileNotFoundError, match="project Python runtime not found"):
+        project_utils._ensure_pycharm_project_files(str(tmp_path))
+
+    assert not (tmp_path / ".idea").exists()
 
 
 def test_windows_missing_file_association_opens_native_app_picker(tmp_path, monkeypatch):

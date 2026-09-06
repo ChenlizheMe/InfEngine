@@ -91,6 +91,8 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
     _intrinsic_script_guid_: str = ""
     _type_guid_: str = ""
     _asset_script_guid_: str = ""
+    _execute_in_edit_mode_: bool = False
+    _is_broken: bool = False
 
     # Gizmo visibility: when True, on_draw_gizmos() is called every frame
     # for this component.  When False, on_draw_gizmos() is only called when
@@ -279,29 +281,6 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
             from .registry import register_component_type
             register_component_type(cls)
 
-        # Publish one immutable phase table per runtime type.  The native
-        # proxy may enter the Python phase wrappers thousands of times per
-        # second; resolving update/fixed_update/late_update by name for every
-        # instance is unnecessary once the class is known.  The helper keeps
-        # descriptor semantics for the uncommon static/classmethod case.
-        if is_reload_candidate:
-            # Candidate classes are transaction-private scratch types. Live
-            # classes rebuild their dispatch table after the validated body
-            # patch is committed, while newly published classes build lazily
-            # on first use. Reflecting the entire InxComponent MRO here made
-            # even a one-line script reload take hundreds of milliseconds.
-            # Deliberately leave both attributes absent from this class'
-            # dictionary. The compatibility bridge treats absence as the
-            # signal to build them lazily if this is a new, no-live type that
-            # becomes the registry's published class.
-            pass
-        else:
-            from Infernux.engine.runtime_dispatch import build_type_dispatch_descriptor
-
-            descriptor = build_type_dispatch_descriptor(cls)
-            cls._runtime_phase_dispatch = descriptor.phase_dispatch
-            cls._runtime_phase_invokers = descriptor.phase_invokers
-    
     def __init__(self):
         """Internal framework initialization — **do not override**.
 
@@ -330,12 +309,6 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         self._has_started = False
         self._awake_called = False
         self._is_destroyed = False  # Track destruction state
-        # Published once per component type.  Script hot reload creates a new
-        # component instance, so the new instance receives the new table while
-        # the old instance can finish teardown without touching the hot path.
-        self._runtime_phase_invokers_instance = type(self).__dict__.get(
-            "_runtime_phase_invokers"
-        )
         self._component_name = self.__class__.__name__
         self._script_guid: str = self.__class__._intrinsic_script_guid_
         self._registered_go_id: Optional[int] = None  # go_id this comp is registered under

@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import threading
 import weakref
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from Infernux.engine.path_utils import is_path_within, resolved_path
 
@@ -71,20 +73,78 @@ class Application:
         with _lock:
             is_player = _runtime_kind == "player"
         if is_player:
-            packaged_root = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
-            if packaged_root:
-                return resolved_path(packaged_root)
+            persistent_root = os.environ.get(
+                "_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT", ""
+            ).strip()
+            if not persistent_root:
+                raise RuntimeError(
+                    "The Player host did not provide a writable persistent data root"
+                )
+            return resolved_path(persistent_root)
         return Application.data_path()
 
     @staticmethod
     def asset_path(path: str) -> str:
-        """Resolve an ``Assets/...`` reference in Editor or packaged Player."""
+        """Resolve an ``Assets/...`` or ``Packages/...`` asset in Editor/Player."""
         from Infernux.engine.project_context import resolve_asset_path
 
         resolved = resolve_asset_path(path)
         if not resolved:
             raise FileNotFoundError(f"Project asset is not available at runtime: {path}")
         return resolved
+
+    @staticmethod
+    def package_path(package_reference: str, relative_path: str | os.PathLike[str]) -> str:
+        """Resolve a read-only, verbatim package payload in Editor or Player.
+
+        This is the package-scoped counterpart of :meth:`asset_path`.  Files
+        keep their relative directory structure in every Player target, which
+        allows sibling includes and external runtimes to receive a real path.
+        """
+
+        from Infernux.lifecycle import _resolve_package_path
+
+        return _resolve_package_path(
+            Application.data_path(),
+            str(package_reference),
+            relative_path,
+        )
+
+    @staticmethod
+    def open_url(target: str) -> bool:
+        """Open one absolute local file or HTTP(S) URL with the platform handler.
+
+        Project content must first be resolved with :meth:`asset_path`.  Keeping
+        resolution and opening separate makes the exact URL observable in tests
+        and avoids silently interpreting arbitrary relative paths.
+        """
+        value = str(target or "").strip()
+        if not value:
+            raise ValueError("URL target cannot be empty")
+        if os.path.isabs(value):
+            local_path = resolved_path(value)
+            if not os.path.isfile(local_path):
+                raise FileNotFoundError(f"Local URL target is not available: {value}")
+            canonical = Path(local_path).as_uri()
+        else:
+            parsed = urlsplit(value)
+            if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+                if parsed.scheme:
+                    raise ValueError(
+                        "Only absolute local files and HTTP(S) URLs can be opened"
+                    )
+                raise ValueError(
+                    "Local URL target must be absolute; resolve project content with "
+                    "Application.asset_path() first"
+                )
+            canonical = value
+
+        engine = Application._current_engine()
+        if engine is None:
+            raise RuntimeError("Opening a URL requires a running graphical application")
+        if not bool(engine.open_url(canonical)):
+            raise RuntimeError(f"The platform URL handler rejected: {canonical}")
+        return True
 
     @staticmethod
     def renderer_state() -> dict[str, Any]:

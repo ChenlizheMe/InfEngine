@@ -29,6 +29,7 @@ from Infernux.components.fields import (
 )
 from Infernux.components.ref_wrappers import MaterialRef, GameObjectRef, ComponentRef, PrefabRef
 from Infernux.core.asset_ref import AudioClipRef, ParticleGraphRef, TextureRef
+from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
 
 
 # ── annotation unwrapping ────────────────────────────────────────────────
@@ -138,6 +139,35 @@ class TestBuildField:
         meta = build_field_from_annotation(Annotated[Color, HDR], default=_UNSET)
         assert meta.hdr is True
 
+    @pytest.mark.parametrize(
+        ("annotation", "field_type"),
+        [
+            (AnimationCurve, FieldType.ANIMATION_CURVE),
+            (Gradient, FieldType.GRADIENT),
+        ],
+    )
+    def test_ramp_annotations_are_first_class_serialized_fields(
+        self, annotation, field_type
+    ):
+        meta = build_field_from_annotation(annotation, default=_UNSET)
+
+        assert meta.field_type == field_type
+        assert isinstance(meta.default, annotation)
+
+    def test_curve_editor_document_coerces_to_animation_curve(self):
+        meta = build_field_from_annotation(AnimationCurve, default=_UNSET)
+        document = AnimationCurve(
+            (Keyframe(0.0, 2.0), Keyframe(1.0, 3.0)),
+            "repeat",
+            "ping_pong",
+        ).to_dict()
+
+        value = coerce_serialized_field_input(document, meta, "Probe.width")
+
+        assert isinstance(value, AnimationCurve)
+        assert value.pre_wrap == "repeat"
+        assert value.post_wrap == "ping_pong"
+
     def test_unsupported_annotation_falls_back_to_value(self):
         class Weird:
             pass
@@ -200,7 +230,7 @@ class _Phase(enum.Enum):
     RUN = 1
 
 
-class V2Showcase(InxComponent):
+class SerializedFieldShowcase(InxComponent):
     # Unity-style: annotation + plain default
     health: int = 100
     speed: Annotated[float, Range(0, 20), Tooltip("m/s")] = 5.0
@@ -214,13 +244,12 @@ class V2Showcase(InxComponent):
     # references
     mat: 'Material' = None  # noqa: F821  (string annotation; resolves via registry)
     target: Optional[GameObjectRef] = None
-    # legacy API still composes with markers
-    legacy: Annotated[float, Group("Legacy")] = serialized_field(default=1.5)
+    grouped_value: Annotated[float, Group("Advanced")] = serialized_field(default=1.5)
 
 
-class TestV2Showcase:
+class TestSerializedFieldShowcase:
     def setup_method(self):
-        self.fields = get_serialized_fields(V2Showcase)
+        self.fields = get_serialized_fields(SerializedFieldShowcase)
 
     def test_annotation_drives_type_over_value(self):
         assert self.fields['armor'].field_type == FieldType.FLOAT
@@ -261,11 +290,11 @@ class TestV2Showcase:
         assert self.fields['mat'].field_type == FieldType.MATERIAL
 
     def test_descriptor_marker_composition(self):
-        meta = self.fields['legacy']
-        assert meta.group == "Legacy" and meta.default == 1.5
+        meta = self.fields['grouped_value']
+        assert meta.group == "Advanced" and meta.default == 1.5
 
     def test_instance_roundtrip(self):
-        comp = V2Showcase()
+        comp = SerializedFieldShowcase()
         assert comp.health == 100
         assert comp.speed == pytest.approx(5.0)
         comp.health = 55
@@ -277,14 +306,14 @@ class TestV2Showcase:
     def test_cds_backing_for_annotated_numeric(self):
         # Annotated numeric fields should ride the same CDS fast path as
         # serialized_field() ones — descriptor carries CDS ids after register.
-        desc = V2Showcase.__dict__['health']
-        comp = V2Showcase()
+        desc = SerializedFieldShowcase.__dict__['health']
+        comp = SerializedFieldShowcase()
         if comp._cds_slot is not None:
             assert desc._cds_class_id is not None
 
     def test_serialization_includes_hidden_excludes_nonserialized(self):
         import json
-        comp = V2Showcase()
+        comp = SerializedFieldShowcase()
         comp.secret = 1234
         data = json.loads(comp._serialize_fields())
         assert data['secret'] == 1234          # HideInInspector → still serialized

@@ -231,7 +231,7 @@ class SceneManager:
         """
         from Infernux.engine.build_settings import load_build_settings
         data = load_build_settings()
-        scenes = list(data.get("scenes", []))
+        scenes = list(data["scenes"])
 
         from Infernux.engine.project_context import get_project_root
         root = get_project_root()
@@ -351,10 +351,6 @@ class SceneManager:
             if generation is None:
                 return False
             SceneManager._pending_scene_load = path
-            Debug.log_internal(
-                f"SceneManager: Scene load deferred to end-of-frame — "
-                f"{os.path.basename(path)}"
-            )
             return True
 
         # --- Not in play mode: load immediately (editor double-click, etc.) ---
@@ -499,7 +495,6 @@ class SceneManager:
         if not loaded:
             Debug.log_warning(f"SceneManager: failed to load {path}: {transaction.error}")
             return False
-        Debug.log_internal(f"Scene loaded (runtime): {os.path.basename(path)}")
         return True
 
     @staticmethod
@@ -599,10 +594,6 @@ class SceneManager:
         SceneManager._active_scene_wait_for_ready = bool(wait_for_ready)
         SceneManager._active_scene_hold_for_activation = bool(hold_for_activation)
         SceneManager._active_scene_load_generation = generation
-        mode = "background preparation" if wait_for_ready else "runtime load"
-        Debug.log_internal(
-            f"SceneManager: started {mode} - {os.path.basename(path)}"
-        )
         return True
 
     @staticmethod

@@ -1,8 +1,8 @@
 """Static, project-scoped dependency graph for Python scripts.
 
 This module deliberately has no connection to the live script loader.  It is a
-small foundation for R1.2: in the Editor it indexes only Python source files
-under the project's ``Assets`` directory,
+small foundation for R1.2: in the Editor it indexes Python source files under
+the project's ``Assets`` directory and installed package ``Runtime`` roots,
 resolves the imports that can be resolved without executing user code, and
 records everything else as an explicit external, unresolved, or dynamic edge.
 
@@ -18,7 +18,6 @@ import ast
 import hashlib
 import heapq
 import io
-import keyword
 import os
 import sys
 import threading
@@ -31,9 +30,12 @@ from typing import Iterable, Optional, Union
 from Infernux.engine.path_utils import (
     is_path_within,
     path_key,
-    portable_path,
-    relative_path,
     resolved_path,
+)
+from Infernux.engine.project_context import (
+    get_project_script_roots,
+    get_script_module_name,
+    is_project_component_script,
 )
 
 
@@ -243,10 +245,6 @@ class _RawImport:
     dynamic: bool = False
 
 
-def _valid_segment(value: str) -> bool:
-    return bool(value) and value.isidentifier() and not keyword.iskeyword(value)
-
-
 def _decode_source(payload: bytes) -> str:
     """Decode Python source using its PEP 263 encoding declaration."""
 
@@ -317,13 +315,14 @@ class _ImportCollector(ast.NodeVisitor):
 
 
 class ScriptDependencyGraph:
-    """Thread-safe static dependency graph rooted at one project's Assets."""
+    """Thread-safe static dependency graph for project gameplay scripts."""
 
     def __init__(self, project_root: PathLike, assets_root: Optional[PathLike] = None) -> None:
         project_path = resolved_path(project_root)
         assets_path = resolved_path(assets_root or os.path.join(project_path, "Assets"))
         self._project_root = project_path
         self._assets_root = assets_path
+        self._source_roots = get_project_script_roots(project_path)
         self._project_id = path_key(project_path)
         self._lock = threading.RLock()
         self._owner_token = object()
@@ -342,6 +341,15 @@ class ScriptDependencyGraph:
     @property
     def assets_root(self) -> str:
         return self._assets_root
+
+    @property
+    def source_roots(self) -> tuple[str, ...]:
+        return self._source_roots
+
+    def owns_path(self, path: PathLike) -> bool:
+        """Return whether *path* has a canonical gameplay module identity."""
+
+        return is_project_component_script(os.fspath(path), self._project_root)
 
     @property
     def revision(self) -> int:
@@ -379,12 +387,14 @@ class ScriptDependencyGraph:
             return DependencyGraphSnapshot(self._revision, modules, edges)
 
     def index_assets(self) -> GraphMutation:
-        """Atomically index every Python file currently under Assets."""
+        """Atomically index every project gameplay Python source."""
         with self._lock:
             self._assert_live_mutation_thread_locked()
             paths: list[str] = []
-            if os.path.isdir(self._assets_root):
-                for directory, subdirectories, filenames in os.walk(self._assets_root):
+            for source_root in self._source_roots:
+                if not os.path.isdir(source_root):
+                    continue
+                for directory, subdirectories, filenames in os.walk(source_root):
                     subdirectories[:] = sorted(
                         name for name in subdirectories
                         if name != "__pycache__" and not name.startswith(".")
@@ -393,7 +403,9 @@ class ScriptDependencyGraph:
                         # Editor dependency identity is source-based.  Never
                         # index bytecode beside its source counterpart.
                         if filename.endswith(".py"):
-                            paths.append(os.path.join(directory, filename))
+                            candidate = os.path.join(directory, filename)
+                            if self.owns_path(candidate):
+                                paths.append(candidate)
             paths.sort(key=path_key)
 
             staged: dict[str, tuple[ModuleRecord, bytes, tuple[_RawImport, ...]]] = {}
@@ -1200,27 +1212,14 @@ class ScriptDependencyGraph:
         return tuple(sorted(result, key=self._module_sort_key))
 
     def _module_name_for_path(self, path: str) -> tuple[str, bool]:
-        if not is_path_within(path, self._assets_root):
-            raise ModuleIdentityError(f"script is outside Assets: {path}")
-        relative = portable_path(relative_path(path, self._assets_root))
-        parts = relative.split("/")
-        filename = parts.pop()
-        stem, extension = os.path.splitext(filename)
-        if extension != ".py" or not stem:
-            raise ModuleIdentityError(f"not a Python module path: {path}")
-        is_package = stem == "__init__"
-        if is_package:
-            if not parts:
-                raise ModuleIdentityError("Assets/__init__.py has no project module name")
-        else:
-            parts.append(stem)
-        if any(not _valid_segment(part) for part in parts):
-            raise ModuleIdentityError(f"invalid Python module path: {path}")
-        return ".".join(parts), is_package
+        module_name = get_script_module_name(path, self._project_root)
+        if not module_name:
+            raise ModuleIdentityError(f"script has no project module identity: {path}")
+        return module_name, os.path.basename(path) == "__init__.py"
 
     def _assert_asset_file(self, path: str) -> None:
-        if not is_path_within(path, self._assets_root):
-            raise ModuleIdentityError(f"script is outside Assets: {path}")
+        if not self.owns_path(path):
+            raise ModuleIdentityError(f"script is outside project gameplay roots: {path}")
         if os.path.splitext(path)[1] != ".py":
             raise ModuleIdentityError(f"not a Python module path: {path}")
 

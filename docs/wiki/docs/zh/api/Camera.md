@@ -11,7 +11,7 @@
 渲染场景视图的摄像机组件。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.3.7
+**状态：** Preview · **验证版本：** 0.4.0
 
 普通 3D 深度使用透视 Camera，尺度稳定的 2D 构图使用正交 Camera。Near/Far 裁剪应与场景尺度匹配。
 <!-- USER CONTENT END -->
@@ -67,13 +67,13 @@
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import Camera, CameraProjection, GameObject
+import infernux as inx
 
-camera_object = GameObject.find("Main Camera")
+camera_object = inx.GameObject.find("Main Camera")
 if camera_object is not None:
-    camera = camera_object.get_component(Camera)
+    camera = camera_object.get_component(inx.Camera)
     if camera is not None:
-        camera.projection_mode = CameraProjection.Orthographic
+        camera.projection_mode = 1  # Orthographic
         camera.orthographic_size = 5.0
 ```
 <!-- USER CONTENT END -->

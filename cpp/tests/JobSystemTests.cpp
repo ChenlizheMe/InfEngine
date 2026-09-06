@@ -301,11 +301,40 @@ void TestTaskGroupCancellationAndException()
     infernux::JobSystem::Initialize(2);
     auto &jobs = infernux::JobSystem::Get();
 
+    // Keep the task pending until cancellation has been published. Without
+    // this gate the worker may legitimately begin the callback before
+    // Cancel(), which tests scheduling luck rather than queued cancellation.
+    jobs.SetDomainConcurrency(infernux::JobDomain::Runtime, 1);
+    std::mutex cancellationMutex;
+    std::condition_variable cancellationCondition;
+    bool blockerStarted = false;
+    bool releaseBlocker = false;
+    auto cancellationBlocker = jobs.Schedule(
+        [&] {
+            std::unique_lock lock(cancellationMutex);
+            blockerStarted = true;
+            cancellationCondition.notify_all();
+            cancellationCondition.wait(lock, [&] { return releaseBlocker; });
+        },
+        infernux::JobDomain::Runtime);
+    {
+        std::unique_lock lock(cancellationMutex);
+        Require(cancellationCondition.wait_for(lock, std::chrono::seconds(2), [&] { return blockerStarted; }),
+                "TaskGroup cancellation blocker did not start");
+    }
+
     auto cancelledGroup = jobs.CreateTaskGroup(infernux::JobDomain::Runtime);
     std::atomic<bool> cancelledTaskRan{false};
     jobs.Schedule(cancelledGroup, [&cancelledTaskRan] { cancelledTaskRan.store(true, std::memory_order_release); });
+    Require(jobs.GetQueuedTaskCount() == 1, "TaskGroup cancellation target did not remain queued");
     Require(cancelledGroup.Cancel(), "TaskGroup rejected cancellation");
     cancelledGroup.Close();
+    {
+        std::lock_guard lock(cancellationMutex);
+        releaseBlocker = true;
+    }
+    cancellationCondition.notify_all();
+    jobs.Wait(cancellationBlocker);
     bool cancellationPropagated = false;
     try {
         jobs.Wait(cancelledGroup.Fence());
@@ -314,6 +343,7 @@ void TestTaskGroupCancellationAndException()
     }
     Require(cancellationPropagated, "TaskGroup cancellation was not propagated");
     Require(!cancelledTaskRan.load(std::memory_order_acquire), "cancelled TaskGroup task executed");
+    jobs.SetDomainConcurrency(infernux::JobDomain::Runtime, 0);
 
     auto failingGroup = jobs.CreateTaskGroup(infernux::JobDomain::Runtime);
     jobs.Schedule(failingGroup, [] { throw std::runtime_error("group failure"); });
@@ -424,6 +454,32 @@ void TestWaitHelpIsProfiled()
     infernux::JobSystem::Shutdown();
 }
 
+void TestInlineExecutionMode()
+{
+    infernux::JobSystem::InitializeInline();
+    auto &jobs = infernux::JobSystem::Get();
+    Require(jobs.IsInline(), "inline JobSystem did not expose its execution mode");
+    Require(jobs.GetWorkerCount() == 0, "inline JobSystem created a worker thread");
+
+    std::thread::id executionThread;
+    const std::thread::id ownerThread = std::this_thread::get_id();
+    auto deferred = jobs.Schedule([&executionThread] { executionThread = std::this_thread::get_id(); });
+    Require(!deferred.IsComplete(), "inline work ran during submission");
+    Require(jobs.RunPendingJobs(1) == 1, "inline pump did not execute one queued job");
+    Require(deferred.IsComplete(), "inline pump did not complete its handle");
+    Require(executionThread == ownerThread, "inline work escaped the owner thread");
+
+    std::atomic<uint32_t> batchCount{0};
+    auto batch = jobs.ScheduleBatch(
+        8, [&batchCount](uint32_t) { return [&batchCount] { batchCount.fetch_add(1, std::memory_order_relaxed); }; });
+    jobs.WaitPassive(batch);
+    Require(batchCount.load(std::memory_order_relaxed) == 8, "inline passive wait did not drain the target work");
+
+    infernux::JobSystem::Get().Schedule([&batchCount] { batchCount.fetch_add(1, std::memory_order_relaxed); });
+    infernux::JobSystem::Shutdown();
+    Require(batchCount.load(std::memory_order_relaxed) == 9, "inline shutdown dropped queued work");
+}
+
 } // namespace
 
 int main()
@@ -442,6 +498,7 @@ int main()
         TestGroupAwareNestedWaitReleasesPermit();
         TestPriorityAgingPreventsStarvation();
         TestWaitHelpIsProfiled();
+        TestInlineExecutionMode();
     } catch (const std::exception &error) {
         std::cerr << "JobSystem test failed: " << error.what() << '\n';
         infernux::JobSystem::Shutdown();

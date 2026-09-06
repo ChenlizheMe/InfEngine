@@ -21,7 +21,6 @@ from .path_utils import relative_path, resolved_path
 
 
 CATALOG_SCHEMA = "infernux.runtime_asset_catalog"
-CATALOG_VERSION = 1
 # Windows FILETIME is measured in 100 ns ticks since 1601-01-01 UTC.
 WINDOWS_FILETIME_EPOCH_OFFSET_TICKS = 116444736000000000
 
@@ -53,13 +52,14 @@ RUNTIME_JSON_DOCUMENT_SUFFIXES = frozenset(_DOCUMENT_TYPES) | frozenset(
 _AUDIO_TYPES = {extension: "audio" for extension in AUDIO_EXTENSIONS}
 _DIRECT_TEXTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr", ".exr"}
 _DIRECT_MODEL_SUFFIXES = {".fbx", ".obj", ".gltf", ".glb", ".dae"}
-_ARTIFACT_SUFFIXES = {
-    ".inxtex",
-    ".inxmesh",
-    ".inxskin",
-    ".inxparticle",
-    ".inxeffect",
+_BINARY_ARTIFACT_MAGIC = {
+    ".inxtex": b"INXTEXTURE",
+    ".inxmesh": b"INXMESHART",
+    ".inxskin": b"INXSKINAR",
 }
+_ARTIFACT_SUFFIXES = frozenset(_BINARY_ARTIFACT_MAGIC) | frozenset(
+    {".inxparticle", ".inxeffect"}
+)
 
 # These reasons describe the Library artifact that a source type must produce.
 # They remain part of the build diagnostics, but no longer authorize a direct
@@ -101,6 +101,21 @@ def unix_ns_to_filetime_ticks(unix_ns: int) -> int:
     """Convert Unix nanoseconds to Windows FILETIME 100 ns ticks."""
 
     return int(unix_ns) // 100 + WINDOWS_FILETIME_EPOCH_OFFSET_TICKS
+
+
+def _source_content_hash(path: str) -> str:
+    """Return the native AssetIndex FNV-1a source fingerprint."""
+
+    try:
+        with Path(path).open("rb") as stream:
+            value = 14695981039346656037
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                for byte in chunk:
+                    value ^= byte
+                    value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+            return f"{value:016x}"
+    except OSError as exc:
+        raise RuntimeArtifactError(f"Asset source cannot be fingerprinted: {path}") from exc
 
 
 def _metadata_value(entry: dict[str, Any], key: str, default: Any = None) -> Any:
@@ -167,7 +182,9 @@ def load_asset_index(project_root: str | os.PathLike[str]) -> list[dict[str, Any
             or not isinstance(source.get("modified_ns"), int)
         ):
             raise RuntimeArtifactError(f"AssetIndex.entries[{index}].source is invalid")
-        if not isinstance(entry.get("content_hash"), str) or not entry["content_hash"]:
+        if not isinstance(entry.get("content_hash"), str) or not re.fullmatch(
+            r"[0-9a-fA-F]{16}", entry["content_hash"]
+        ):
             raise RuntimeArtifactError(f"AssetIndex.entries[{index}].content_hash is invalid")
         if "artifact_path" in entry and not isinstance(entry["artifact_path"], str):
             raise RuntimeArtifactError(f"AssetIndex.entries[{index}].artifact_path is invalid")
@@ -203,23 +220,38 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
     except OSError as exc:
         raise RuntimeArtifactError(f"Asset source is missing: {source}") from exc
     expected = entry["source"]
-    # AssetIndex stores Windows FILETIME ticks (100 ns since 1601), while
-    # Python's st_mtime_ns is nanoseconds since 1970.  Keep the comparison in
-    # the index's native unit instead of treating equal-looking timestamps as
-    # a universal format.
+    expected_size = int(expected["size"])
+    expected_modified = int(expected["modified_ns"])
+    content_hash = str(entry.get("content_hash", "")).strip()
+    if not content_hash:
+        raise RuntimeArtifactError(f"AssetIndex content_hash is missing for {source}")
+
+    # std::filesystem::file_time_type has no cross-platform epoch or tick
+    # contract. Windows indexes currently resemble FILETIME while Linux
+    # indexes use the implementation's native clock, and copying a project
+    # between filesystems can also change mtime without changing its bytes.
+    # Size + mtime remain the fast path; an mtime mismatch is resolved by the
+    # native content hash instead of rejecting an otherwise identical source.
     current = {
         "size": int(stat.st_size),
         "modified_ns": unix_ns_to_filetime_ticks(stat.st_mtime_ns),
     }
-    if current != {"size": int(expected["size"]), "modified_ns": int(expected["modified_ns"])}:
+    if current["size"] != expected_size:
         raise RuntimeArtifactError(
             f"Asset source fingerprint is stale for {source}: "
             f"expected={expected!r}, current={current!r}"
         )
-    content_hash = str(entry.get("content_hash", ""))
-    if not content_hash:
-        raise RuntimeArtifactError(f"AssetIndex content_hash is missing for {source}")
-    current["content_hash"] = content_hash
+    if current["modified_ns"] != expected_modified:
+        actual_hash = _source_content_hash(source)
+        if actual_hash.casefold() != content_hash.casefold():
+            raise RuntimeArtifactError(
+                f"Asset source fingerprint is stale for {source}: "
+                f"expected={expected!r}, current={current!r}, "
+                f"expected_content_hash={content_hash!r}, actual_content_hash={actual_hash!r}"
+            )
+        current["content_hash"] = actual_hash
+    else:
+        current["content_hash"] = content_hash
     return current
 
 
@@ -251,28 +283,25 @@ def artifact_source_hash(path: str | os.PathLike[str]) -> str:
         raw = artifact.read_bytes()
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeArtifactError(f"Library artifact is unreadable: {artifact}") from exc
-    if suffix not in _ARTIFACT_SUFFIXES or len(raw) < 18:
+    magic = _BINARY_ARTIFACT_MAGIC.get(suffix)
+    if magic is None or len(raw) < len(magic) + 8:
         raise RuntimeArtifactError(f"unsupported or truncated Library artifact: {artifact}")
-    if raw[10:14] != b"\x04\x03\x02\x01":
+    if not raw.startswith(magic):
+        raise RuntimeArtifactError(f"Library artifact has an invalid header: {artifact}")
+    marker_offset = len(magic)
+    if raw[marker_offset : marker_offset + 4] != b"\x04\x03\x02\x01":
         raise RuntimeArtifactError(f"Library artifact has an invalid endian marker: {artifact}")
-    hash_size = int.from_bytes(raw[14:18], "little", signed=False)
-    if hash_size <= 0 or 18 + hash_size > len(raw):
+    hash_size_offset = marker_offset + 4
+    hash_offset = hash_size_offset + 4
+    hash_size = int.from_bytes(
+        raw[hash_size_offset:hash_offset], "little", signed=False
+    )
+    if hash_size <= 0 or hash_offset + hash_size > len(raw):
         raise RuntimeArtifactError(f"Library artifact has an invalid source hash: {artifact}")
-    value = raw[18 : 18 + hash_size].decode("ascii", errors="ignore")
+    value = raw[hash_offset : hash_offset + hash_size].decode("ascii", errors="ignore")
     if len(value) != hash_size or any(character not in "0123456789abcdefABCDEF" for character in value):
         raise RuntimeArtifactError(f"Library artifact has no current source hash: {artifact}")
     return value
-
-
-def artifact_fingerprint(path: str | os.PathLike[str]) -> str:
-    digest = hashlib.sha256()
-    try:
-        with Path(path).open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as exc:
-        raise RuntimeArtifactError(f"Library artifact is unreadable: {path}") from exc
-    return digest.hexdigest()
 
 
 def expected_artifact_source_hash(
@@ -355,7 +384,6 @@ def validate_artifact(
         "source_path": relative_path(source_path, root),
         "source_fingerprint": source_fp,
         "artifact_source_hash": expected_hash,
-        "artifact_sha256": artifact_fingerprint(artifact),
         "artifact_path": artifact_relative,
     }
 
@@ -490,7 +518,19 @@ def runtime_artifact_id(package: str, runtime_path: str) -> str:
 _COMPACT_ASSET_GUID = re.compile(r"[0-9a-fA-F]{32}")
 
 
-def _asset_refs(value: Any) -> Iterable[tuple[str, str]]:
+_SCALAR_ASSET_GUID_FIELDS = frozenset(
+    {
+        "dependencies",
+        "materials",
+        "material_guids",
+        "mesh_guids",
+        "shader_guids",
+    }
+)
+_NON_ASSET_GUID_FIELDS = frozenset({"type_guid", "stable_id"})
+
+
+def _asset_refs(value: Any, field_name: str = "") -> Iterable[tuple[str, str]]:
     if isinstance(value, dict):
         # Python serialized fields use the explicit asset_ref marker, while
         # several native/current documents (materials, effect groups and
@@ -508,14 +548,25 @@ def _asset_refs(value: Any) -> Iterable[tuple[str, str]]:
                 path_hint = ""
             if guid or path_hint:
                 yield guid, path_hint
-        for item in value.values():
-            yield from _asset_refs(item)
+        for key, item in value.items():
+            yield from _asset_refs(item, str(key))
     elif isinstance(value, list):
         for item in value:
-            yield from _asset_refs(item)
-    elif isinstance(value, str) and _COMPACT_ASSET_GUID.fullmatch(value):
+            yield from _asset_refs(item, field_name)
+    elif (
+        isinstance(value, str)
+        and _COMPACT_ASSET_GUID.fullmatch(value)
+        and (
+            (
+                field_name.casefold().endswith("guid")
+                and field_name.casefold() not in _NON_ASSET_GUID_FIELDS
+            )
+            or field_name.casefold() in _SCALAR_ASSET_GUID_FIELDS
+        )
+    ):
         # Native scene serializers keep common references such as material,
-        # mesh and shader GUIDs as compact scalar strings.
+        # mesh and shader GUIDs as compact scalar strings. Type GUIDs and
+        # particle stable IDs are identities, not asset dependencies.
         yield value, ""
 
 
@@ -560,9 +611,10 @@ def build_catalog(
 ) -> dict[str, Any]:
     """Build a deterministic catalog from native package TOC entries.
 
-    Each item must contain ``package``, ``runtime_path``, ``sha256`` and
-    ``bytes``.  ``payload`` is optional and is used only to derive dependency
-    IDs; it is never copied into the catalog.
+    Each item must contain ``package``, ``runtime_path`` and ``bytes``.
+    ``payload`` is optional and is used only to derive dependency IDs; it is
+    never copied into the catalog. Package identity remains owned by the
+    container and is deliberately not duplicated here.
     """
 
     prepared: list[dict[str, Any]] = []
@@ -587,7 +639,6 @@ def build_catalog(
             "payload_kind": payload_kind_for(logical_type),
             "package": package,
             "runtime_path": runtime_path,
-            "content_sha256": str(item["sha256"]).lower(),
             "content_bytes": int(item["bytes"]),
             "dependencies": [],
             "unresolved_dependencies": [],
@@ -715,7 +766,6 @@ def build_catalog(
     artifacts = sorted(prepared, key=lambda value: value["runtime_artifact_id"])
     return {
         "$schema": CATALOG_SCHEMA,
-        "catalog_version": CATALOG_VERSION,
         "player_host": player_host,
         "packages": sorted(package_records, key=lambda value: value["path"]),
         "artifacts": artifacts,
@@ -724,9 +774,7 @@ def build_catalog(
 
 __all__ = [
     "CATALOG_SCHEMA",
-    "CATALOG_VERSION",
     "build_catalog",
-    "artifact_fingerprint",
     "artifact_source_hash",
     "expected_artifact_source_hash",
     "load_asset_index",

@@ -35,23 +35,13 @@ A Prefab stores an authored GameObject hierarchy as an asset. `Instantiate` turn
 5. Save the scene.
 
 ```python
-from Infernux import (
-    Debug,
-    Destroy,
-    FieldType,
-    InxComponent,
-    Instantiate,
-    PrefabRef,
-    Vector3,
-    serialized_field,
-)
-from Infernux.input import Input, KeyCode
+import infernux as inx
 
 
-class PrefabSpawner(InxComponent):
-    prefab: PrefabRef = serialized_field(
-        default=PrefabRef(),
-        field_type=FieldType.GAME_OBJECT,
+class PrefabSpawner(inx.InxComponent):
+    prefab: inx.PrefabRef = inx.serialized_field(
+        default=inx.PrefabRef(),
+        field_type=inx.FieldType.GAME_OBJECT,
         tooltip="Prefab created when Space is pressed",
     )
 
@@ -59,33 +49,33 @@ class PrefabSpawner(InxComponent):
         self._last_instance = None
 
     def update(self, delta_time: float):
-        if Input.get_key_down(KeyCode.SPACE):
+        if inx.input.Input.get_key_down(inx.input.KeyCode.SPACE):
             self.spawn()
 
-        if Input.get_key_down(KeyCode.DELETE):
+        if inx.input.Input.get_key_down(inx.input.KeyCode.DELETE):
             self.destroy_last()
 
     def spawn(self):
         if not self.prefab:
-            Debug.log_warning("PrefabSpawner needs a Prefab asset")
+            inx.Debug.log_warning("PrefabSpawner needs a Prefab asset")
             return
 
-        instance = Instantiate(self.prefab, parent=self.game_object)
+        instance = inx.Instantiate(self.prefab, parent=self.game_object)
         if instance is None:
-            Debug.log_error("Prefab instantiation failed")
+            inx.Debug.log_error("Prefab instantiation failed")
             return
 
-        instance.transform.local_position = Vector3(0.0, 0.0, 2.0)
+        instance.transform.local_position = inx.Vector3(0.0, 0.0, 2.0)
         self._last_instance = instance
-        Debug.log(f"Spawned {instance.name}")
+        inx.Debug.log(f"Spawned {instance.name}")
 
     def destroy_last(self):
         if self._last_instance is None:
             return
 
-        Destroy(self._last_instance)
+        inx.Destroy(self._last_instance)
         self._last_instance = None
-        Debug.log("Destroyed the last spawned instance")
+        inx.Debug.log("Destroyed the last spawned instance")
 ```
 
 Enter Play mode and click the Game panel. Each Space press creates a fresh Prefab instance under `SpawnRoot`. Delete removes the most recently created instance. Earlier instances remain because the component stores only the latest returned GameObject.
@@ -108,22 +98,22 @@ For GameObject and Prefab sources, the scalar overload returns the new root `Gam
 The current scalar overloads provide three useful placement patterns:
 
 ```python
-from Infernux import Instantiate, Vector3, quatf
+import infernux as inx
 
 # No parent argument: create at the scene root and preserve source world TRS.
-root_instance = Instantiate(prefab)
+root_instance = inx.Instantiate(prefab)
 
 # A parent argument: preserve source local TRS under this parent.
-local_instance = Instantiate(prefab, parent=spawn_root)
+local_instance = inx.Instantiate(prefab, parent=spawn_root)
 
 # Parent plus True: keep source world TRS while adopting the parent.
-world_instance = Instantiate(prefab, spawn_root, True)
+world_instance = inx.Instantiate(prefab, spawn_root, True)
 
 # Position and rotation are world-space values; the parent is optional.
-placed_instance = Instantiate(
+placed_instance = inx.Instantiate(
     prefab,
-    Vector3(5.0, 0.0, 2.0),
-    quatf(),
+    inx.Vector3(5.0, 0.0, 2.0),
+    inx.quatf(),
     spawn_root,
 )
 ```
@@ -233,23 +223,13 @@ Prefab 会把编写好的 GameObject 层级保存成资产。`Instantiate` 可�
 5. 保存场景。
 
 ```python
-from Infernux import (
-    Debug,
-    Destroy,
-    FieldType,
-    InxComponent,
-    Instantiate,
-    PrefabRef,
-    Vector3,
-    serialized_field,
-)
-from Infernux.input import Input, KeyCode
+import infernux as inx
 
 
-class PrefabSpawner(InxComponent):
-    prefab: PrefabRef = serialized_field(
-        default=PrefabRef(),
-        field_type=FieldType.GAME_OBJECT,
+class PrefabSpawner(inx.InxComponent):
+    prefab: inx.PrefabRef = inx.serialized_field(
+        default=inx.PrefabRef(),
+        field_type=inx.FieldType.GAME_OBJECT,
         tooltip="Prefab created when Space is pressed",
     )
 
@@ -257,33 +237,33 @@ class PrefabSpawner(InxComponent):
         self._last_instance = None
 
     def update(self, delta_time: float):
-        if Input.get_key_down(KeyCode.SPACE):
+        if inx.input.Input.get_key_down(inx.input.KeyCode.SPACE):
             self.spawn()
 
-        if Input.get_key_down(KeyCode.DELETE):
+        if inx.input.Input.get_key_down(inx.input.KeyCode.DELETE):
             self.destroy_last()
 
     def spawn(self):
         if not self.prefab:
-            Debug.log_warning("PrefabSpawner needs a Prefab asset")
+            inx.Debug.log_warning("PrefabSpawner needs a Prefab asset")
             return
 
-        instance = Instantiate(self.prefab, parent=self.game_object)
+        instance = inx.Instantiate(self.prefab, parent=self.game_object)
         if instance is None:
-            Debug.log_error("Prefab instantiation failed")
+            inx.Debug.log_error("Prefab instantiation failed")
             return
 
-        instance.transform.local_position = Vector3(0.0, 0.0, 2.0)
+        instance.transform.local_position = inx.Vector3(0.0, 0.0, 2.0)
         self._last_instance = instance
-        Debug.log(f"Spawned {instance.name}")
+        inx.Debug.log(f"Spawned {instance.name}")
 
     def destroy_last(self):
         if self._last_instance is None:
             return
 
-        Destroy(self._last_instance)
+        inx.Destroy(self._last_instance)
         self._last_instance = None
-        Debug.log("Destroyed the last spawned instance")
+        inx.Debug.log("Destroyed the last spawned instance")
 ```
 
 进入 Play 模式并单击 Game 面板。每次按下空格键，`SpawnRoot` 下都会出现一个新的 Prefab 实例。Delete 会移除最近创建的实例；更早的实例会保留，因为组件只保存了最后一次返回的 GameObject。
@@ -306,22 +286,22 @@ class PrefabSpawner(InxComponent):
 当前标量重载提供三种常用放置方式：
 
 ```python
-from Infernux import Instantiate, Vector3, quatf
+import infernux as inx
 
 # 省略 parent：创建在场景根级，并保留源对象的世界 TRS。
-root_instance = Instantiate(prefab)
+root_instance = inx.Instantiate(prefab)
 
 # 传入 parent：挂到该父级下，并保留源对象的局部 TRS。
-local_instance = Instantiate(prefab, parent=spawn_root)
+local_instance = inx.Instantiate(prefab, parent=spawn_root)
 
 # parent 加 True：挂到父级下，同时保留源对象的世界 TRS。
-world_instance = Instantiate(prefab, spawn_root, True)
+world_instance = inx.Instantiate(prefab, spawn_root, True)
 
 # position 与 rotation 使用世界空间；parent 可省略。
-placed_instance = Instantiate(
+placed_instance = inx.Instantiate(
     prefab,
-    Vector3(5.0, 0.0, 2.0),
-    quatf(),
+    inx.Vector3(5.0, 0.0, 2.0),
+    inx.quatf(),
     spawn_root,
 )
 ```

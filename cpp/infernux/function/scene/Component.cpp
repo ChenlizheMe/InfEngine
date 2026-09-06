@@ -3,9 +3,9 @@
 #include "GameObject.h"
 #include "Scene.h"
 #include "Transform.h"
-#include <InxLog.h>
 #include <algorithm>
 #include <atomic>
+#include <core/log/InxLog.h>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;

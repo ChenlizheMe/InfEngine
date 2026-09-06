@@ -1,9 +1,8 @@
-"""Build official source repositories into wheel-distributed InxPackages."""
+"""Build the official catalog and only the wheel-bundled default packages."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -18,6 +17,7 @@ if _SOURCE_PYTHON.is_dir() and str(_SOURCE_PYTHON) not in sys.path:
     sys.path.insert(0, str(_SOURCE_PYTHON))
 
 from Infernux.plugins import InxPackage
+from Infernux.plugins.content import discover_plugin_pages, merge_plugin_pages
 
 
 def _write_json(path: Path, document: dict[str, object]) -> None:
@@ -35,7 +35,7 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
     if (
         not isinstance(source_document, dict)
         or source_document.get("$schema") != "infernux.official_plugin_sources"
-        or source_document.get("catalog_version") != 1
+        or set(source_document) != {"$schema", "plugins"}
         or not isinstance(source_document.get("plugins"), list)
     ):
         raise RuntimeError(f"Invalid official plugin source catalog: {catalog_path}")
@@ -49,37 +49,54 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
             raise RuntimeError("Official plugin source entry must be an object")
         relative = str(source_entry.get("path", "")).strip()
         repository = str(source_entry.get("repository", "")).strip()
+        subdirectory = str(source_entry.get("subdirectory", "")).strip().strip("/")
+        revision = str(source_entry.get("revision", "")).strip()
         plugin_source = (source_root / relative).resolve()
         if plugin_source.parent != source_root.resolve() or not plugin_source.is_dir():
             raise RuntimeError(f"Official plugin source is missing or unsafe: {relative}")
-        manifest_path = plugin_source / "InxPackage.json"
+        manifest_path = plugin_source / "package" / "inx_package.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         reference = str(manifest.get("reference", "")).strip()
         if not reference:
             raise RuntimeError(f"Official plugin has no reference: {plugin_source}")
         artifact = f"{reference.replace('/', '.')}.inxpkg"
-        expected_outputs.add(artifact)
-        preview = InxPackage.export_source(
-            str(plugin_source),
-            str(output_root / artifact),
-            profile="release",
-        )
-        artifact_path = output_root / artifact
-        artifact_payload = artifact_path.read_bytes()
+        if bool(source_entry.get("default", False)):
+            expected_outputs.add(artifact)
+            metadata = InxPackage.export_source(
+                str(plugin_source), str(output_root / artifact), profile="release",
+            ).metadata
+        else:
+            # Independent platform releases own their archives. Catalog refresh
+            # needs metadata only, not another serialization of every runtime.
+            metadata = dict(manifest)
+            metadata["pages"] = merge_plugin_pages(
+                discover_plugin_pages(str(plugin_source / "package")), manifest.get("pages"),
+            )
+        source: dict[str, object] = {}
+        if repository:
+            source = {
+                "type": "github" if "github.com" in repository.casefold() else "git",
+                "location": repository,
+            }
+            if subdirectory:
+                source["subdirectory"] = subdirectory
+            if revision:
+                source["revision"] = revision
         registry.append(
             {
                 "reference": reference,
-                "name": str(preview.metadata.get("name", reference)),
-                "version": str(preview.metadata.get("version", "")),
-                "intro": str(preview.metadata.get("intro", "")),
-                "intros": dict(preview.metadata.get("intros", {})),
+                "name": str(metadata.get("name", reference)),
+                "version": str(metadata.get("version", "")),
+                "intro": str(metadata.get("intro", "")),
+                "intros": dict(metadata.get("intros", {})),
                 "artifact": artifact,
-                "artifact_sha256": hashlib.sha256(artifact_payload).hexdigest(),
-                "artifact_size": len(artifact_payload),
-                "engine": str(preview.metadata.get("engine", "")),
-                "dependencies": list(preview.metadata.get("dependencies", [])),
+                "engine": str(metadata.get("engine", "")),
+                "dependencies": [],
                 "repository": repository,
-                "pages": list(preview.metadata.get("pages", [])),
+                "source": source,
+                "category": str(source_entry.get("category", "Other")),
+                "targets": [str(value) for value in source_entry.get("targets", [])],
+                "pages": list(metadata.get("pages", [])),
             }
         )
         if bool(source_entry.get("default", False)):
@@ -92,7 +109,6 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
         output_root / "official-registry.json",
         {
             "$schema": "infernux.official_plugin_registry",
-            "catalog_version": 1,
             "packages": registry,
         },
     )
@@ -100,7 +116,6 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
         output_root / "default-libraries.json",
         {
             "$schema": "infernux.default_libraries",
-            "catalog_version": 1,
             "libraries": defaults,
         },
     )

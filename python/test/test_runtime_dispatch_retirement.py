@@ -61,7 +61,7 @@ def test_retirement_is_staged_until_commit_and_old_epoch_remains_usable():
         initial.rollback()
 
 
-def test_failed_or_cancelled_retirement_restores_current_descriptor_and_mirrors():
+def test_failed_or_cancelled_retirement_restores_current_descriptor():
     initial = _publish_initial(_RetirementProbe)
     before = current_runtime_epoch()
     try:
@@ -73,7 +73,7 @@ def test_failed_or_cancelled_retirement_restores_current_descriptor_and_mirrors(
         staged.rollback()
         assert current_runtime_epoch() is before
         assert current_runtime_epoch().descriptor_for(_RetirementProbe) is not None
-        assert not _RetirementProbe.__dict__.get("_runtime_dispatch_retired", False)
+        assert _RetirementProbe not in current_runtime_epoch().retired_types
     finally:
         initial.rollback()
 
@@ -99,7 +99,7 @@ def test_deferred_retirement_does_not_notify_scheduler_before_commit():
             defer_commit=True,
         )
         assert spy.calls == []
-        assert not _RetirementProbe.__dict__.get("_runtime_dispatch_retired", False)
+        assert _RetirementProbe not in current_runtime_epoch().retired_types
         staged.rollback()
         assert spy.calls == []
 
@@ -110,7 +110,7 @@ def test_deferred_retirement_does_not_notify_scheduler_before_commit():
         )
         committed.commit()
         assert spy.calls == [(_RetirementProbe, True)]
-        assert _RetirementProbe.__dict__.get("_runtime_dispatch_retired", False)
+        assert _RetirementProbe in current_runtime_epoch().retired_types
         committed.rollback()
         assert spy.calls == [(_RetirementProbe, True), (_RetirementProbe, True)]
     finally:

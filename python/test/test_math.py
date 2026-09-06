@@ -7,10 +7,22 @@ import math
 import pytest
 
 from Infernux.mathf import Mathf
-from Infernux.lib import Vector2, Vector3, vec4f
+from Infernux.lib import Vector2, Vector3, quatf, vec4f
 
 
 class TestVector3Validation:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (Vector2(1, 2), (1.0, 2.0)),
+            (Vector3(1, 2, 3), (1.0, 2.0, 3.0)),
+            (vec4f(1, 2, 3, 4), (1.0, 2.0, 3.0, 4.0)),
+            (quatf(1, 2, 3, 4), (1.0, 2.0, 3.0, 4.0)),
+        ],
+    )
+    def test_native_vectors_iterate_without_pointer_backed_state(self, value, expected):
+        assert tuple(value) == expected
+
     def test_constructor_and_component_writes_reject_non_finite_values(self):
         with pytest.raises(ValueError, match="finite"):
             Vector3(float("nan"), 0, 0)

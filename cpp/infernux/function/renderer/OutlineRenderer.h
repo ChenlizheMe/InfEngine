@@ -5,8 +5,7 @@
  * Extracted from InxVkCoreModular during editor/renderer separation.
  * This class owns the pipelines and descriptor resources used by the
  * screen-space selection outline. RenderGraph
- * owns both render passes,
- * framebuffers, image layouts and ordering.
+ * owns attachment contracts, image layouts and ordering.
  */
 
 #pragma once
@@ -45,8 +44,9 @@ class ShaderReflection;
  *
  * Usage:
  *   1. Initialize() after InxVkCoreModular + SceneRenderTarget are ready
- *   2. SetOutlineObjectId() each frame from InxRenderer
- *   3. EnsureGraphPipelines() is called after the graph compiles
+ *   2. SetOutlineObjectIds() each frame from InxRenderer
+ *   3. EnsureGraphPipelines() is called after the graph
+ * compiles
  *   4. RecordMaskDraws()/RecordCompositeDraw() are
  * called by graph passes
  *   5. Recreate the owner for a newly published SceneRenderTarget generation
@@ -89,19 +89,7 @@ class OutlineRenderer
     // State
     // ========================================================================
 
-    /// @brief Set the object ID to outline (0 = no outline).
-    void SetOutlineObjectId(uint64_t objectId)
-    {
-        m_outlineObjectId = objectId;
-        m_outlineObjectIds.clear();
-        m_outlineObjectIdSet.clear();
-        if (objectId != 0) {
-            m_outlineObjectIds.push_back(objectId);
-            m_outlineObjectIdSet.insert(objectId);
-        }
-    }
-
-    /// @brief Set all object IDs to outline. The first ID remains the legacy primary ID.
+    /// @brief Set all object IDs to outline.
     void SetOutlineObjectIds(const std::vector<uint64_t> &objectIds)
     {
         m_outlineObjectIds.clear();
@@ -112,13 +100,6 @@ class OutlineRenderer
             m_outlineObjectIds.push_back(objectId);
             m_outlineObjectIdSet.insert(objectId);
         }
-        m_outlineObjectId = m_outlineObjectIds.empty() ? 0 : m_outlineObjectIds.front();
-    }
-
-    /// @brief Get the current outline object ID.
-    [[nodiscard]] uint64_t GetOutlineObjectId() const
-    {
-        return m_outlineObjectId;
     }
 
     /// @brief Check if there is an active outline to render.
@@ -150,9 +131,7 @@ class OutlineRenderer
     // ========================================================================
 
     /// @brief Build pipelines against the graph's compiled attachment contracts.
-    bool EnsureGraphPipelines(VkRenderPass maskRenderPass, VkRenderPass compositeRenderPass,
-                              VkSampleCountFlagBits compositeSamples,
-                              const rhi::GraphicsRenderingSignature &maskSignature,
+    bool EnsureGraphPipelines(const rhi::GraphicsRenderingSignature &maskSignature,
                               const rhi::GraphicsRenderingSignature &compositeSignature);
 
     /// @brief Record selected-object draws inside the active graph mask pass.
@@ -203,13 +182,6 @@ class OutlineRenderer
     // Vulkan Resources (owned)
     // ========================================================================
 
-    // Non-owning graph render-pass compatibility handles. They are null when
-    // the graph compiled the pass with Dynamic Rendering.
-    VkRenderPass m_outlineMaskRenderPass = VK_NULL_HANDLE;
-    VkRenderPass m_outlineCompositeRenderPass = VK_NULL_HANDLE;
-    VkSampleCountFlagBits m_outlineCompositeSamples = VK_SAMPLE_COUNT_1_BIT;
-    bool m_outlineMaskUsesDynamicRendering = false;
-    bool m_outlineCompositeUsesDynamicRendering = false;
     rhi::GraphicsRenderingSignature m_outlineMaskRenderingSignature;
     rhi::GraphicsRenderingSignature m_outlineCompositeRenderingSignature;
 
@@ -271,7 +243,6 @@ class OutlineRenderer
     // Outline Parameters
     // ========================================================================
 
-    uint64_t m_outlineObjectId = 0;
     std::vector<uint64_t> m_outlineObjectIds;
     std::unordered_set<uint64_t> m_outlineObjectIdSet;
     glm::vec4 m_outlineColor{1.0f, 0.5f, 0.0f, 1.0f}; // Bright orange

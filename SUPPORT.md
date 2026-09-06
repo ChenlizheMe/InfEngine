@@ -1,5 +1,28 @@
 # Support
 
+## Platform support
+
+The [support matrix](docs/platform-support.json) is the shared source for the
+English/Chinese README tables and wheel OS classifiers. A classifier identifies
+a host build target, not a claim that its 0.4.0 release gates have closed.
+
+**0.4.0** includes Windows and Linux Editors and Players, plus Android and Web
+Players. macOS, native iOS and a Headless
+Player package are not supported. Headless is a Windows/Linux host mode;
+iPhone/iPad browser testing concerns the Web Player, not a native iOS export.
+
+For the exact commit `dce69593f7c4fd98f112d1c1c35b05b70f9da2d0`, the
+[desktop CI](https://github.com/ChenlizheMe/Infernux/actions/runs/34046700946)
+passed both host suites and built their wheel/Hub distributions, and the
+[Player CI](https://github.com/ChenlizheMe/Infernux/actions/runs/34046700977)
+passed Windows, Linux, Android, Web build and Web browser jobs. These public
+results cover the linked revision and automated test environments, not every
+physical device, clean installation, browser, or display configuration.
+
+The website's [Hub catalog](docs/hub-catalog.json) independently records artifacts
+for the current release. Publish the matching Windows and Linux artifacts
+before deploying the catalog; CI builds alone do not publish GitHub Releases.
+
 ## Documentation first
 
 Start with these resources:

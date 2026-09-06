@@ -18,6 +18,7 @@ from Infernux.core.asset_ref import (
     get_all_asset_type_configs,
     register_asset_type,
 )
+from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
 
 
 def _meta(field_type: FieldType, name: str = "field") -> FieldMetadata:
@@ -45,6 +46,49 @@ def test_colors_reject_implicit_numeric_conversion(value):
 
     with pytest.raises(TypeError, match="Tint: COLOR values must be numbers"):
         codec.decode(value, _meta(FieldType.COLOR), "Tint")
+
+
+@pytest.mark.parametrize(
+    ("value", "field_type"),
+    [
+        (
+            AnimationCurve(
+                (Keyframe(0.0, 0.25), Keyframe(1.0, 1.5)),
+                "repeat",
+                "ping_pong",
+            ),
+            FieldType.ANIMATION_CURVE,
+        ),
+        (
+            Gradient(
+                (
+                    GradientKey(0.0, (1.0, 0.0, 0.0, 1.0)),
+                    GradientKey(1.0, (0.0, 0.0, 1.0, 0.5)),
+                ),
+                "fixed",
+            ),
+            FieldType.GRADIENT,
+        ),
+    ],
+)
+def test_ramp_value_codecs_round_trip(value, field_type):
+    codec = ValueCodecRegistry()
+
+    document = codec.encode(value, "Ramp")
+    restored = codec.decode(document, _meta(field_type), "Ramp")
+
+    assert restored == value
+
+
+def test_animation_curve_codec_rejects_malformed_editor_document():
+    codec = ValueCodecRegistry()
+
+    with pytest.raises(ValueError, match="Width: invalid AnimationCurve"):
+        codec.decode(
+            {"keys": [], "pre_wrap": "clamp", "post_wrap": "clamp"},
+            _meta(FieldType.ANIMATION_CURVE),
+            "Width",
+        )
 
 
 def test_duplicate_codec_registration_is_rejected():
@@ -153,7 +197,7 @@ def test_custom_encoder_must_return_document_data():
             "non-negative integer",
         ),
         (
-            {TYPE_KEY: GAME_OBJECT_REF, "object_id": 12, "legacy": True},
+            {TYPE_KEY: GAME_OBJECT_REF, "object_id": 12, "unknown": True},
             "unknown or missing fields",
         ),
         (
@@ -195,11 +239,11 @@ def test_reference_documents_are_exact(document, error):
         codec.decode(document, FieldType.UNKNOWN, "Target")
 
 
-def test_legacy_marker_documents_are_rejected():
+def test_reserved_marker_documents_are_rejected():
     codec = ValueCodecRegistry()
 
-    with pytest.raises(ValueError, match="legacy marker documents are not supported"):
-        codec.decode({"__game_object__": 12}, FieldType.UNKNOWN, "Target")
+    with pytest.raises(ValueError, match="reserved document fields are not supported"):
+        codec.decode({"__reserved__": 12}, FieldType.UNKNOWN, "Target")
 
 
 def test_enum_uses_exact_typed_document():

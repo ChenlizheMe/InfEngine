@@ -16,23 +16,16 @@ def _get_live_game_object(game_object_id: int):
     scene = _get_active_scene()
     if not scene:
         return None
-    try:
-        return scene.find_by_id(game_object_id)
-    except Exception as exc:
-        Debug.log_suppressed("undo._snapshots._get_live_game_object.find_by_id", exc)
-        return None
+    return scene.find_by_id(game_object_id)
 
 
 def _get_live_transform(game_object_id: int):
     obj = _get_live_game_object(game_object_id)
     if obj is None:
         return None
-    try:
-        t = obj.get_transform()
-        if t is not None:
-            return t
-    except Exception as exc:
-        Debug.log_suppressed("undo._snapshots._get_live_transform.get_transform", exc)
+    t = obj.get_transform()
+    if t is not None:
+        return t
     return getattr(obj, 'transform', None)
 
 
@@ -44,25 +37,16 @@ def _get_nth_live_native_component(game_object_id: int, type_name: str,
     if obj is None or not hasattr(obj, 'get_components'):
         return None
     match_index = 0
-    try:
-        try:
-            from Infernux.components.component import InxComponent
-        except Exception:
-            InxComponent = ()
-        for comp in obj.get_components():
-            try:
-                if getattr(comp, 'type_name', None) != type_name:
-                    continue
-                if isinstance(comp, InxComponent) or hasattr(comp, 'get_py_component'):
-                    continue
-            except Exception as exc:
-                Debug.log_suppressed("undo._snapshots._get_nth_live_native_component.filter", exc)
-                continue
-            if match_index == ordinal:
-                return comp
-            match_index += 1
-    except Exception as exc:
-        Debug.log_suppressed("undo._snapshots._get_nth_live_native_component.iter", exc)
+    from Infernux.components.component import InxComponent
+
+    for comp in obj.get_components():
+        if getattr(comp, 'type_name', None) != type_name:
+            continue
+        if isinstance(comp, InxComponent) or hasattr(comp, 'get_py_component'):
+            continue
+        if match_index == ordinal:
+            return comp
+        match_index += 1
     return None
 
 
@@ -72,26 +56,19 @@ def _get_nth_live_py_component(game_object_id: int, type_name: str,
     if obj is None or not hasattr(obj, 'get_py_components'):
         return None
     match_index = 0
-    try:
-        for comp in obj.get_py_components():
-            try:
-                ct = getattr(comp, 'type_name', type(comp).__name__)
-                if ct != type_name and type(comp).__name__ != type_name:
-                    continue
-                if getattr(comp, '_script_guid', '') != script_guid:
-                    continue
-                if comp.__class__._get_type_guid() != type_guid:
-                    continue
-                if getattr(comp, '_is_destroyed', False):
-                    continue
-            except Exception as exc:
-                Debug.log_suppressed("undo._snapshots._get_nth_live_py_component.filter", exc)
-                continue
-            if match_index == ordinal:
-                return comp
-            match_index += 1
-    except Exception as exc:
-        Debug.log_suppressed("undo._snapshots._get_nth_live_py_component.iter", exc)
+    for comp in obj.get_py_components():
+        ct = getattr(comp, 'type_name', type(comp).__name__)
+        if ct != type_name and type(comp).__name__ != type_name:
+            continue
+        if getattr(comp, '_script_guid', '') != script_guid:
+            continue
+        if comp.__class__._get_type_guid() != type_guid:
+            continue
+        if getattr(comp, '_is_destroyed', False):
+            continue
+        if match_index == ordinal:
+            return comp
+        match_index += 1
     return None
 
 

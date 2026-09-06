@@ -178,6 +178,7 @@ class LineRenderer final : public MeshRenderer
 
     void Simplify(float tolerance);
 
+    [[nodiscard]] std::shared_ptr<InxMaterial> GetEffectiveMaterial(uint32_t slot = 0) const override;
     [[nodiscard]] glm::mat4 ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMatrix) const override;
     void RefreshProceduralGeometry(const glm::mat4 &objectWorldMatrix) override;
     void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const override;
@@ -203,7 +204,14 @@ class LineRenderer final : public MeshRenderer
     std::vector<LineColorKey> m_colorGradient{{0.0f, glm::vec4(1.0f)}, {1.0f, glm::vec4(1.0f)}};
     LineGradientMode m_colorGradientMode = LineGradientMode::Linear;
     bool m_loop = false;
-    bool m_useWorldSpace = false;
+    // World space by default (Unity LineRenderer parity). The dominant runtime
+    // use case feeds world positions (trails); with a local-space default those
+    // points get re-transformed by the owner's world matrix, so a moving owner
+    // draws the ribbon displaced and its culling AABB drifts out of the
+    // frustum — the line "disappears" or pops per frame. Serialized documents
+    // always carry an explicit useWorldSpace value, so existing scenes keep
+    // their authored behavior.
+    bool m_useWorldSpace = true;
     LineAlignment m_alignment = LineAlignment::View;
     LineTextureMode m_textureMode = LineTextureMode::Stretch;
     glm::vec2 m_textureScale{1.0f};

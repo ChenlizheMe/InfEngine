@@ -6,16 +6,16 @@ ImGui-compatible texture IDs.  This module provides a single cache
 so the work is done once, regardless of which panel loads the texture
 first.
 
-Cache keys are GUIDs (resolved from paths via AssetDatabase).  This
-ensures cache entries survive file renames/moves.  Falls back to the
-raw path when no GUID is available.
+Cache keys are GUIDs resolved by the project AssetDatabase. This keeps
+asset identity stable across file renames and moves.
 """
 
 from __future__ import annotations
 
 import os
 from typing import Optional
-from Infernux.debug import Debug
+
+from Infernux.core.assets import AssetManager
 from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 
@@ -28,31 +28,26 @@ class UITextureCache:
     """
 
     def __init__(self):
-        self._cache: dict[str, int] = {}        # GUID (or path fallback) → tid
-        self._path_to_key: dict[str, str] = {}  # path → cache key (GUID or path)
-        self._stamp: dict[str, int] = {}        # GUID/path key → latest stamp
+        self._cache: dict[str, int] = {}  # GUID → tid
+        self._path_to_key: dict[str, str] = {}  # path → GUID
+        self._stamp: dict[str, int] = {}        # GUID → latest stamp
         self._pending_keys: set[str] = set()
         self._generation: int = 0
 
     # ── internal ─────────────────────────────────────────────────────
 
     def _resolve_key(self, tex_path: str) -> str:
-        """Resolve *tex_path* to a GUID cache key; fall back to path."""
+        """Resolve *tex_path* to its required project asset GUID."""
         cached = self._path_to_key.get(tex_path)
         if cached:
             return cached
-        try:
-            from Infernux.lib import AssetRegistry
-            adb = AssetRegistry.instance().get_asset_database()
-            if adb:
-                guid = adb.get_guid_from_path(tex_path)
-                if guid:
-                    self._path_to_key[tex_path] = guid
-                    return guid
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
-        return tex_path  # fallback: use path
+        guid = str(
+            AssetManager.require_asset_database().get_guid_from_path(tex_path) or ""
+        )
+        if not guid:
+            raise KeyError(f"UI texture is not registered in AssetDatabase: {tex_path}")
+        self._path_to_key[tex_path] = guid
+        return guid
 
     # ── public API ───────────────────────────────────────────────────
 

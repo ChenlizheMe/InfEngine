@@ -37,10 +37,6 @@ from Infernux.engine.project_context import (
 class _NativeDispatchProbe:
     def __init__(self) -> None:
         self.handle = object()
-        self.refresh_calls = 0
-
-    def refresh_python_lifecycle_dispatch(self) -> None:
-        self.refresh_calls += 1
 
 
 class _ScriptObject:
@@ -51,11 +47,10 @@ class _ScriptObject:
     def get_py_components(self):
         return tuple(self._components)
 
-    def remove_py_component(self, component):
-        self._components.remove(component)
-
-    def add_py_component(self, component):
-        self._components.append(component)
+    def replace_py_component(self, old_component, new_component):
+        index = self._components.index(old_component)
+        self._components[index] = new_component
+        return new_component
 
 
 class _AtomicScriptObject(_ScriptObject):
@@ -307,7 +302,7 @@ def test_play_body_reload_preserves_identity_state_and_uses_new_body(
                 return "new-class:" + cls.__name__
     """)
 
-    assert manager.reload_components_from_script(str(path)) == 1
+    assert manager.reload_components_from_script_result(str(path)).reloaded_count == 1
     assert holder.component is component
     assert type(component) is component_type
     assert component.component_id == original_component_id
@@ -319,7 +314,6 @@ def test_play_body_reload_preserves_identity_state_and_uses_new_body(
     assert component.start_count == 1
     assert component._awake_called is True
     assert component._has_started is True
-    assert native.refresh_calls == 1
 
     component._call_update(0.25)
     assert component.phase == ("new", 0.25)
@@ -570,7 +564,7 @@ def test_play_body_reload_supports_multiple_types(component_script, monkeypatch)
             def helper(self): return "beta-new"
     """)
 
-    assert manager.reload_components_from_script(str(path)) == 2
+    assert manager.reload_components_from_script_result(str(path)).reloaded_count == 2
     assert alpha.helper() == "alpha-new"
     assert beta.helper() == "beta-new"
 
@@ -674,7 +668,6 @@ def test_batch_body_reload_commits_two_scripts_without_recreating_lifecycle_stat
     assert (first.component_id, second.component_id) == (first_id, second_id)
     assert (first.awake_count, first.start_count) == (1, 1)
     assert (second.awake_count, second.start_count) == (1, 1)
-    assert (first_native.refresh_calls, second_native.refresh_calls) == (1, 1)
     assert sys.modules[first_module_name] is not first_module
     assert sys.modules[second_module_name] is not second_module
 
@@ -773,8 +766,6 @@ def test_batch_commit_failure_rolls_back_all_class_bodies_dispatch_and_modules(
     second_native = _NativeDispatchProbe()
     first._cpp_component = first_native
     second._cpp_component = second_native
-    old_first_dispatch = first_type.__dict__.get("_runtime_phase_invokers")
-    old_second_dispatch = second_type.__dict__.get("_runtime_phase_invokers")
     old_first_module = sys.modules[get_script_module_name(str(first_path))]
     old_second_module = sys.modules[get_script_module_name(str(second_path))]
     manager = _play_batch_manager(
@@ -800,8 +791,8 @@ def test_batch_commit_failure_rolls_back_all_class_bodies_dispatch_and_modules(
     ))
     real_apply = script_loader._apply_component_body_patch_plans
 
-    def apply_then_fail(plans, instances_by_type=None):
-        real_apply(plans, instances_by_type=instances_by_type)
+    def apply_then_fail(plans):
+        real_apply(plans)
         raise RuntimeError("simulated owner publish failure")
 
     monkeypatch.setattr(script_loader, "_apply_component_body_patch_plans", apply_then_fail)
@@ -810,11 +801,8 @@ def test_batch_commit_failure_rolls_back_all_class_bodies_dispatch_and_modules(
     assert batch.rolled_back is True
     assert first.helper() == "first-old"
     assert second.helper() == "second-old"
-    assert first_type.__dict__.get("_runtime_phase_invokers") is old_first_dispatch
-    assert second_type.__dict__.get("_runtime_phase_invokers") is old_second_dispatch
     assert sys.modules[get_script_module_name(str(first_path))] is old_first_module
     assert sys.modules[get_script_module_name(str(second_path))] is old_second_module
-    assert (first_native.refresh_calls, second_native.refresh_calls) == (1, 1)
 
 
 def test_explicit_batch_rollback_restores_successfully_published_bodies(
@@ -1352,11 +1340,9 @@ def test_multi_type_validation_rejects_all_before_first_publish(
             def helper(self): return "beta-new"
     """), encoding="utf-8")
 
-    assert manager.reload_components_from_script(str(path)) == 0
+    assert manager.reload_components_from_script_result(str(path)).reloaded_count == 0
     assert alpha.helper() == "alpha-old"
     assert beta.helper() == "beta-old"
-    assert alpha_native.refresh_calls == 0
-    assert beta_native.refresh_calls == 0
 
 
 def test_play_batch_without_live_instances_publishes_candidate_registry_and_rolls_back(
@@ -1437,7 +1423,7 @@ def test_edit_reload_keeps_stable_instances_and_retries_after_body_publish_failu
     )
     path.write_bytes(candidate_source)
 
-    batch = manager.prepare_edit_script_reload_batch((
+    batch = manager.prepare_script_reload_batch((
         ScriptReloadBatchInput(str(path), guid, candidate_source),
     ))
     assert first_object.get_py_components()[0] is first
@@ -1447,14 +1433,15 @@ def test_edit_reload_keeps_stable_instances_and_retries_after_body_publish_failu
 
     real_apply = script_loader._apply_component_body_patch_plans
 
-    def apply_then_fail(plans, instances_by_type=None):
-        real_apply(plans, instances_by_type=instances_by_type)
+    def apply_then_fail(plans):
+        real_apply(plans)
         raise RuntimeError("simulated Edit body publication failure")
 
     monkeypatch.setattr(script_loader, "_apply_component_body_patch_plans", apply_then_fail)
 
-    with pytest.raises(RuntimeError, match="simulated Edit body publication failure"):
-        manager.commit_edit_script_reload_batch(batch)
+    failed = manager.commit_script_reload_batch(batch)
+    assert failed.success is False
+    assert "simulated Edit body publication failure" in failed.error
     assert batch.rolled_back is True
     assert first_object.get_py_components()[0] is first
     assert second_object.get_py_components()[0] is second
@@ -1465,10 +1452,13 @@ def test_edit_reload_keeps_stable_instances_and_retries_after_body_publish_failu
     # The failed LKG transaction must be retryable after the external failure
     # is removed; no half-published registry or module is allowed to remain.
     monkeypatch.setattr(script_loader, "_apply_component_body_patch_plans", real_apply)
-    retry = manager.prepare_edit_script_reload_batch((
+    retry = manager.prepare_script_reload_batch((
         ScriptReloadBatchInput(str(path), guid, candidate_source),
     ))
-    assert manager.commit_edit_script_reload_batch(retry) == 2
+    outcome = manager.commit_script_reload_batch(retry)
+    assert outcome.success is True
+    assert outcome.reloaded_count == 1
+    manager.finalize_script_reload_batch(retry)
     assert retry.transaction.finalized is True
     assert first_object.get_py_components()[0] is first
     assert second_object.get_py_components()[0] is second
@@ -1539,7 +1529,7 @@ def test_edit_reload_publishes_component_free_helper_and_dependent_atomically(
         b"        import runtime_r13_helper\n"
         b"        return runtime_r13_helper.VALUE\n"
     )
-    batch = manager.prepare_edit_script_reload_batch(
+    batch = manager.prepare_script_reload_batch(
         (
             ScriptReloadBatchInput(
                 str(helper_path), "runtime-r13-helper-guid", helper_source
@@ -1552,7 +1542,10 @@ def test_edit_reload_publishes_component_free_helper_and_dependent_atomically(
     assert sys.modules["runtime_r13_helper"].VALUE == 1
     assert scene_object.get_py_components()[0] is component
     assert component.marker() == 1
-    assert manager.commit_edit_script_reload_batch(batch) == 1
+    outcome = manager.commit_script_reload_batch(batch)
+    assert outcome.success is True
+    assert outcome.reloaded_count == 1
+    manager.finalize_script_reload_batch(batch)
     assert batch.transaction.finalized is True
     assert scene_object.get_py_components()[0] is component
     assert type(component) is probe_type
@@ -1562,7 +1555,7 @@ def test_edit_reload_publishes_component_free_helper_and_dependent_atomically(
     # replaced, and the already-published component remains the LKG instance.
     broken_helper = b"def broken(:\n"
     with pytest.raises(Exception):
-        manager.prepare_edit_script_reload_batch(
+        manager.prepare_script_reload_batch(
             (
                 ScriptReloadBatchInput(
                     str(helper_path), "runtime-r13-helper-guid", broken_helper
@@ -1611,7 +1604,7 @@ def test_syntax_and_import_failure_keep_lkg_and_registry(
     manager = _play_manager(monkeypatch, path, guid, (component,))
     path.write_text(textwrap.dedent(broken_source), encoding="utf-8")
 
-    assert manager.reload_components_from_script(str(path)) == 0
+    assert manager.reload_components_from_script_result(str(path)).reloaded_count == 0
     assert component.helper() == "last-known-good"
     assert get_type_by_identity(
         component_type.__name__,
@@ -1667,7 +1660,6 @@ def test_schema_base_and_type_rename_are_rejected(
     assert outcome.success is False
     assert outcome.had_live_targets is True
     assert outcome.reloaded_count == 0
-    assert manager.reload_components_from_script(str(path)) == 0
     assert type(component) is component_type
     assert component.helper() == "old"
 

@@ -1,32 +1,40 @@
 {
   "schema_version": 2,
-  "version": "0.3.7",
-  "tag": "v0.3.7",
-  "name": "Infernux v0.3.7",
+  "version": "0.4.0",
+  "tag": "v0.4.0",
+  "name": "Infernux v0.4.0",
   "channel": "stable",
-  "published_at": "2026-08-27T11:35:29Z",
-  "platforms": ["Windows 10/11 x64"],
-  "python_abi": "CPython 3.12 x64",
-  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.3.7",
-  "verification": {
-    "checksum_algorithm": "SHA-256",
-    "publisher_signature": "not-declared",
-    "authority": "GitHub Releases"
-  },
+  "published_at": "2026-09-06T17:56:54Z",
+  "platforms": [
+    "Windows 10/11 x64",
+    "Linux x86_64"
+  ],
+  "python_abi": "CPython 3.13 x64",
+  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.0",
   "assets": [
     {
       "kind": "hub-installer",
-      "name": "InfernuxHubInstaller-0.3.7.exe",
-      "size_bytes": 262786048,
-      "sha256": "26036298f6895e44ba92d147d7f811d8ef017e030a6b5bb3ed55427fce8d9a50",
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/InfernuxHubInstaller-0.3.7.exe"
+      "name": "InfernuxHubInstaller-0.4.0-windows-x64.exe",
+      "size_bytes": 205081600,
+      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHubInstaller-0.4.0-windows-x64.exe"
     },
     {
       "kind": "python-wheel",
-      "name": "infernux-0.3.7-cp312-cp312-win_amd64.whl",
-      "size_bytes": 108946318,
-      "sha256": "9e1e7cc13fb2285aa6842b8d0d4894c768ff3d5d51311dd04b336a6555169951",
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/infernux-0.3.7-cp312-cp312-win_amd64.whl"
+      "name": "infernux-0.4.0-cp313-cp313-win_amd64.whl",
+      "size_bytes": 20823496,
+      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-cp313-cp313-win_amd64.whl"
+    },
+    {
+      "kind": "hub-installer",
+      "name": "InfernuxHubInstaller-0.4.0-linux-x64",
+      "size_bytes": 468842712,
+      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHubInstaller-0.4.0-linux-x64"
+    },
+    {
+      "kind": "python-wheel",
+      "name": "infernux-0.4.0-cp313-cp313-linux_x86_64.whl",
+      "size_bytes": 36335189,
+      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-cp313-cp313-linux_x86_64.whl"
     }
   ]
 }

@@ -1,0 +1,1 @@
+Package resource reached UIText on every Player target.

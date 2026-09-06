@@ -1,0 +1,13 @@
+name: infernux
+channels:
+  - defaults
+dependencies:
+  - python=3.13
+  - pip
+  # Pin the build tools that are resolved by Conda. Newer conda-forge
+  # clang-format builds pull an ICU DLL into PATH whose unversioned export
+  # policy is incompatible with the Qt binaries shipped by the PySide wheel.
+  - ninja=1.13.2
+  - clang-format=22.1.2
+  - pip:
+      - -r requirements.txt

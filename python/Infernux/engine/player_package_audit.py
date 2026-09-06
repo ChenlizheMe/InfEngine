@@ -1,9 +1,9 @@
 """Strict audit and manifest generation for exported Player products.
 
 The audit is deliberately the last gate of the packaging pipeline.  It only
-recognises the current native InxPack reader and the final single-entry layout;
-ZIP, LZMA, the former ``.inxpack`` files, source files and metadata are not
-compatibility cases and are rejected.
+recognises the current native InxPack reader and the final single-entry layout.
+Unrecognised containers, source files and metadata are rejected as unsupported
+payloads; the audit does not classify or migrate historical formats.
 """
 
 from __future__ import annotations
@@ -15,16 +15,23 @@ import json
 import os
 import re
 import struct
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .path_utils import resolved_path
-from .player_package_native import extract_pack, read_entry, read_manifest
+from .player_package_native import (
+    ASSET_CATALOG_ARCHIVE_FILENAME,
+    ASSET_CATALOG_ENTRY_PATH,
+    BUILD_MANIFEST_ENTRY_PATH,
+    extract_pack,
+    read_entry,
+    read_manifest,
+)
 from .player_service_graph import (
     PLAYER_MANIFEST_SCHEMA,
-    PLAYER_MANIFEST_VERSION,
     RuntimeFeatureSet,
     RuntimeFlavor,
     RuntimeProductManifest,
@@ -33,7 +40,6 @@ from .player_service_graph import (
 )
 from .runtime_artifact_catalog import (
     CATALOG_SCHEMA,
-    CATALOG_VERSION,
     RUNTIME_ARTIFACT_REASONS,
     RUNTIME_AUTHORING_DOCUMENT_SUFFIXES,
     RUNTIME_DOCUMENT_PAYLOAD_KINDS,
@@ -42,6 +48,15 @@ from .runtime_artifact_catalog import (
     payload_kind_for,
     runtime_artifact_id,
     runtime_artifact_reason_for,
+)
+from .python_abi import (
+    BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
+    BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
+    LINUX_PYTHON_SHARED_PREFIX,
+    PYTHON_VERSION,
+    WINDOWS_PYTHON_DLL,
+    is_windows_libffi_dll,
+    player_native_library_filenames,
 )
 
 
@@ -56,44 +71,37 @@ MANIFEST_SCHEMA = PLAYER_MANIFEST_SCHEMA
 # package root is only the game host executable plus its Data directory.
 BOOTSTRAP_NATIVE_ROOT_ALLOWLIST: dict[str, dict[str, str]] = {}
 
-RUNTIME_REQUIRED_NATIVE_FILES = frozenset(
-    {
+if sys.platform == "win32":
+    RUNTIME_REQUIRED_NATIVE_FILES = frozenset({
         "Infernux/lib/_Infernux.pyd",
-        "Infernux/lib/InfernuxFoundation.dll",
-        "Infernux/lib/InfernuxParticleRuntime.dll",
-        "Infernux/lib/InfernuxRenderCore.dll",
-        "Infernux/lib/InfernuxRendererRuntime.dll",
-        "Infernux/lib/InfernuxShaderCompiler.dll",
-        "Infernux/lib/InfernuxVulkanBackend.dll",
-        "Infernux/lib/assimp-vc143-mt.dll",
-        "Infernux/lib/Jolt.dll",
-        "Infernux/lib/SDL3.dll",
-    }
-)
-RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES = frozenset(
-    {
-        "Infernux/lib/InfernuxRuntime.dll",
-        "Infernux/lib/SPIRV.dll",
-        "Infernux/lib/SPVRemapper.dll",
-        "Infernux/lib/glslang-default-resource-limits.dll",
-        "Infernux/lib/glslang.dll",
-    }
-)
-RUNTIME_CONDITIONAL_NATIVE_FILES = frozenset({"Infernux/lib/zlib.dll"})
-BOOTSTRAP_REQUIRED_ROOT_FILES = frozenset(
-    {}
-)
-BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset(
-    {
-        "python312.dll",
+        *(f"Infernux/lib/{name}" for name in player_native_library_filenames()),
+    })
+    RUNTIME_CONDITIONAL_NATIVE_FILES = frozenset({"Infernux/lib/zlib.dll"})
+    BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset({
+        BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
+        WINDOWS_PYTHON_DLL,
         "_ctypes.pyd",
-        "ffi.dll",
         "_InfernuxBootstrap.pyd",
         "Infernux/lib/InfernuxFoundation.dll",
         "stdlib/encodings/__init__.pyc",
         "stdlib/encodings/aliases.pyc",
         "stdlib/encodings/utf_8.pyc",
-    }
+    })
+else:
+    RUNTIME_REQUIRED_NATIVE_FILES = frozenset({
+        "Infernux/lib/_Infernux.so",
+        *(f"Infernux/lib/{name}" for name in player_native_library_filenames()),
+    })
+    RUNTIME_CONDITIONAL_NATIVE_FILES = frozenset({"Infernux/lib/libz.so"})
+    BOOTSTRAP_REQUIRED_ARCHIVE_FILES = frozenset({
+        BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
+        "libInfernuxFoundation.so",
+        "stdlib/encodings/__init__.pyc",
+        "stdlib/encodings/aliases.pyc",
+        "stdlib/encodings/utf_8.pyc",
+    })
+BOOTSTRAP_REQUIRED_ROOT_FILES = frozenset(
+    {}
 )
 EDITOR_I18N_PREFIX = "Infernux/engine/locales/"
 
@@ -151,6 +159,7 @@ RUNTIME_DOCUMENT_SUFFIXES = RUNTIME_AUTHORING_DOCUMENT_SUFFIXES
 PLAYER_RUNTIME_PROJECT_SETTINGS = frozenset(
     {
         "ProjectSettings/BuildSettings.json",
+        "ProjectSettings/InxPlugins.json",
         "ProjectSettings/PhysicsSettings.json",
         "ProjectSettings/TagLayerSettings.json",
     }
@@ -159,7 +168,7 @@ TEXT_SUFFIXES = AUTHOR_SOURCE_SUFFIXES | RUNTIME_DOCUMENT_SUFFIXES | frozenset(
     {".json", ".yaml", ".yml", ".txt"}
 )
 NATIVE_SUFFIXES = frozenset({".exe", ".dll", ".pyd", ".so", ".dylib"})
-NATIVE_ARCHIVE_SUFFIXES = frozenset({".inxrt", ".inxpkg", ".inxmod"})
+NATIVE_ARCHIVE_SUFFIXES = frozenset({".inxrt", ".inxpkg", ".inxmod", ".inxcat"})
 ABSOLUTE_PATH_RE = re.compile(
     r"(?:(?<![A-Za-z0-9+.-])[A-Za-z]:[\\/]|\\\\|/(?:Users|home|workspace|mnt|var|tmp)/)"
 )
@@ -207,11 +216,6 @@ def _data_root(package_root: Path, executable_stem: str | None = None) -> Path:
         path for path in package_root.glob("*_Data") if path.is_dir()
     )
     if len(candidates) != 1:
-        legacy = package_root / "Data"
-        if legacy.is_dir():
-            raise RuntimeError(
-                "Player layout is incomplete: expected <Game>_Data, found legacy Data"
-            )
         raise RuntimeError(
             "Player layout is incomplete: expected exactly one <Game>_Data directory"
         )
@@ -221,9 +225,27 @@ def _data_root(package_root: Path, executable_stem: str | None = None) -> Path:
         if data_root.name.casefold() != expected_name.casefold():
             raise RuntimeError(
                 "Player layout is incomplete: the unique data directory must be "
-                f"named {expected_name!r} to match {executable_stem!r}.exe"
+                f"named {expected_name!r} to match native host {executable_stem!r}"
             )
     return data_root
+
+
+def _player_executable_stem(package_root: Path) -> str | None:
+    if sys.platform == "win32":
+        candidates = sorted(
+            path
+            for path in package_root.iterdir()
+            if path.is_file() and path.suffix.casefold() == ".exe"
+        )
+    else:
+        candidates = sorted(
+            path
+            for path in package_root.iterdir()
+            if path.is_file() and not path.suffix
+        )
+    if len(candidates) != 1:
+        return None
+    return candidates[0].stem if sys.platform == "win32" else candidates[0].name
 
 
 def _read_text(path: Path) -> str:
@@ -319,7 +341,9 @@ def _archive_entry_records(
     archive_path: Path,
     relative_archive: str,
     *,
-    hashes: defaultdict[str, list[str]],
+    payload_candidates: defaultdict[
+        int, list[tuple[str, Path | tuple[Path, str], str | None]]
+    ],
     archive_entries: list[dict[str, object]],
     forbidden: list[str],
     author_sources: list[str],
@@ -397,16 +421,12 @@ def _archive_entry_records(
         if entry_bytes < 0 or stored_bytes < 0:
             forbidden.append(f"{entry_relative}: native entry size is negative")
             continue
-        entry_hash = str(item.get("sha256", ""))
-        if len(entry_hash) != 64 or any(char not in "0123456789abcdefABCDEF" for char in entry_hash):
-            forbidden.append(f"{entry_relative}: native entry raw hash is invalid")
-            continue
         raw_bytes_total += entry_bytes
         stored_bytes_total += stored_bytes
-        archive_entries.append(
-            {"path": entry_relative, "bytes": entry_bytes, "sha256": entry_hash}
+        archive_entries.append({"path": entry_relative, "bytes": entry_bytes})
+        payload_candidates[entry_bytes].append(
+            (entry_relative, (archive_path, entry_name), None)
         )
-        hashes[entry_hash].append(entry_relative)
         entry_suffix = Path(entry_name).suffix.casefold()
 
         payload = None
@@ -422,9 +442,6 @@ def _archive_entry_records(
                         f"{entry_relative}: raw payload size mismatch "
                         f"(manifest={entry_bytes}, actual={len(payload)})"
                     )
-                elif hashlib.sha256(payload).hexdigest().casefold() != entry_hash.casefold():
-                    forbidden.append(f"{entry_relative}: raw payload checksum mismatch")
-
         if entry_suffix == ".meta":
             meta_files.append(entry_relative)
         if (
@@ -508,30 +525,32 @@ def audit_player_package(
     *,
     write_manifest: bool = True,
 ) -> dict[str, object]:
-    """Audit a final ``<Game>.exe + <Game>_Data`` Player directory."""
+    """Audit a final native host plus ``<Game>_Data`` Player directory."""
 
     root = Path(resolved_path(package_root))
     if not root.is_dir():
         raise RuntimeError(f"Player package directory not found: {root}")
-    root_executables = sorted(
-        path for path in root.glob("*.exe") if path.is_file()
-    )
-    executable_stem = root_executables[0].stem if len(root_executables) == 1 else None
+    data_root = _data_root(root)
+    executable_stem = _player_executable_stem(root)
+    if executable_stem is None:
+        executable_stem = data_root.name[: -len("_Data")]
     data_root = _data_root(root, executable_stem)
     data_relative = data_root.name
     expected = {
         f"{data_relative}/{MANIFEST_FILENAME}",
-        f"{data_relative}/BuildManifest.json",
         f"{data_relative}/Bootstrap.inxrt",
         f"{data_relative}/Runtime.inxrt",
         f"{data_relative}/Content.inxpkg",
-        f"{data_relative}/Library/RuntimeAssetCatalog.json",
+        f"{data_relative}/{ASSET_CATALOG_ARCHIVE_FILENAME}",
+        f"{data_relative}/PackageIndex.inxmanifest",
     }
     optional = {f"{data_relative}/Modules/Parallel.inxmod"}
 
     # Audit the direct root surface before recursively inspecting payloads.
     # This makes unknown Nuitka output fail closed, including empty folders.
-    expected_executable = f"{executable_stem}.exe" if executable_stem else ""
+    expected_executable = (
+        f"{executable_stem}.exe" if sys.platform == "win32" else executable_stem
+    )
     root_surface: list[dict[str, str]] = []
     root_surface_gaps: list[str] = []
     for child in sorted(root.iterdir(), key=lambda item: item.name.casefold()):
@@ -586,6 +605,9 @@ def audit_player_package(
 
     files: list[dict[str, object]] = []
     hashes: defaultdict[str, list[str]] = defaultdict(list)
+    payload_candidates: defaultdict[
+        int, list[tuple[str, Path | tuple[Path, str], str | None]]
+    ] = defaultdict(list)
     forbidden: list[str] = []
     author_sources: list[str] = []
     meta_files: list[str] = []
@@ -598,8 +620,6 @@ def audit_player_package(
     editor_i18n_files: list[str] = []
     data_surface_gaps: list[str] = []
     archive_entries: list[dict[str, object]] = []
-    legacy_zips: list[str] = []
-    legacy_inxpack: list[str] = []
     archive_manifests: dict[str, dict[str, object]] = {}
     allowed_data_files = expected | optional
 
@@ -614,11 +634,10 @@ def audit_player_package(
         if relative.casefold().startswith(EDITOR_I18N_PREFIX.casefold()):
             editor_i18n_files.append(relative)
             forbidden.append(f"{relative}: Editor i18n data is not a Player payload")
-        digest = _sha256(path)
         size = path.stat().st_size
         suffix = path.suffix.casefold()
-        hashes[digest].append(relative)
-        files.append({"path": relative, "bytes": size, "sha256": digest})
+        payload_candidates[size].append((relative, path, None))
+        files.append({"path": relative, "bytes": size})
         if suffix in NATIVE_SUFFIXES:
             native_files.append(relative)
         if suffix == ".meta":
@@ -639,11 +658,6 @@ def audit_player_package(
             project_setting = relative[len(f"{data_relative}/") :]
             if project_setting not in PLAYER_RUNTIME_PROJECT_SETTINGS:
                 unknown_author_documents.append(relative)
-        if suffix == ".zip":
-            legacy_zips.append(relative)
-        if suffix == ".inxpack":
-            legacy_inxpack.append(relative)
-
         expected_here = relative in expected or relative in optional
         if suffix in NATIVE_ARCHIVE_SUFFIXES:
             if not expected_here:
@@ -652,7 +666,7 @@ def audit_player_package(
                 archive_manifest = _archive_entry_records(
                     path,
                     relative,
-                    hashes=hashes,
+                    payload_candidates=payload_candidates,
                     archive_entries=archive_entries,
                     forbidden=forbidden,
                     author_sources=author_sources,
@@ -666,11 +680,27 @@ def audit_player_package(
                 )
                 if archive_manifest is not None:
                     archive_manifests[relative] = archive_manifest
-        elif suffix in {".zip", ".inxpack"}:
-            forbidden.append(f"{relative}: legacy container is not supported")
         elif suffix in TEXT_SUFFIXES:
             if _contains_absolute_author_path(_read_text(path)):
                 absolute_paths.append(relative)
+
+    # Duplicate detection needs content hashes only when at least two payloads
+    # have the same byte count. Unique-sized files cannot be byte-identical, so
+    # hashing every Player file would add a complete second package scan without
+    # strengthening the audit.
+    for candidates in payload_candidates.values():
+        if len(candidates) < 2:
+            continue
+        for relative, payload_source, known_digest in candidates:
+            digest = known_digest
+            if digest is None:
+                if isinstance(payload_source, tuple):
+                    digest = hashlib.sha256(
+                        read_entry(payload_source[0], payload_source[1])
+                    ).hexdigest()
+                else:
+                    digest = _sha256(payload_source)
+            hashes[digest].append(relative)
 
     for archive_entry in archive_entries:
         archive_path, entry_path = str(archive_entry["path"]).split("::", 1)
@@ -692,21 +722,26 @@ def audit_player_package(
     executables = [
         str(item["path"])
         for item in files
-        if Path(str(item["path"])).suffix.casefold() == ".exe"
+        if str(item["path"]) == expected_executable
     ]
     if len(executables) != 1:
-        forbidden.append("Player package must contain exactly one visible .exe")
+        forbidden.append("Player package must contain exactly one visible native host")
     elif "/" in executables[0]:
         forbidden.append("Player executable must be at the package root")
 
+    foundation_name = (
+        "InfernuxFoundation.dll"
+        if sys.platform == "win32"
+        else "libInfernuxFoundation.so"
+    )
     expected_foundation_archive_paths = {
         (
             f"{data_relative}/Bootstrap.inxrt::"
-            "Infernux/lib/InfernuxFoundation.dll"
+            f"{foundation_name if sys.platform.startswith('linux') else f'Infernux/lib/{foundation_name}'}"
         ).casefold(),
         (
             f"{data_relative}/Runtime.inxrt::"
-            "Infernux/lib/InfernuxFoundation.dll"
+            f"Infernux/lib/{foundation_name}"
         ).casefold(),
     }
 
@@ -721,6 +756,21 @@ def audit_player_package(
             == expected_foundation_archive_paths
         )
 
+    def _is_linux_soname_alias_group(paths: list[str]) -> bool:
+        if not sys.platform.startswith("linux") or len(paths) < 2:
+            return False
+        archives = {path.partition("::")[0] for path in paths}
+        if len(archives) != 1 or not all("::" in path for path in paths):
+            return False
+        bases: set[str] = set()
+        for path in paths:
+            name = Path(path.split("::", 1)[1]).name
+            match = re.fullmatch(r"(?P<base>.+\.so)(?:\..+)?", name)
+            if match is None:
+                return False
+            bases.add(match.group("base").casefold())
+        return len(bases) == 1
+
     duplicate_asset_payloads = sorted(
         sorted(paths)
         for paths in hashes.values()
@@ -733,6 +783,7 @@ def audit_player_package(
         for paths in hashes.values()
         if len(paths) > 1
         and not _is_required_bootstrap_duplicate(paths)
+        and not _is_linux_soname_alias_group(paths)
         and not _is_logically_distinct_asset_payload(paths, data_relative)
     )
     duplicate_native = sorted(
@@ -763,17 +814,19 @@ def audit_player_package(
         if str(entry["path"]).startswith(runtime_prefix)
     }
     runtime_entries_by_casefold = {path.casefold(): path for path in runtime_entry_paths}
-    build_manifest_path = f"{data_relative}/BuildManifest.json"
     build_manifest_document: dict[str, object] = {}
     runtime_contract_gaps: list[str] = []
     try:
         build_manifest_document = json.loads(
-            (root / build_manifest_path).read_text(encoding="utf-8")
+            read_entry(
+                data_root / ASSET_CATALOG_ARCHIVE_FILENAME,
+                BUILD_MANIFEST_ENTRY_PATH,
+            ).decode("utf-8")
         )
         if not isinstance(build_manifest_document, dict):
             raise RuntimeError("BuildManifest root is not an object")
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimeError) as exc:
-        runtime_contract_gaps.append(f"BuildManifest is unreadable: {exc}")
+        runtime_contract_gaps.append(f"sealed BuildManifest is unreadable: {exc}")
         build_manifest_document = {}
 
     declared_contract = build_manifest_document.get("runtime_contract")
@@ -862,13 +915,6 @@ def audit_player_package(
             "Parallel.inxmod presence disagrees with RuntimeManifest features"
         )
     runtime_payload_gap.extend(runtime_contract_gaps)
-    runtime_payload_gap.extend(
-        f"legacy shader compiler DLL must not be packaged after static linking: "
-        f"{runtime_entries_by_casefold[legacy.casefold()]}"
-        for legacy in sorted(RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES)
-        if legacy.casefold() in runtime_entries_by_casefold
-    )
-
     bootstrap_prefix = f"{data_relative}/Bootstrap.inxrt::"
     bootstrap_entry_paths = {
         str(entry["path"])[len(bootstrap_prefix) :]
@@ -880,6 +926,62 @@ def audit_player_package(
         for required in sorted(BOOTSTRAP_REQUIRED_ARCHIVE_FILES)
         if required.casefold() not in {path.casefold() for path in bootstrap_entry_paths}
     ]
+    bootstrap_names = {Path(path).name for path in bootstrap_entry_paths}
+    if BOOTSTRAP_NATIVE_MANIFEST_FILENAME in bootstrap_entry_paths:
+        try:
+            bootstrap_native_document = json.loads(
+                read_entry(
+                    data_root / "Bootstrap.inxrt",
+                    BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
+                ).decode("utf-8")
+            )
+        except (OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            bootstrap_payload_gap.append(
+                f"bootstrap native manifest is unreadable: {exc}"
+            )
+        else:
+            if (
+                bootstrap_native_document.get("$schema")
+                != BOOTSTRAP_NATIVE_MANIFEST_SCHEMA
+            ):
+                bootstrap_payload_gap.append(
+                    "bootstrap native manifest has an unsupported schema"
+                )
+            bootstrap_native_files = bootstrap_native_document.get("files")
+            if not isinstance(bootstrap_native_files, list):
+                bootstrap_payload_gap.append(
+                    "bootstrap native manifest contains no file list"
+                )
+            else:
+                bootstrap_names_casefold = {
+                    name.casefold() for name in bootstrap_names
+                }
+                bootstrap_payload_gap.extend(
+                    f"missing declared bootstrap native file: {name}"
+                    for name in bootstrap_native_files
+                    if not isinstance(name, str)
+                    or not name
+                    or Path(name).name != name
+                    or name.casefold() not in bootstrap_names_casefold
+                )
+    if sys.platform == "win32":
+        if not any(is_windows_libffi_dll(name) for name in bootstrap_names):
+            bootstrap_payload_gap.append(
+                "missing required bootstrap archive file: Windows libffi DLL"
+            )
+    elif sys.platform.startswith("linux"):
+        linux_bootstrap_requirements = {
+            f"CPython {PYTHON_VERSION} shared library": lambda name: name.startswith(
+                LINUX_PYTHON_SHARED_PREFIX
+            ),
+            "_InfernuxBootstrap module": lambda name: name.startswith("_InfernuxBootstrap")
+            and name.endswith(".so"),
+        }
+        bootstrap_payload_gap.extend(
+            f"missing required bootstrap archive file: {label}"
+            for label, predicate in linux_bootstrap_requirements.items()
+            if not any(predicate(name) for name in bootstrap_names)
+        )
     if not any(
         Path(path).name.startswith("_InfernuxPlayer")
         and Path(path).name.endswith(tuple(importlib.machinery.EXTENSION_SUFFIXES))
@@ -909,48 +1011,55 @@ def audit_player_package(
         player_host_gap.append("root executable is unavailable for PlayerHost identity validation")
 
     library_artifact_gap: list[str] = []
-    catalog_path = data_root / "Library" / "RuntimeAssetCatalog.json"
+    catalog_path = data_root / ASSET_CATALOG_ARCHIVE_FILENAME
     catalog: dict[str, object] = {}
-    catalog_sha256 = ""
     catalog_artifacts: list[dict[str, object]] = []
     catalog_packages: list[dict[str, object]] = []
     if not catalog_path.is_file():
-        library_artifact_gap.append("Library/RuntimeAssetCatalog.json is missing")
+        library_artifact_gap.append(f"{ASSET_CATALOG_ARCHIVE_FILENAME} is missing")
     else:
         try:
-            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-            catalog_sha256 = _sha256(catalog_path)
-        except (OSError, json.JSONDecodeError):
-            catalog = {}
-        if catalog.get("$schema") != CATALOG_SCHEMA:
-            library_artifact_gap.append(
-                "Library/RuntimeAssetCatalog.json has no current catalog schema"
+            catalog = json.loads(
+                read_entry(catalog_path, ASSET_CATALOG_ENTRY_PATH).decode("utf-8")
             )
-        if catalog.get("catalog_version") != CATALOG_VERSION:
+            sealed_build_manifest = json.loads(
+                read_entry(catalog_path, BUILD_MANIFEST_ENTRY_PATH).decode("utf-8")
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimeError):
+            catalog = {}
+            sealed_build_manifest = None
+        if sealed_build_manifest != build_manifest_document:
             library_artifact_gap.append(
-                "Library/RuntimeAssetCatalog.json has no current catalog version"
+                f"{ASSET_CATALOG_ARCHIVE_FILENAME} build manifest is unstable"
+            )
+        if (
+            catalog.get("$schema") != CATALOG_SCHEMA
+            or set(catalog) != {"$schema", "player_host", "packages", "artifacts"}
+        ):
+            library_artifact_gap.append(
+                f"{ASSET_CATALOG_ARCHIVE_FILENAME} has no current catalog schema"
             )
         raw_packages = catalog.get("packages", [])
         if not isinstance(raw_packages, list):
             library_artifact_gap.append(
-                "Library/RuntimeAssetCatalog.json has no package entry list"
+                f"{ASSET_CATALOG_ARCHIVE_FILENAME} has no package entry list"
             )
         else:
             catalog_packages = [item for item in raw_packages if isinstance(item, dict)]
             if len(catalog_packages) != len(raw_packages):
                 library_artifact_gap.append(
-                    "Library/RuntimeAssetCatalog.json contains malformed package entries"
+                    f"{ASSET_CATALOG_ARCHIVE_FILENAME} contains malformed package entries"
                 )
         raw_artifacts = catalog.get("artifacts", [])
         if not isinstance(raw_artifacts, list):
             library_artifact_gap.append(
-                "Library/RuntimeAssetCatalog.json has no artifact entry list"
+                f"{ASSET_CATALOG_ARCHIVE_FILENAME} has no artifact entry list"
             )
         else:
             catalog_artifacts = [item for item in raw_artifacts if isinstance(item, dict)]
             if len(catalog_artifacts) != len(raw_artifacts):
                 library_artifact_gap.append(
-                    "Library/RuntimeAssetCatalog.json contains malformed artifact entries"
+                    f"{ASSET_CATALOG_ARCHIVE_FILENAME} contains malformed artifact entries"
                 )
 
     # Bootstrap.inxrt is a host startup closure, not a game runtime asset
@@ -973,7 +1082,6 @@ def audit_player_package(
             "payload_kind": payload_kind_for(logical_type_for_path(entry_name)),
             "package": archive_name,
             "runtime_path": entry_name,
-            "content_sha256": str(archive_entry["sha256"]).lower(),
             "content_bytes": int(archive_entry["bytes"]),
         }
     actual_direct_assets = sorted(
@@ -991,7 +1099,6 @@ def audit_player_package(
     actual_packages = {
         path: {
             "path": path,
-            "archive_sha256": str(manifest.get("archive_sha256", "")).lower(),
             "archive_bytes": manifest.get("archive_bytes"),
             "file_count": manifest.get("file_count"),
             "raw_bytes": manifest.get("raw_bytes"),
@@ -1019,8 +1126,13 @@ def audit_player_package(
         actual_package = catalog_packages_by_path.get(package_path)
         if actual_package is None:
             continue
+        if set(actual_package) != {
+            "path", "archive_bytes", "file_count", "raw_bytes", "stored_bytes", "codec"
+        }:
+            library_artifact_gap.append(
+                f"catalog package does not match the current schema: {package_path}"
+            )
         for field in (
-            "archive_sha256",
             "archive_bytes",
             "file_count",
             "raw_bytes",
@@ -1048,11 +1160,22 @@ def audit_player_package(
         if artifact_id in catalog_by_id:
             library_artifact_gap.append(f"duplicate catalog artifact id: {artifact_id}")
         catalog_by_id[artifact_id] = artifact
+        allowed_artifact_fields = {
+            "runtime_artifact_id", "logical_type", "payload_kind", "package",
+            "runtime_path", "content_bytes", "dependencies", "unresolved_dependencies",
+        }
+        if frozenset(artifact) not in {
+            frozenset(allowed_artifact_fields),
+            frozenset(allowed_artifact_fields | {"source_asset", "asset_guid"}),
+        }:
+            library_artifact_gap.append(
+                f"catalog artifact does not match the current schema: {artifact_id}"
+            )
         expected = actual_artifacts.get(artifact_id)
         if expected is None:
             library_artifact_gap.append(f"catalog artifact is not present in package TOC: {artifact_id}")
             continue
-        for field in ("logical_type", "payload_kind", "package", "runtime_path", "content_sha256", "content_bytes"):
+        for field in ("logical_type", "payload_kind", "package", "runtime_path", "content_bytes"):
             if artifact.get(field) != expected[field]:
                 library_artifact_gap.append(
                     f"catalog artifact field mismatch for {artifact_id}: {field}"
@@ -1102,7 +1225,7 @@ def audit_player_package(
     raw_asset_records = runtime_asset_records.get("entries", [])
     if (
         runtime_asset_records.get("$schema") != "infernux.runtime_asset_records"
-        or runtime_asset_records.get("records_version") != 2
+        or set(runtime_asset_records) != {"$schema", "entries"}
         or not isinstance(raw_asset_records, list)
     ):
         library_artifact_gap.append("runtime asset records use an unsupported schema")
@@ -1207,7 +1330,6 @@ def audit_player_package(
             "source_path",
             "source_fingerprint",
             "artifact_source_hash",
-            "artifact_sha256",
             "artifact_path",
         )
         if any(not isinstance(source_asset.get(field), (str, dict)) for field in required):
@@ -1216,7 +1338,7 @@ def audit_player_package(
             )
         if any(
             not isinstance(source_asset.get(field), str) or not source_asset[field]
-            for field in ("source_guid", "source_path", "artifact_source_hash", "artifact_sha256", "artifact_path")
+            for field in ("source_guid", "source_path", "artifact_source_hash", "artifact_path")
         ):
             source_replacement_gaps.append(
                 f"compiled artifact source binding has empty identity: {artifact_id}"
@@ -1270,7 +1392,7 @@ def audit_player_package(
                 f"direct runtime payload has no AssetIndex GUID: {artifact_id}"
             )
 
-    layout = "infernux-single-entry-player"
+    layout = "single_executable_native_packages"
     runtime_policy = runtime_contract["runtime_policy"]
     reachability_gaps = []
     if missing_without_manifest:
@@ -1288,8 +1410,6 @@ def audit_player_package(
         or meta_files
         or absolute_paths
         or duplicate_payloads
-        or legacy_zips
-        or legacy_inxpack
         or hidden_executables
         or authoring_tree_files
         or unknown_author_documents
@@ -1308,7 +1428,6 @@ def audit_player_package(
 
     result = {
         "$schema": MANIFEST_SCHEMA,
-        "manifest_version": PLAYER_MANIFEST_VERSION,
         "product": {
             "layout": layout,
             **runtime_contract["product"],
@@ -1330,13 +1449,15 @@ def audit_player_package(
             "reason": "Loaded package-qualified only after Runtime.inxrt extraction and search-path activation",
             "required": sorted(runtime_required_native_files),
             "conditional": sorted(RUNTIME_CONDITIONAL_NATIVE_FILES),
-            "forbidden_legacy": sorted(RUNTIME_FORBIDDEN_LEGACY_NATIVE_FILES),
             "gaps": sorted(set(runtime_payload_gap)),
         },
         "services": runtime_contract["services"],
         "runtime_policy": runtime_policy,
         "reachability": {
-            "build_manifest": build_manifest_path,
+            "build_manifest": (
+                f"{data_relative}/{ASSET_CATALOG_ARCHIVE_FILENAME}::"
+                f"{BUILD_MANIFEST_ENTRY_PATH}"
+            ),
             "runtime_artifacts": sorted(archive_manifests),
             "content_entries": sorted(
                 entry["path"] for entry in archive_entries
@@ -1358,9 +1479,6 @@ def audit_player_package(
             "duplicate_native_payloads": duplicate_native,
             "duplicate_payload_groups": duplicate_payloads,
             "duplicate_asset_payload_groups": duplicate_asset_payloads,
-            "legacy_zip_files": sorted(set(legacy_zips)),
-            "legacy_inxpack_files": sorted(set(legacy_inxpack)),
-            "legacy_dual_entry_point": len(executables) != 1,
             "hidden_executables": sorted(set(hidden_executables)),
             "authoring_tree_files": sorted(set(authoring_tree_files)),
             "unknown_author_documents": sorted(set(unknown_author_documents)),
@@ -1375,7 +1493,6 @@ def audit_player_package(
             "player_host_gap": sorted(set(player_host_gap)),
             "library_artifact_gap": sorted(set(library_artifact_gap)),
             "layout_gaps": sorted(set(reachability_gaps)),
-            "runtime_asset_catalog_sha256": catalog_sha256,
             "residual_direct_assets": residual_direct_assets,
         },
         "files": {
@@ -1406,7 +1523,22 @@ def audit_player_package(
         )
     if write_manifest:
         manifest_path = data_root / MANIFEST_FILENAME
-        _write_json_atomic(manifest_path, result)
+        # The detailed audit enumerates package entries, including author-side
+        # logical aliases.  It is build evidence, not runtime content.  Ship
+        # only the small product contract required by PlayerBootstrap.
+        _write_json_atomic(
+            manifest_path,
+            {
+                key: result[key]
+                for key in (
+                    "$schema",
+                    "product",
+                    "features",
+                    "services",
+                    "runtime_policy",
+                )
+            },
+        )
     return result
 
 

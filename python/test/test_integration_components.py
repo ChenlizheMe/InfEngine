@@ -1000,7 +1000,7 @@ class TestComponentLifecycle:
 
         assert events == ["awake", "on_enable"]
 
-    def test_component_added_during_update_starts_before_same_frame_late_update(self, scene):
+    def test_component_added_during_update_joins_next_frame_snapshot(self, scene):
         sm = SceneManager.instance()
         events = []
 
@@ -1046,10 +1046,13 @@ class TestComponentLifecycle:
             "spawned_on_enable",
             "spawned_start",
             "spawner_late_update",
-            "spawned_late_update",
         ]
 
-    def test_python_proxy_reports_native_update_dispatch(self, scene):
+        sm.step(1.0 / 60.0)
+
+        assert events[-2:] == ["spawner_late_update", "spawned_late_update"]
+
+    def test_shared_scheduler_owns_python_update_dispatch(self, scene, runtime_scheduler):
         sm = SceneManager.instance()
 
         class ProbeComponent(InxComponent):
@@ -1057,18 +1060,16 @@ class TestComponentLifecycle:
                 self.last_delta_time = delta_time
 
         component = scene.create_game_object("DispatchProbe").add_component(ProbeComponent)
-        proxy = component._cpp_component
 
         sm.play()
         sm.pause()
-        dispatch_before = proxy.update_dispatch_count
-        forward_before = proxy.update_forward_count
+        runtime_scheduler.reset_profiler()
 
         sm.step(1.0 / 60.0)
 
-        assert proxy.overrides_update is True
-        assert proxy.update_dispatch_count == dispatch_before + 1
-        assert proxy.update_forward_count == forward_before + 1
+        counters = runtime_scheduler.profiler_snapshot()
+        assert counters["native_phase_dispatches"] == 1
+        assert counters["phase_dispatches"] == 1
         assert component.last_delta_time == pytest.approx(1.0 / 60.0)
 
     def test_disabling_component_does_not_stop_coroutines(self, scene):
@@ -1862,12 +1863,12 @@ class TestMaterial:
         assert mat.get_float("testValue", 0.0) == pytest.approx(0.25)
 
         unknown_field = json.loads(json.dumps(document))
-        unknown_field["legacyPath"] = "Assets/Materials/legacy.mat"
+        unknown_field["unexpectedPath"] = "Assets/Materials/unexpected.mat"
         assert mat.deserialize(json.dumps(unknown_field)) is False
         assert mat.name == "StableMaterial"
 
         unknown_property_field = json.loads(json.dumps(document))
-        unknown_property_field["properties"]["testValue"]["legacy"] = True
+        unknown_property_field["properties"]["testValue"]["unexpected"] = True
         assert mat.deserialize(json.dumps(unknown_property_field)) is False
         assert mat.get_float("testValue", 0.0) == pytest.approx(0.25)
 
@@ -1912,7 +1913,7 @@ class TestComponentSerialization:
         renderer.material = InxMaterial.create_default_unlit()
         original = renderer.serialize_document()
         invalid = json.loads(json.dumps(original))
-        invalid["materials"][0]["source_path"] = "Assets/Materials/legacy.mat"
+        invalid["materials"][0]["source_path"] = "Assets/Materials/unexpected.mat"
 
         assert renderer.deserialize_document(invalid) is False
         assert renderer.serialize_document() == original
@@ -1978,7 +1979,7 @@ class TestComponentSerialization:
             "SpriteRenderer",
         ],
     )
-    def test_registered_component_rejects_removed_ordinary_field(self, scene, component_type):
+    def test_registered_component_rejects_unknown_field(self, scene, component_type):
         owner = scene.create_game_object(f"Strict{component_type}")
         if component_type == "Transform":
             component = owner.transform
@@ -1986,7 +1987,7 @@ class TestComponentSerialization:
             component = owner.add_component(component_type)
         original = component.serialize_document()
         invalid = dict(original)
-        invalid["legacy"] = True
+        invalid["unexpected"] = True
 
         assert component.deserialize_document(invalid) is False
         assert component.serialize_document() == original
@@ -2000,11 +2001,6 @@ class TestComponentSerialization:
 
         rigidbody = cube.add_component("Rigidbody")
         rigidbody_document = rigidbody.serialize_document()
-        assert "instance_guid" not in rigidbody_document
-
-        obsolete_document = dict(rigidbody_document)
-        obsolete_document["instance_guid"] = str(rigidbody.component_id)
-        assert rigidbody.deserialize_document(obsolete_document) is False
 
         rigidbody_document["type"] = "Camera"
         assert rigidbody.deserialize_document(rigidbody_document) is False

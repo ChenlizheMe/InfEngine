@@ -65,7 +65,7 @@ class PipelineReloadMixin:
         print("[RenderStack] Pipeline reloaded.", file=sys.stderr)
 
     def _sync_pipeline_catalog(self) -> None:
-        """Refresh available pipeline catalog and enforce fallback policy."""
+        """Refresh the available pipeline catalog without changing selection."""
         names = set(self.discover_pipelines().keys())
         signature = tuple(sorted(names))
         if signature == self._pipeline_catalog_signature:
@@ -76,10 +76,15 @@ class PipelineReloadMixin:
         current = self.pipeline_class_name
         if current != self.DEFAULT_PIPELINE_NAME and current not in names:
             warnings.warn(
-                f"[RenderStack] Pipeline '{current}' was removed. Falling back to DefaultForwardPipeline.",
+                f"[RenderStack] Selected pipeline '{current}' was removed. "
+                "The last valid graph remains active until the pipeline is restored "
+                "or another pipeline is selected.",
+                RuntimeWarning,
                 stacklevel=2,
             )
-            self.set_pipeline(self.DEFAULT_PIPELINE_NAME)
+            self._pipeline = None
+            self._cached_ips = None
+            self.invalidate_graph()
             return
 
         # Refresh pipeline type on catalog changes so newly edited classes can be re-instantiated.

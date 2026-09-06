@@ -124,8 +124,6 @@ class ScriptCompiler:
         errors = self.check_file(file_path)
         
         if not errors:
-            # Optionally log success
-            Debug.log_internal(f"[OK] Script compiled: {os.path.basename(file_path)}")
             return True
         
         # Report errors

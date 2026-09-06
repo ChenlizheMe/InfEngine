@@ -1,6 +1,5 @@
 {
   "$schema": "infernux.default_libraries",
-  "catalog_version": 1,
   "libraries": [
     "infernux/mcp"
   ]

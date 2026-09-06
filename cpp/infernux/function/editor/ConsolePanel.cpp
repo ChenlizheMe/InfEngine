@@ -449,6 +449,12 @@ void ConsolePanel::SetDetailHeight(float height) noexcept
 
 void ConsolePanel::OnRenderContent(InxGUIContext *ctx)
 {
+    const float dpi = ctx->GetDpiScale();
+    if (std::abs(dpi - m_lastDpiScale) >= 0.01f) {
+        m_lastDpiScale = dpi;
+        m_rowHeightMeasured = false;
+        m_rowHeight = 22.0f * dpi;
+    }
     const auto toolbarStart = std::chrono::steady_clock::now();
     RenderToolbar(ctx);
     const auto bodyStart = std::chrono::steady_clock::now();
@@ -714,18 +720,19 @@ void ConsolePanel::EnsureCache()
 
 void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
 {
+    const float dpi = ctx->GetDpiScale();
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(EditorTheme::CONSOLE_FRAME_PAD_X, EditorTheme::CONSOLE_FRAME_PAD_Y));
+                        ImVec2(EditorTheme::CONSOLE_FRAME_PAD_X * dpi, EditorTheme::CONSOLE_FRAME_PAD_Y * dpi));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                        ImVec2(EditorTheme::CONSOLE_ITEM_SPC_X, EditorTheme::CONSOLE_ITEM_SPC_Y));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::TOOLBAR_FRAME_BRD);
+                        ImVec2(EditorTheme::CONSOLE_ITEM_SPC_X * dpi, EditorTheme::CONSOLE_ITEM_SPC_Y * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::TOOLBAR_FRAME_BRD * dpi);
 
     const float availableWidth = ImGui::GetContentRegionAvail().x;
-    const bool wrapOptions = availableWidth < 500.0f;
+    const bool wrapOptions = availableWidth < 500.0f * dpi;
 
     const bool canClear = CanExecuteEditorCommand("console.clear");
     ImGui::BeginDisabled(!canClear);
-    if (ImGui::Button("Clear", ImVec2(54.0f, 0.0f)))
+    if (ImGui::Button("Clear", ImVec2(54.0f * dpi, 0.0f)))
         ExecuteEditorCommand("console.clear", "pointer");
     ImGui::EndDisabled();
     ctx->RecordSemanticItem("console_action", "Clear", canClear, "console.clear");
@@ -760,12 +767,12 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
     // Search and severity filters use a dedicated row, matching the Console's
     // two distinct jobs: controlling capture and inspecting messages.
     ImGui::NewLine();
-    constexpr float segmentWidth = 78.0f;
-    constexpr float segmentGap = 3.0f;
-    constexpr float severityWidth = segmentWidth * 3.0f + segmentGap * 2.0f;
-    const bool stackSeverity = availableWidth < severityWidth + 120.0f;
+    const float segmentWidth = 78.0f * dpi;
+    const float segmentGap = 3.0f * dpi;
+    const float severityWidth = segmentWidth * 3.0f + segmentGap * 2.0f;
+    const bool stackSeverity = availableWidth < severityWidth + 120.0f * dpi;
     const float searchWidth =
-        stackSeverity ? availableWidth : (std::max)(100.0f, availableWidth - severityWidth - 8.0f);
+        stackSeverity ? availableWidth : (std::max)(100.0f * dpi, availableWidth - severityWidth - 8.0f * dpi);
     ImGui::SetNextItemWidth(searchWidth);
     if (m_focusSearchNextFrame) {
         ImGui::SetKeyboardFocusHere();
@@ -809,7 +816,7 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
     if (stackSeverity)
         ImGui::NewLine();
     else
-        ImGui::SameLine(0.0f, 6.0f);
+        ImGui::SameLine(0.0f, 6.0f * dpi);
     severitySegment("ConsoleFilterInfo", "Log", "show_info", m_cachedInfoCount, EditorTheme::LOG_INFO);
     ImGui::SameLine(0.0f, segmentGap);
     severitySegment("ConsoleFilterWarn", "Warn", "show_warnings", m_cachedWarnCount, EditorTheme::LOG_WARNING);
@@ -825,15 +832,18 @@ void ConsolePanel::RenderToolbar(InxGUIContext *ctx)
 
 void ConsolePanel::RenderBody(InxGUIContext *ctx)
 {
+    const float dpi = ctx->GetDpiScale();
     float availH = ImGui::GetContentRegionAvail().y;
     int selectedIndex = FindVisibleIndexByUid(m_selectedUid);
     bool hasDetail = selectedIndex >= 0;
 
-    float splitterH = 3.0f;
+    const float splitterH = 3.0f * dpi;
     float listH;
     if (hasDetail) {
-        m_detailHeight = (std::max)(40.0f, (std::min)(m_detailHeight, availH - 60.0f));
-        listH = (std::max)(availH - m_detailHeight - splitterH, 40.0f);
+        const float minimumDetailHeight = 40.0f * dpi;
+        const float detailHeight =
+            (std::max)(minimumDetailHeight, (std::min)(m_detailHeight * dpi, availH - 60.0f * dpi));
+        listH = (std::max)(availH - detailHeight - splitterH, 40.0f * dpi);
     } else {
         listH = 0.0f; // 0 = use remaining space
     }
@@ -911,7 +921,7 @@ void ConsolePanel::RenderBody(InxGUIContext *ctx)
             (ImGui::GetIO().MouseWheel != 0.0f || ImGui::IsMouseDragging(ImGuiMouseButton_Left))) {
             scrollY = ImGui::GetScrollY();
             const float scrollMax = ImGui::GetScrollMaxY();
-            const bool atBottom = scrollMax <= 0.0f || (scrollMax - scrollY) < 20.0f;
+            const bool atBottom = scrollMax <= 0.0f || (scrollMax - scrollY) < 20.0f * dpi;
             m_followTail = autoScroll && atBottom && m_selectedUid == 0;
         }
     }
@@ -928,7 +938,7 @@ void ConsolePanel::RenderBody(InxGUIContext *ctx)
         if (ImGui::IsItemActivated())
             m_detailResizeStart = m_detailHeight;
         if (ImGui::IsItemActive()) {
-            float dy = ImGui::GetMouseDragDelta(0).y;
+            const float dy = ImGui::GetMouseDragDelta(0).y / dpi;
             if (std::abs(dy) > 0.5f) {
                 m_detailHeight = (std::max)(40.0f, m_detailHeight - dy);
                 ImGui::ResetMouseDragDelta(0);
@@ -978,6 +988,7 @@ void ConsolePanel::RenderBody(InxGUIContext *ctx)
 
 void ConsolePanel::RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry &ve, bool isSel)
 {
+    const float dpi = ctx->GetDpiScale();
     const auto &log = m_logs[ve.logIndex];
     const ImVec4 &clr = LevelColor(log.level);
     // Console selection is intentionally neutral. The blue default header
@@ -1020,7 +1031,7 @@ void ConsolePanel::RenderRow(InxGUIContext *ctx, int visIdx, const VisibleEntry 
     const ImVec2 rowMin = ImGui::GetItemRectMin();
     const ImVec2 rowMax = ImGui::GetItemRectMax();
     const float countWidth = ve.count > 1 ? ImGui::CalcTextSize(std::to_string(ve.count).c_str()).x : 0.0f;
-    const float rightReserve = ve.count > 1 ? (std::max)(36.0f, countWidth + 18.0f) : 8.0f;
+    const float rightReserve = ve.count > 1 ? (std::max)(36.0f * dpi, countWidth + 18.0f * dpi) : 8.0f * dpi;
     const ImVec2 textMin(rowMin.x + ImGui::GetStyle().FramePadding.x, rowMin.y);
     const ImVec2 textMax((std::max)(textMin.x, rowMax.x - rightReserve), rowMax.y);
     const float textY = rowMin.y + (rowMax.y - rowMin.y - ImGui::GetFontSize()) * 0.5f;

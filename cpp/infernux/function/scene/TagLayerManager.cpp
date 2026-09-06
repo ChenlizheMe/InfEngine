@@ -96,7 +96,6 @@ int TagLayerManager::AddTag(const std::string &tag)
         return existing;
     }
     m_tags.push_back(tag);
-    INXLOG_DEBUG("TagLayerManager::AddTag: added tag '", tag, "' at index ", m_tags.size() - 1);
     return static_cast<int>(m_tags.size()) - 1;
 }
 
@@ -111,7 +110,6 @@ bool TagLayerManager::RemoveTag(const std::string &tag)
         return false;
     }
     m_tags.erase(m_tags.begin() + idx);
-    INXLOG_DEBUG("TagLayerManager::RemoveTag: removed tag '", tag, "'");
     return true;
 }
 
@@ -161,7 +159,6 @@ bool TagLayerManager::SetLayerName(int layer, const std::string &name)
         return false;
     }
     m_layers[layer] = name;
-    INXLOG_DEBUG("TagLayerManager::SetLayerName: layer ", layer, " = '", name, "'");
     return true;
 }
 
@@ -350,7 +347,6 @@ bool TagLayerManager::Deserialize(const std::string &jsonStr)
         }
         m_layerCollisionMasks = std::move(collisionMasks);
 
-        INXLOG_DEBUG("TagLayerManager: deserialized ", m_tags.size() - kBuiltinTagCount, " custom tags");
         return true;
     } catch (const std::exception &e) {
         INXLOG_ERROR("TagLayerManager::Deserialize failed: ", e.what());
@@ -376,7 +372,6 @@ bool TagLayerManager::LoadFromFile(const std::string &path)
     try {
         std::ifstream file = OpenInputFile(path);
         if (!file.is_open()) {
-            INXLOG_DEBUG("TagLayerManager::LoadFromFile: file not found '", path, "', using defaults");
             return false;
         }
         std::string jsonStr((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());

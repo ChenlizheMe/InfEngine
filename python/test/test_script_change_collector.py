@@ -14,6 +14,13 @@ def _submit(collector, path, source=b"value = 1\n", **kwargs):
     return collector.submit(str(path), source, origin="editor", **kwargs)
 
 
+def _claim(collector, change):
+    assert change is not None
+    return collector.claim_ready_batch(
+        (change.path,), transaction_id=change.transaction_id
+    )
+
+
 def test_submit_freezes_source_and_preserves_provenance(tmp_path):
     collector = ScriptChangeCollector()
     path = tmp_path / "controller.py"
@@ -223,7 +230,7 @@ def test_dependency_force_recompiles_same_source_and_old_claim_cannot_publish(tm
         change_kind="created",
     )
     collector.process_worker_batch()
-    old_ready = collector.claim_ready()[0]
+    old_ready = _claim(collector, first)[0]
     forced = collector.submit(
         str(path),
         b"value = 1\n",
@@ -240,7 +247,7 @@ def test_dependency_force_recompiles_same_source_and_old_claim_cannot_publish(tm
     assert collector.last_known_good(str(path)) is None
 
     collector.process_worker_batch()
-    ready = collector.claim_ready()[0]
+    ready = _claim(collector, forced)[0]
     assert ready.generation == forced.generation
     assert collector.commit_published(ready) is True
     assert collector.last_known_good(str(path)) == forced.revision
@@ -307,7 +314,7 @@ def test_candidate_policy_report_is_attached_without_executing_source(tmp_path):
     collector = ScriptChangeCollector()
     path = tmp_path / "policy_probe.py"
     source = b"import helper\nhelper.VALUE = 2\n"
-    _submit(path=path, collector=collector, source=source)
+    change = _submit(path=path, collector=collector, source=source)
 
     result = collector.process_worker_batch()[0]
 
@@ -319,7 +326,7 @@ def test_candidate_policy_report_is_attached_without_executing_source(tmp_path):
     assert result.diagnostics[0].phase == "candidate_policy"
     assert result.diagnostics[0].code == "NX-R1-STATIC-MODULE-WRITE"
     assert result.diagnostics[0].operation == "helper.VALUE"
-    assert collector.claim_ready() == ()
+    assert _claim(collector, change) == ()
     assert collector.last_known_good(str(path)) is None
 
 
@@ -329,7 +336,7 @@ def test_blocked_candidate_does_not_advance_last_known_good_or_repeat_generation
     valid = _submit(collector, path, source=b"value = 1\n")
     assert valid is not None
     first = collector.process_worker_batch()[0]
-    ready = collector.claim_ready()[0]
+    ready = _claim(collector, valid)[0]
     assert first.status == "completed"
     assert collector.commit_published(ready)
     assert collector.last_known_good(str(path)) == valid.revision
@@ -344,7 +351,7 @@ def test_blocked_candidate_does_not_advance_last_known_good_or_repeat_generation
     assert blocked is not None
     result = collector.process_worker_batch()[0]
     assert result.status == "failed"
-    assert collector.claim_ready() == ()
+    assert _claim(collector, blocked) == ()
     assert collector.last_known_good(str(path)) == valid.revision
     assert collector.submit(
         str(path),
@@ -370,7 +377,7 @@ def test_unknown_call_fails_closed_and_exact_bytes_are_retained(tmp_path):
     assert result.artifact.policy_report.is_rejected
     assert result.diagnostics[0].phase == "candidate_policy"
     assert "cannot be proven isolated" in result.diagnostics[0].message
-    assert collector.claim_ready() == ()
+    assert _claim(collector, change) == ()
     assert collector.last_known_good(str(path)) is None
     assert change is not None
 
@@ -401,9 +408,9 @@ def test_numpy_mutator_fails_closed_and_does_not_advance_lkg(tmp_path):
     valid = _submit(collector, path, source=b"import numpy as np\nVALUE = np.zeros(2)\n")
     assert valid is not None
     assert collector.process_worker_batch()[0].status == "completed"
-    assert collector.commit_published(collector.claim_ready()[0])
+    assert collector.commit_published(_claim(collector, valid)[0])
 
-    _submit(
+    blocked = _submit(
         collector,
         path,
         source=b"import numpy as np\nnp.seterr(all='ignore')\n",
@@ -414,7 +421,7 @@ def test_numpy_mutator_fails_closed_and_does_not_advance_lkg(tmp_path):
     assert result.status == "failed"
     assert result.artifact is not None
     assert result.artifact.policy_report.is_rejected
-    assert collector.claim_ready() == ()
+    assert _claim(collector, blocked) == ()
     assert collector.last_known_good(str(path)) == valid.revision
 
 
@@ -441,7 +448,7 @@ def test_frontend_receives_exact_bytes_and_custom_payload_is_retained(tmp_path):
 def test_syntax_failure_is_structured_and_never_claimed(tmp_path):
     collector = ScriptChangeCollector()
     path = tmp_path / "controller.py"
-    _submit(collector, path, source=b"def broken(:\n")
+    change = _submit(collector, path, source=b"def broken(:\n")
 
     result = collector.process_worker_batch()[0]
 
@@ -451,7 +458,7 @@ def test_syntax_failure_is_structured_and_never_claimed(tmp_path):
     assert result.diagnostic is not None
     assert result.diagnostic.phase == "front_end"
     assert result.diagnostic.line == 1
-    assert collector.claim_ready() == ()
+    assert _claim(collector, change) == ()
     assert collector.completed_count == 1
     assert collector.drain_completed() == (result,)
 
@@ -459,11 +466,11 @@ def test_syntax_failure_is_structured_and_never_claimed(tmp_path):
 def test_draining_notifications_does_not_remove_publish_candidate(tmp_path):
     collector = ScriptChangeCollector()
     path = tmp_path / "controller.py"
-    _submit(collector, path)
+    change = _submit(collector, path)
     result = collector.process_worker_batch()[0]
 
     assert collector.drain_completed() == (result,)
-    ready = collector.claim_ready()
+    ready = _claim(collector, change)
     assert len(ready) == 1
     assert collector.commit_published(ready[0]) is True
 
@@ -474,7 +481,7 @@ def test_lkg_advances_only_after_owner_commit(tmp_path):
     change = _submit(collector, path)
     collector.process_worker_batch()
 
-    ready = collector.claim_ready()
+    ready = _claim(collector, change)
     assert len(ready) == 1
     assert ready[0].ready
     assert collector.last_known_good(str(path)) is None
@@ -488,13 +495,13 @@ def test_release_claim_preserves_lkg_and_allows_new_candidate(tmp_path):
     path = tmp_path / "controller.py"
     first = _submit(collector, path, source=b"value = 1\n")
     collector.process_worker_batch()
-    ready = collector.claim_ready()[0]
+    ready = _claim(collector, first)[0]
     assert collector.release_claim(ready) is True
     assert collector.last_known_good(str(path)) is None
 
     second = _submit(collector, path, source=b"value = 2\n")
     collector.process_worker_batch()
-    ready_again = collector.claim_ready()
+    ready_again = _claim(collector, second)
     assert second is not None and ready_again[0].generation > first.generation
     assert collector.commit_published(ready_again[0]) is True
     assert collector.last_known_good(str(path)) == second.revision
@@ -511,7 +518,7 @@ def test_newer_submission_makes_old_worker_result_stale(tmp_path):
 
     assert [result.status for result in results] == ["completed"]
     assert results[0].change.generation == second.generation
-    assert collector.claim_ready()[0].change.generation == second.generation
+    assert _claim(collector, second)[0].change.generation == second.generation
     assert collector.last_known_good(str(path)) is None
 
 
@@ -550,7 +557,7 @@ def test_clear_discards_claims_and_starts_a_fresh_epoch(tmp_path):
     path = tmp_path / "controller.py"
     old = _submit(collector, path)
     collector.process_worker_batch()
-    ready = collector.claim_ready()[0]
+    ready = _claim(collector, old)[0]
     collector.clear()
 
     assert collector.pending_count == 0
@@ -684,7 +691,9 @@ def test_batch_claim_missing_member_does_not_claim_anything(tmp_path):
     assert collector.claim_ready_batch(
         (str(first_path), str(second_path)), transaction_id="tx-batch"
     ) == ()
-    assert len(collector.claim_ready(str(first_path))) == 1
+    assert len(
+        collector.claim_ready_batch((str(first_path),), transaction_id="tx-batch")
+    ) == 1
 
 
 def test_batch_claim_rejects_mixed_transactions_without_partial_claim(tmp_path):
@@ -697,8 +706,12 @@ def test_batch_claim_rejects_mixed_transactions_without_partial_claim(tmp_path):
     assert collector.claim_ready_batch(
         (str(first_path), str(second_path)), transaction_id="tx-a"
     ) == ()
-    assert len(collector.claim_ready(str(first_path))) == 1
-    assert len(collector.claim_ready(str(second_path))) == 1
+    assert len(
+        collector.claim_ready_batch((str(first_path),), transaction_id="tx-a")
+    ) == 1
+    assert len(
+        collector.claim_ready_batch((str(second_path),), transaction_id="tx-b")
+    ) == 1
 
 
 def test_batch_claim_rejects_failed_result_without_partial_claim(tmp_path):
@@ -717,7 +730,9 @@ def test_batch_claim_rejects_failed_result_without_partial_claim(tmp_path):
     assert collector.claim_ready_batch(
         (str(first_path), str(second_path)), transaction_id="tx-failed"
     ) == ()
-    assert len(collector.claim_ready(str(first_path))) == 1
+    assert len(
+        collector.claim_ready_batch((str(first_path),), transaction_id="tx-failed")
+    ) == 1
 
 
 def test_batch_claim_rejects_stale_result_without_partial_claim(tmp_path):
@@ -730,7 +745,9 @@ def test_batch_claim_rejects_stale_result_without_partial_claim(tmp_path):
     assert collector.claim_ready_batch(
         (str(first_path), str(second_path)), transaction_id="tx-stale"
     ) == ()
-    assert len(collector.claim_ready(str(second_path))) == 1
+    assert len(
+        collector.claim_ready_batch((str(second_path),), transaction_id="tx-stale")
+    ) == 1
 
 
 def test_batch_commit_before_supersede_does_not_commit_other_member(tmp_path):
@@ -786,7 +803,9 @@ def test_discard_batch_clears_completed_failed_and_claimed_without_lkg(tmp_path)
     assert collector.last_known_good(str(second_path)) is None
     assert collector.completed_count == 0
     assert collector.drain_completed() == ()
-    assert collector.claim_ready() == ()
+    assert collector.claim_ready_batch(
+        (str(first_path),), transaction_id="tx-abort"
+    ) == ()
     assert collector.commit_published(ready[0]) is False
 
 
@@ -799,7 +818,9 @@ def test_discard_batch_validation_failure_does_not_clear_anything(tmp_path):
     assert collector.discard_batch(
         (str(first_path), str(second_path)), transaction_id="tx-abort"
     ) is False
-    assert len(collector.claim_ready(str(first_path))) == 1
+    assert len(
+        collector.claim_ready_batch((str(first_path),), transaction_id="tx-abort")
+    ) == 1
 
 
 def test_publish_ready_batch_blocks_submit_until_owner_publish_and_commit_finish(tmp_path):
@@ -868,7 +889,7 @@ def test_publish_ready_batch_false_releases_claim_and_does_not_advance_lkg(tmp_p
         (str(path),), "tx-fail", lambda ready: False
     ) is False
     assert collector.last_known_good(str(path)) is None
-    assert collector.claim_ready() == ()
+    assert collector.claim_ready_batch((str(path),), transaction_id="tx-fail") == ()
     assert collector.completed_count == 0
 
 
@@ -885,7 +906,9 @@ def test_publish_ready_batch_exception_releases_claim_and_does_not_advance_lkg(t
     with pytest.raises(RuntimeError, match="owner publish failed"):
         collector.publish_ready_batch((str(path),), "tx-exception", publish)
     assert collector.last_known_good(str(path)) is None
-    assert collector.claim_ready() == ()
+    assert collector.claim_ready_batch(
+        (str(path),), transaction_id="tx-exception"
+    ) == ()
     assert collector.completed_count == 0
 
 

@@ -215,6 +215,7 @@ class ParticleGpuGraphSpawnDomain
     bool m_resetPending = true;
     bool m_framePending = false;
     std::vector<rhi::BindGroupHandle> m_runtimeGroups;
+    std::vector<rhi::BindGroupHandle> m_prepareRuntimeGroups;
     vk::ResourceHandle m_burstRequestResource;
     vk::ResourceHandle m_consumingResource;
     vk::ResourceHandle m_metadataResource;

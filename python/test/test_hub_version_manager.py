@@ -49,10 +49,21 @@ class _FakeResponse:
         return False
 
 
+class _RuntimeInventory:
+    def __init__(self, *versions: str):
+        self._versions = list(versions)
+
+    def installed_versions(self):
+        return list(self._versions)
+
+    def has_runtime(self, version):
+        return str(version) in self._versions
+
+
 @pytest.fixture()
 def vm(tmp_path, monkeypatch):
     monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
-    manager = VersionManager()
+    manager = VersionManager(_RuntimeInventory("3.12"))
     release = {
         "tag_name": "v9.9.9",
         "prerelease": False,
@@ -65,6 +76,15 @@ def vm(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(manager, "_fetch_releases", lambda: [release])
     return manager
+
+
+@pytest.fixture(autouse=True)
+def _windows_wheel_fixtures(monkeypatch):
+    monkeypatch.setattr(
+        vm_mod,
+        "supported_wheel_platforms",
+        lambda: frozenset({"win_amd64"}),
+    )
 
 
 class TestDownload:
@@ -166,3 +186,182 @@ class TestListingHealsCorruption:
         assert vm.remove_version("2.0.0") is True
         assert not ver_dir.exists()
         assert vm.remove_version("2.0.0") is False
+
+
+def test_local_engine_install_requires_its_exact_python_runtime(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
+    manager = VersionManager(_RuntimeInventory("3.12"))
+    wheel = tmp_path / "infernux-0.4.0-cp313-cp313-win_amd64.whl"
+    wheel.write_bytes(_make_wheel_bytes())
+
+    with pytest.raises(
+        ValueError,
+        match=r"Infernux 0\.4\.0 requires Python 3\.13.*install Python 3\.13",
+    ):
+        manager.install_local_wheel(str(wheel))
+
+    assert not (tmp_path / "versions" / "0.4.0").exists()
+
+
+def test_legacy_wheel_requires_its_legacy_runtime_before_local_import(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
+    wheel = tmp_path / "infernux-0.3.7-cp312-cp312-win_amd64.whl"
+    wheel.write_bytes(_make_wheel_bytes())
+
+    current_only = VersionManager(_RuntimeInventory("3.13"))
+    with pytest.raises(
+        ValueError,
+        match=r"Infernux 0\.3\.7 requires Python 3\.12.*install Python 3\.12",
+    ):
+        current_only.install_local_wheel(str(wheel))
+    assert not (tmp_path / "versions" / "0.3.7").exists()
+
+    with_legacy_runtime = VersionManager(_RuntimeInventory("3.13", "3.12"))
+    installed_version = with_legacy_runtime.install_local_wheel(str(wheel))
+
+    assert installed_version == "0.3.7"
+    assert with_legacy_runtime.get_wheel_path("0.3.7", "3.12") is not None
+
+
+def test_release_with_conflicting_python_abis_is_rejected(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
+    manager = VersionManager(_RuntimeInventory("3.12"))
+    release = {
+        "tag_name": "v0.4.0",
+        "assets": [
+            {
+                "name": "infernux-0.4.0-cp313-cp313-win_amd64.whl",
+                "browser_download_url": "https://example.invalid/cp313.whl",
+                "size": 313,
+            },
+            {
+                "name": "infernux-0.4.0-cp312-cp312-win_amd64.whl",
+                "browser_download_url": "https://example.invalid/cp312.whl",
+                "size": 312,
+            },
+        ],
+    }
+    monkeypatch.setattr(manager, "_fetch_releases", lambda: [release])
+
+    [engine] = manager.list_versions()
+
+    assert engine.python_version == ""
+    assert [wheel.python_version for wheel in engine.wheel_options] == [
+        "3.13",
+        "3.12",
+    ]
+    assert "must target exactly one Python minor version" in engine.compatibility_error
+
+
+def test_online_engine_stays_visible_but_install_is_blocked_without_python(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
+    manager = VersionManager(_RuntimeInventory("3.12"))
+    release = {
+        "tag_name": "v0.4.0",
+        "assets": [
+            {
+                "name": "infernux-0.4.0-cp313-cp313-win_amd64.whl",
+                "browser_download_url": "https://example.invalid/cp313.whl",
+                "size": 313,
+            }
+        ],
+    }
+    monkeypatch.setattr(manager, "_fetch_releases", lambda: [release])
+
+    [engine] = manager.list_versions()
+
+    assert engine.version == "0.4.0"
+    assert engine.python_version == "3.13"
+    assert manager.installation_block_reason(engine) == (
+        "Infernux 0.4.0 requires Python 3.13. "
+        "Please install Python 3.13 first."
+    )
+    monkeypatch.setattr(
+        vm_mod.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a blocked engine install must not start a download")
+        ),
+    )
+    with pytest.raises(ValueError, match=r"requires Python 3\.13"):
+        manager.download_version("0.4.0")
+
+
+def test_cached_engine_wheels_are_resolved_by_exact_python_abi(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
+    version_dir = tmp_path / "versions" / "0.4.0"
+    version_dir.mkdir(parents=True)
+    cp312 = version_dir / "infernux-0.4.0-cp312-cp312-win_amd64.whl"
+    cp313 = version_dir / "infernux-0.4.0-cp313-cp313-win_amd64.whl"
+    cp312.write_bytes(_make_wheel_bytes())
+    cp313.write_bytes(_make_wheel_bytes())
+    manager = VersionManager(_RuntimeInventory("3.12", "3.13"))
+
+    assert manager.get_wheel_path("0.4.0", "3.12") == str(cp312)
+    assert manager.get_wheel_path("0.4.0", "3.13") == str(cp313)
+    assert manager.installed_python_versions("0.4.0") == ["3.13", "3.12"]
+    with pytest.raises(ValueError, match="conflicting Python ABIs"):
+        manager.python_version_for_engine("0.4.0")
+
+
+def test_release_assets_are_filtered_by_host_platform(tmp_path, monkeypatch):
+    monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
+    monkeypatch.setattr(
+        vm_mod,
+        "supported_wheel_platforms",
+        lambda: frozenset({"win_amd64"}),
+    )
+    manager = VersionManager(_RuntimeInventory("3.13"))
+    release = {
+        "tag_name": "v0.4.0",
+        "assets": [
+            {
+                "name": "infernux-0.4.0-cp313-cp313-win_amd64.whl",
+                "browser_download_url": "https://example.invalid/windows.whl",
+                "size": 101,
+            },
+            {
+                "name": "infernux-0.4.0-cp313-cp313-manylinux_2_28_x86_64.whl",
+                "browser_download_url": "https://example.invalid/linux.whl",
+                "size": 202,
+            },
+        ],
+    }
+    monkeypatch.setattr(manager, "_fetch_releases", lambda: [release])
+
+    [engine] = manager.list_versions()
+
+    assert [wheel.filename for wheel in engine.wheel_options] == [
+        "infernux-0.4.0-cp313-cp313-win_amd64.whl"
+    ]
+    assert engine.wheel_url == "https://example.invalid/windows.whl"
+    assert engine.python_version == "3.13"
+
+
+def test_local_engine_install_rejects_foreign_platform_before_copy(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
+    monkeypatch.setattr(
+        vm_mod,
+        "supported_wheel_platforms",
+        lambda: frozenset({"win_amd64"}),
+    )
+    manager = VersionManager(_RuntimeInventory("3.13"))
+    wheel = tmp_path / "infernux-0.4.0-cp313-cp313-manylinux_2_28_x86_64.whl"
+    wheel.write_bytes(_make_wheel_bytes())
+
+    with pytest.raises(ValueError, match="not compatible with this platform"):
+        manager.install_local_wheel(str(wheel))
+
+    assert not (tmp_path / "versions" / "0.4.0").exists()

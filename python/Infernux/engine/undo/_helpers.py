@@ -65,30 +65,18 @@ def _resolve_target(stored_ref: Any, game_object_id: int,
         return getattr(obj, "transform", None)
     component_id = int(getattr(stored_ref, "component_id", 0) or 0)
     if component_id:
-        try:
-            for component in (obj.get_components() or ()):
-                if int(getattr(component, "component_id", 0) or 0) == component_id:
-                    return component
-        except Exception as exc:
-            Debug.log_suppressed("undo._resolve_target.component_id", exc)
-        try:
-            for component in (obj.get_py_components() or ()):
-                if int(getattr(component, "component_id", 0) or 0) == component_id:
-                    return component
-        except Exception as exc:
-            Debug.log_suppressed("undo._resolve_target.python_component_id", exc)
-    try:
-        live = obj.get_component(comp_type_name)
-        if live is not None:
-            return live
-    except Exception as exc:
-        Debug.log_suppressed("undo._resolve_target.get_component", exc)
-    try:
-        for pc in obj.get_py_components():
-            if type(pc).__name__ == comp_type_name:
-                return pc
-    except Exception as exc:
-        Debug.log_suppressed("undo._resolve_target.get_py_components", exc)
+        for component in (obj.get_components() or ()):
+            if int(getattr(component, "component_id", 0) or 0) == component_id:
+                return component
+        for component in (obj.get_py_components() or ()):
+            if int(getattr(component, "component_id", 0) or 0) == component_id:
+                return component
+    live = obj.get_component(comp_type_name)
+    if live is not None:
+        return live
+    for pc in obj.get_py_components():
+        if type(pc).__name__ == comp_type_name:
+            return pc
     return None
 
 
@@ -97,18 +85,12 @@ _resolve_live_ref = _resolve_target
 
 def _find_live_native_component(obj, type_name: str):
     if hasattr(obj, 'get_component'):
-        try:
-            c = obj.get_component(type_name)
-            if c is not None:
-                return c
-        except Exception as exc:
-            Debug.log_suppressed("undo._find_live_native_component.get_component", exc)
-    try:
-        for c in obj.get_components():
-            if getattr(c, 'type_name', None) == type_name:
-                return c
-    except Exception as exc:
-        Debug.log_suppressed("undo._find_live_native_component.get_components", exc)
+        c = obj.get_component(type_name)
+        if c is not None:
+            return c
+    for c in obj.get_components():
+        if getattr(c, 'type_name', None) == type_name:
+            return c
     return None
 
 
@@ -161,11 +143,10 @@ def _notify_gizmos_scene_changed():
 
 
 def _invalidate_builtin_wrapper(comp_ref):
-    try:
-        comp_id = comp_ref.component_id
-    except Exception as exc:
-        Debug.log_suppressed("undo._invalidate_builtin_wrapper.read_component_id", exc)
+    if not comp_ref:
+        # Already-destroyed native component: nothing left to invalidate.
         return
+    comp_id = comp_ref.component_id
     from Infernux.components.builtin_component import BuiltinComponent
     wrapper = BuiltinComponent._wrapper_cache.get(comp_id)
     if wrapper is not None:
@@ -183,21 +164,16 @@ def _invalidate_builtin_wrappers_for_tree(obj):
     pending = [obj]
     while pending:
         current = pending.pop()
-        if current is None:
+        if not current:
+            # Skip natives already destroyed while walking the tree.
             continue
-        try:
-            for comp in current.get_components():
-                comp_id = getattr(comp, "component_id", 0) or 0
-                if comp_id:
-                    wrapper = cache.get(comp_id)
-                    if wrapper is not None:
-                        wrapper._invalidate_native_binding()
-        except Exception as exc:
-            Debug.log_suppressed("undo._invalidate_builtin_wrappers_for_tree.get_components", exc)
-        try:
-            pending.extend(current.get_children())
-        except Exception as exc:
-            Debug.log_suppressed("undo._invalidate_builtin_wrappers_for_tree.get_children", exc)
+        for comp in current.get_components():
+            comp_id = getattr(comp, "component_id", 0) or 0
+            if comp_id:
+                wrapper = cache.get(comp_id)
+                if wrapper is not None:
+                    wrapper._invalidate_native_binding()
+        pending.extend(current.get_children())
 
 
 def _destroy_game_object_immediately(scene, obj):
@@ -206,10 +182,7 @@ def _destroy_game_object_immediately(scene, obj):
     _invalidate_builtin_wrappers_for_tree(obj)
     scene.destroy_game_object(obj)
     if hasattr(scene, "process_pending_destroys"):
-        try:
-            scene.process_pending_destroys()
-        except Exception as exc:
-            Debug.log_suppressed("undo._destroy_game_object_immediately.process_pending_destroys", exc)
+        scene.process_pending_destroys()
     _bump_inspector_structure()
     _notify_gizmos_scene_changed()
 

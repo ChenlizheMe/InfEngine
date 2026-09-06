@@ -32,6 +32,7 @@ from Infernux.engine.path_utils import (
 from .scene_manager import (
     SCENE_EXTENSION,
     DEFAULT_SCENE_FILE_BASE,
+    LAST_OPENED_SCENE_GUID_KEY,
     _effective_project_root,
     _load_editor_settings,
     _save_editor_settings,
@@ -304,7 +305,6 @@ class SceneSaveMixin:
             title=os.path.splitext(os.path.basename(self.prefab_mode_path))[0],
             content_token=current_token,
         )
-        Debug.log_internal(f"Prefab saved: {self.prefab_mode_path}")
         return True
 
     def save_scene_as(self):
@@ -496,25 +496,36 @@ class SceneSaveMixin:
 
         self._current_scene_path = abs_path
 
-        # Save As publishes a brand-new asset through DocumentStore. Register
-        # it synchronously so the Project panel can expose it on the next frame;
-        # the file watcher remains a fallback for transient database contention.
-        if self._asset_database is not None and not self._asset_database.contains_path(abs_path):
+        # Scene persistence and AssetDatabase publication form one authoring
+        # transaction.  Waiting for the file watcher left an existing scene's
+        # sidecar/content hash stale long enough for an immediate Player build
+        # to reject it.  Publish both new and existing scenes synchronously;
+        # the watcher remains a fallback for transient database contention.
+        if self._asset_database is not None:
             try:
                 from Infernux.core.assets import AssetManager
 
-                result = AssetManager.import_asset(abs_path, database=self._asset_database)
+                registered = self._asset_database.contains_path(abs_path)
+                if registered:
+                    result = AssetManager.reimport_asset(
+                        abs_path,
+                        database=self._asset_database,
+                    )
+                else:
+                    result = AssetManager.import_asset(
+                        abs_path,
+                        database=self._asset_database,
+                    )
                 if not result:
                     detail = getattr(result, "error", "") or "asset import was rejected"
-                    Debug.log_warning(f"Scene saved but asset registration is pending: {detail}")
+                    Debug.log_warning(f"Scene saved but asset publication is pending: {detail}")
             except Exception as exc:
-                Debug.log_warning(f"Scene saved but asset registration is pending: {exc}")
+                Debug.log_warning(f"Scene saved but asset publication is pending: {exc}")
 
         # Persist editor camera state for this scene
         self._save_camera_state(self._current_scene_path)
 
         self._remember_last_scene(self._current_scene_path)
-        Debug.log_internal(f"Scene saved: {path}")
         return True
 
     def _default_scene_save_path(self) -> Optional[str]:
@@ -841,7 +852,14 @@ class SceneSaveMixin:
         return is_path_within(path, os.path.join(root, "Assets"))
 
     def _remember_last_scene(self, path: str):
+        guid = ""
+        get_guid = getattr(self._asset_database, "get_guid_from_path", None)
+        if callable(get_guid):
+            guid = str(get_guid(path) or "").strip()
+        if not guid:
+            Debug.log_warning(f"Cannot remember scene without an AssetDatabase GUID: {path}")
+            return
         settings = _load_editor_settings()
-        settings["lastOpenedScene"] = path
+        settings[LAST_OPENED_SCENE_GUID_KEY] = guid
         _save_editor_settings(settings)
 

@@ -21,7 +21,7 @@ sys.dont_write_bytecode = True
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QMessageBox, QDialog,
     QHBoxLayout, QVBoxLayout, QSizePolicy, QStackedWidget,
-    QGraphicsOpacityEffect,
+    QGraphicsOpacityEffect, QSystemTrayIcon, QMenu, QTabWidget, QLabel,
 )
 from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QIcon, QFontDatabase
@@ -30,23 +30,28 @@ from ui_project_list import ProjectListPane
 from database import ProjectDatabase
 from style import StyleManager
 from hub_resources import ICON_PATH, FONT_PATH
-from hub_utils import is_frozen
+from hub_utils import HubLaunchContext, get_app_dir, is_frozen
 from python_runtime import PythonRuntimeManager
+from android_support import AndroidSupportManager
 from version_manager import VersionManager
 
 from model.project_model import ProjectModel
 from viewmodel.control_pane_viewmodel import ControlPaneViewModel
 from view.control_pane_view import ControlPane
 from view.sidebar_view import SidebarView
-from view.installs_view import InstallsView, PythonRuntimeInstallDialog
+from view.installs_view import InstallsView, PythonRuntimesView, AndroidSupportView
+from view.install_queue_panel import InstallQueuePanel
+from install_queue import InstallQueue
 from installer_safety import can_remove_install_dir
+from hub_uninstall import remove_application
 from i18n import configure_language, tr
 from view.hover_widgets import ensure_hover_animation_filter
 import logging
 
 
 class GameEngineLauncher(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, launch_context: HubLaunchContext | None = None, *, install_queue=None) -> None:
+        self.launch_context = launch_context or HubLaunchContext.current()
         self._own_app = False
         if QApplication.instance() is None:
             self._own_app = True
@@ -75,8 +80,13 @@ class GameEngineLauncher(QMainWindow):
         self.resize(1080, 720)
 
         # Version and runtime managers
-        self.version_manager = VersionManager()
         self.runtime_manager = PythonRuntimeManager()
+        self.android_support_manager = AndroidSupportManager()
+        self.android_support_manager.activate_environment()
+        self.version_manager = VersionManager(self.runtime_manager)
+        self.install_queue = install_queue if install_queue is not None else InstallQueue(self.app)
+        self._exit_when_idle = False
+        self.install_queue.idle.connect(self._on_queue_idle)
 
         # ── Root layout: sidebar | content ───────────────────────────
         central = QWidget(self)
@@ -109,9 +119,11 @@ class GameEngineLauncher(QMainWindow):
             self.project_list,
             self.version_manager,
             self.runtime_manager,
+            launch_context=self.launch_context,
         )
         self.viewmodel = viewmodel
         self.project_list.remove_requested.connect(self._remove_project_from_card)
+        self.project_list.migrate_requested.connect(self._migrate_project_from_card)
         self.controls = ControlPane(viewmodel, parent=projects_page)
 
         self.controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -126,10 +138,28 @@ class GameEngineLauncher(QMainWindow):
         installs_page = QWidget()
         installs_layout = QVBoxLayout(installs_page)
         installs_layout.setContentsMargins(28, 24, 28, 24)
-        installs_layout.setSpacing(0)
+        installs_layout.setSpacing(16)
+        installs_title = QLabel(tr("Installs"))
+        installs_title.setObjectName("pageTitle")
+        installs_layout.addWidget(installs_title)
+        self.install_tabs = QTabWidget()
+        self.install_tabs.setObjectName("installTabs")
+        installs_layout.addWidget(self.install_tabs)
 
-        self.installs_view = InstallsView(self.version_manager, self.runtime_manager, parent=installs_page)
-        installs_layout.addWidget(self.installs_view)
+        self.installs_view = InstallsView(
+            self.version_manager,
+            self.install_queue,
+            parent=installs_page,
+        )
+        self.python_view = PythonRuntimesView(self.runtime_manager, self.install_queue)
+        self.android_view = AndroidSupportView(self.android_support_manager, self.install_queue)
+        for view, label in (
+            (self.installs_view, tr("Engine versions")),
+            (self.python_view, tr("Runtime environment")),
+            (self.android_view, tr("Android support")),
+        ):
+            self.install_tabs.addTab(view, label)
+        self.install_tabs.currentChanged.connect(self._on_install_tab_changed)
 
         self.pages.addWidget(installs_page)
 
@@ -145,6 +175,10 @@ class GameEngineLauncher(QMainWindow):
 
         from view.update_dialog import UpdateController
         self.update_controller = UpdateController(self)
+        self.update_controller.check_finished.connect(
+            self._on_startup_update_check_finished
+        )
+        self._startup_update_pending = False
         self.settings_view.update_check_requested.connect(
             lambda: self.update_controller.check(silent=False)
         )
@@ -163,6 +197,24 @@ class GameEngineLauncher(QMainWindow):
 
         self.discussion_view = DiscussionView(parent=self.pages)
         self.pages.addWidget(self.discussion_view)
+
+        self.installs_view.runtime_install_requested.connect(self._install_required_runtime)
+
+        self.install_panel = InstallQueuePanel(self.install_queue, central)
+        self.install_panel.layout_changed.connect(self._position_install_panel)
+        self._position_install_panel()
+        self.tray = QSystemTrayIcon(QIcon(ICON_PATH), self)
+        self.tray.setToolTip("Infernux Hub")
+        tray_menu = QMenu(self)
+        tray_menu.addAction(tr("Open Infernux Hub"), self._restore_window)
+        tray_menu.addAction(tr("Downloads and installs"), self._show_installs)
+        tray_menu.addSeparator()
+        tray_menu.addAction(tr("Exit"), self.request_quit)
+        self.tray.setContextMenu(tray_menu)
+        self.tray.activated.connect(self._on_tray_activated)
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.app.setQuitOnLastWindowClosed(False)
+            self.tray.show()
 
         # ── Sidebar → page switching ─────────────────────────────────
         self.sidebar.page_changed.connect(self._on_page_changed)
@@ -185,60 +237,158 @@ class GameEngineLauncher(QMainWindow):
         self._page_transition.start()
         # Refresh installs when switching to that page
         if index == 1:
-            self.installs_view.refresh()
+            self._on_install_tab_changed(self.install_tabs.currentIndex())
+        elif index == 2:
+            self.settings_view.refresh()
+
+    def _on_install_tab_changed(self, index):
+        self.install_tabs.widget(index).refresh()
+
+    def _show_runtime_installs(self):
+        self.install_tabs.setCurrentWidget(self.python_view)
+        self.sidebar.select_page(1)
+
+    def _install_required_runtime(self, version):
+        self._show_runtime_installs()
+        self.python_view.install(version)
+
+    def _position_install_panel(self):
+        panel = self.install_panel
+        panel.setFixedWidth(max(240, min(320, self.pages.width() - 32)))
+        panel.move(self.centralWidget().width() - panel.width() - 16,
+                   max(16, self.centralWidget().height() - panel.height() - 16))
+        panel.raise_()
+        panel.position_details()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "install_panel"):
+            self._position_install_panel()
+
+    def _restore_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _show_installs(self):
+        self._restore_window()
+        self.sidebar.select_page(1)
+        self.install_panel.refresh()
+
+    def _on_tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self._restore_window()
+
+    def closeEvent(self, event):
+        if self.tray.isVisible():
+            event.ignore()
+            self.hide()
+        elif self.install_queue.busy:
+            event.ignore()
+            self.showMinimized()
+        else:
+            super().closeEvent(event)
+
+    def request_quit(self):
+        if self.install_queue.busy:
+            if QMessageBox.question(
+                self, tr("Installation in progress"),
+                tr("Exit after the installation queue finishes? Installations will continue in the background."),
+            ) != QMessageBox.Yes:
+                return
+            self._exit_when_idle = True
+            self.close()
+        else:
+            self.app.quit()
+
+    def _on_queue_idle(self):
+        if self._exit_when_idle:
+            self.app.quit()
 
     def _remove_project_from_card(self, project_id: str):
         self.project_list.select_project(project_id)
         self.viewmodel.remove_project(self)
 
+    def _migrate_project_from_card(self, project_id: str):
+        self.project_list.select_project(project_id)
+        self.viewmodel.migrate_project(self)
+
     def _on_language_changed(self, _mode: str):
         """Rebuild visible widgets in the new language without restarting the process."""
-        replacement = GameEngineLauncher()
+        replacement = GameEngineLauncher(self.launch_context, install_queue=self.install_queue)
         replacement.setGeometry(self.geometry())
         replacement.show()
         # Keep the replacement alive while the old window finishes its event turn.
         self._language_replacement = replacement
+        self.tray.hide()
         self.hide()
         self.db.close()
 
     def run(self):
         self.show()
         if is_frozen():
-            QTimer.singleShot(0, self._bootstrap_python_runtime)
+            QTimer.singleShot(0, self._bootstrap_hub)
         if self._own_app:
             sys.exit(self.app.exec())
 
-    def _bootstrap_python_runtime(self):
-        if self.runtime_manager.has_runtime():
-            QTimer.singleShot(0, self._finish_startup)
+    def _bootstrap_hub(self):
+        # Resolve application updates before presenting runtime migration.
+        # This keeps an older Hub from offering engine/runtime actions that a
+        # newer release has made incompatible.
+        self._startup_update_pending = True
+        self.update_controller.check(silent=True)
+
+    def _on_startup_update_check_finished(self):
+        if not self._startup_update_pending:
             return
+        self._startup_update_pending = False
+        self._bootstrap_python_runtime()
 
-        QMessageBox.information(
-            self,
-            tr("Python 3.12 Setup"),
-            tr("Infernux Hub needs Python 3.12 to create and launch projects.\n\n"
-            "Hub uses an isolated runtime under C:\\Users\\Public\\InfernuxHub. It is deployed from a file archive\n"
-            "and never installs, upgrades, removes, registers, or changes your existing Python environments.\n"
-            "Each project receives its own copy of this private runtime."),
-        )
-
-        dlg = PythonRuntimeInstallDialog(self.runtime_manager, self)
-        if dlg.exec() != QDialog.Accepted and dlg.error_text:
-            QMessageBox.warning(
-                self,
-                tr("Python 3.12 Not Ready"),
-                dlg.error_text,
-            )
-        self.installs_view.refresh()
+    def _bootstrap_python_runtime(self):
+        # A fresh installer provisions the default runtime before launching the
+        # Hub. An in-place upgrade from an older Hub deliberately does not
+        # mutate Python behind the user's back, so make the missing requirement
+        # explicit and take the user directly to the runtime controls.
+        default_version = self.runtime_manager.default_version
+        if not self.runtime_manager.has_runtime(default_version):
+            self._show_runtime_installs()
         QTimer.singleShot(0, self._finish_startup)
 
     def _finish_startup(self):
         self.installs_view.refresh()
         self.notification_controller.show_pending()
-        QTimer.singleShot(1200, lambda: self.update_controller.check(silent=True))
 
     def _on_close(self):
         self.db.close()
+
+
+def _schedule_windows_application_removal(install_dir: str) -> None:
+    """Run outside the Hub so its executable is no longer locked during removal."""
+    import ctypes
+    from ctypes import wintypes
+    import subprocess
+
+    powershell = str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe")
+    helper = (
+        Path(get_app_dir()) / "InfernuxHubData/uninstaller/hub_uninstall.ps1"
+        if is_frozen() else Path(__file__).with_name("hub_uninstall.ps1")
+    )
+    if not helper.is_file():
+        raise FileNotFoundError(f"Hub uninstall helper is missing: {helper}")
+    shell_execute = ctypes.windll.shell32.ShellExecuteW
+    shell_execute.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR,
+                              wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_int]
+    shell_execute.restype = wintypes.HINSTANCE
+    result = shell_execute(
+        None, "runas", powershell,
+        subprocess.list2cmdline([
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(helper),
+            "-InstallDir", install_dir, "-ParentPid", str(os.getpid()),
+        ]),
+        install_dir, 0,
+    )
+    if int(result or 0) <= 32:
+        raise OSError(int(result or 0), "Could not start the Hub uninstaller")
 
 
 def _handle_uninstall() -> int:
@@ -285,12 +435,16 @@ def _handle_uninstall() -> int:
     answer = QMessageBox.question(
         None,
         tr("Uninstall Infernux Hub"),
-        tr("Registry entries and shortcuts have been removed.\n\nDo you also want to delete the installation folder?\n{path}", path=install_dir),
+        tr("Remove Hub application files after this window closes?\n{path}\n\nProjects and Shared resources (plugins, SDKs, runtimes and engines) are preserved.", path=install_dir),
     )
     if answer == QMessageBox.Yes and install_dir and os.path.isdir(install_dir):
-        import shutil as _shutil
         if can_remove_install_dir(install_dir):
-            _shutil.rmtree(install_dir, ignore_errors=True)
+            try:
+                _schedule_windows_application_removal(install_dir)
+            except OSError as exc:
+                QMessageBox.warning(None, tr("Uninstall Failed"), str(exc))
+                return 1
+            return 0
         else:
             QMessageBox.warning(
                 None,
@@ -331,33 +485,33 @@ def _handle_uninstall_macos() -> int:
 
 
 def _handle_uninstall_linux() -> int:
-    """Remove Infernux Hub from Linux (desktop entry + user config)."""
-    import shutil as _shutil
-
+    """Remove the Linux application while preserving Hub user data."""
     app = QApplication.instance() or QApplication(sys.argv)
 
     desktop_entry = os.path.expanduser("~/.local/share/applications/infernux-hub.desktop")
-    config_dir = os.path.expanduser("~/.config/Infernux")
-    data_dir = os.path.expanduser("~/.local/share/InfernuxHub")
-    targets = [p for p in (desktop_entry, config_dir, data_dir) if os.path.exists(p)]
+    install_dir = get_app_dir()
+    targets = [p for p in (desktop_entry, install_dir) if os.path.exists(p)]
 
     if targets:
         answer = QMessageBox.question(
             None,
             "Uninstall Infernux Hub",
-            "Do you want to remove Infernux Hub application files and configuration?\n\n"
+            "Do you want to remove the Infernux Hub application?\n\n"
             + "\n".join(targets)
-            + "\n\nProjects and downloaded engine versions under ~/.infernux are preserved.",
+            + "\n\nProjects, downloaded engines, Python runtimes, and the shared "
+            "plugin library are preserved.",
         )
         if answer == QMessageBox.Yes:
             for p in targets:
                 if os.path.isdir(p):
-                    _shutil.rmtree(p, ignore_errors=True)
+                    if p == install_dir and not can_remove_install_dir(p):
+                        raise RuntimeError(
+                            "The Hub application directory is not a recognized install: "
+                            f"{p}"
+                        )
+                    remove_application(p)
                 else:
-                    try:
-                        os.remove(p)
-                    except OSError:
-                        pass
+                    os.remove(p)
 
     QMessageBox.information(None, "Uninstall Complete", "Infernux Hub has been uninstalled.")
     return 0
@@ -366,5 +520,5 @@ def _handle_uninstall_linux() -> int:
 if __name__ == "__main__":
     if "--uninstall" in sys.argv:
         raise SystemExit(_handle_uninstall())
-    launcher = GameEngineLauncher()
+    launcher = GameEngineLauncher(HubLaunchContext.current())
     launcher.run()

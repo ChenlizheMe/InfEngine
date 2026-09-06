@@ -77,13 +77,18 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def(py::init<>())
         .def("initialize", &AssetDatabase::Initialize, py::arg("project_root"),
              "Initialize asset database with project root")
+        .def("is_owner_thread", &AssetDatabase::IsOwnerThread,
+             "Whether the caller owns this initialized asset database")
         .def("refresh", &AssetDatabase::Refresh, "Refresh assets by scanning Assets folder")
         .def("begin_refresh", &AssetDatabase::BeginRefresh,
              "Schedule filesystem scan and fingerprint collection on the engine JobSystem")
         .def("try_commit_refresh", &AssetDatabase::TryCommitRefresh,
              "Advance asynchronous scan/import and finalize a completed artifact on the owner thread")
+        .def("complete_pending_refresh", &AssetDatabase::CompletePendingRefresh,
+             "Wait for and commit the currently pending asynchronous refresh")
         .def_property_readonly("refresh_pending", &AssetDatabase::IsRefreshPending)
-        .def("flush_derived_index", &AssetDatabase::FlushDerivedIndex, "Persist a dirty derived AssetIndex")
+        .def("flush_derived_index", &AssetDatabase::FlushDerivedIndex, py::arg("wait_for_pending_scan") = true,
+             "Persist a dirty derived AssetIndex")
         .def("add_scan_root", &AssetDatabase::AddScanRoot, py::arg("path"),
              "Add an extra directory to scan during Refresh (e.g. Library/Resources)")
         .def("import_asset", &AssetDatabase::ImportAsset, py::arg("path"), "Import a single asset")

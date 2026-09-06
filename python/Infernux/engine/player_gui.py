@@ -13,16 +13,28 @@ sees it.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from typing import Callable, Dict, List, Optional
 
 from Infernux.debug import Debug
 from Infernux.lib import InxGUIRenderable, InxGUIContext
-from Infernux.input import Input, KeyCode
+from Infernux.input import Input, KeyCode, TouchPhase
 from Infernux.engine.ui.viewport_utils import capture_viewport_info
-from Infernux.ui.ui_event_system import UIEventProcessor
+from Infernux.ui.ui_event_data import PointerType
+from Infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
 from Infernux.ui.ui_canvas_utils import collect_sorted_runtime_canvases
+
+
+def _player_render_scale() -> float:
+    try:
+        scale = float(os.environ.get("INFERNUX_PLAYER_RENDER_SCALE", "1"))
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(scale):
+        return 1.0
+    return max(0.25, min(1.0, scale))
 
 
 class PlayerGUI(InxGUIRenderable):
@@ -37,6 +49,7 @@ class PlayerGUI(InxGUIRenderable):
         self._engine = engine
         self._last_w = 0
         self._last_h = 0
+        self._render_scale = _player_render_scale()
         self._ui_event_processor = UIEventProcessor()
         self._last_frame_time = time.time()
         self._control = control_channel
@@ -171,8 +184,10 @@ class PlayerGUI(InxGUIRenderable):
                     Debug.log_suppressed("player_gui.frame_profile", exc)
 
     def _render_game(self, ctx: InxGUIContext, vp_w: float, vp_h: float):
-        target_w = max(1, int(vp_w))
-        target_h = max(1, int(vp_h))
+        display_w = max(1, int(vp_w))
+        display_h = max(1, int(vp_h))
+        target_w = max(1, int(display_w * self._render_scale))
+        target_h = max(1, int(display_h * self._render_scale))
 
         if target_w != self._last_w or target_h != self._last_h:
             self._engine.resize_game_render_target(target_w, target_h)
@@ -184,13 +199,9 @@ class PlayerGUI(InxGUIRenderable):
             ctx.label("Waiting for camera...")
             return
 
-        ctx.image(game_tex, float(target_w), float(target_h), 0.0, 0.0, 1.0, 1.0)
+        ctx.image(game_tex, float(display_w), float(display_h), 0.0, 0.0, 1.0, 1.0)
         vp = capture_viewport_info(ctx)
         Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
-
-        # Input: always game-focused in player mode.
-        # Cursor lock is script-driven (Input.set_cursor_locked).
-        game_hovered = ctx.is_window_hovered()
 
         # ESC safety: allow user to unlock cursor even if scripts forgot
         cursor_locked = Input.is_cursor_locked()
@@ -199,14 +210,13 @@ class PlayerGUI(InxGUIRenderable):
                 Input.set_cursor_locked(False)
                 cursor_locked = False
 
-        # Process UI events
-        if game_hovered:
-            self._process_ui_events(target_w, target_h)
-        else:
-            self._ui_event_processor.reset()
+        # The standalone Player owns the entire window. Touchscreen contacts
+        # do not define an ImGui mouse-hover state, so UI dispatch must not be
+        # gated by the desktop hover bit.
+        self._process_ui_events(display_w, display_h)
 
     def _process_ui_events(self, game_w: int, game_h: int):
-        """Convert Input mouse state to per-canvas pointer events."""
+        """Convert mouse and every active touch to independent UI pointers."""
         from Infernux.lib import SceneManager
 
         scene = SceneManager.instance().get_active_scene()
@@ -221,29 +231,59 @@ class PlayerGUI(InxGUIRenderable):
             self._ui_event_processor.reset()
             return
 
-        # Mouse position in viewport pixels (relative to game image top-left).
-        # In player mode display_scale is 1.0 (render target == viewport).
         gx, gy, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = Input.get_game_mouse_frame_state(0)
 
-        # Build per-canvas positions in design (canvas) pixels
-        canvas_positions = []
-        for canvas in canvases:
-            ref_w = float(canvas.reference_width)
-            ref_h = float(canvas.reference_height)
-            if ref_w < 1 or ref_h < 1:
-                canvas_positions.append((0.0, 0.0))
-                continue
-            cx = gx * ref_w / float(game_w)
-            cy = gy * ref_h / float(game_h)
-            canvas_positions.append((cx, cy))
+        def canvas_positions(screen_x: float, screen_y: float):
+            positions = []
+            for canvas in canvases:
+                ref_w = float(canvas.reference_width)
+                ref_h = float(canvas.reference_height)
+                if ref_w < 1 or ref_h < 1:
+                    positions.append((0.0, 0.0))
+                    continue
+                scale_x, scale_y, _ = canvas.compute_scale(
+                    float(game_w), float(game_h)
+                )
+                positions.append(
+                    (
+                        screen_x / max(scale_x, 1e-6),
+                        screen_y / max(scale_y, 1e-6),
+                    )
+                )
+            return tuple(positions)
 
-        scroll = (scroll_x, scroll_y)
+        pointers = [
+            UIPointerFrame(
+                pointer_id=-1,
+                pointer_type=PointerType.Mouse,
+                canvas_positions=canvas_positions(gx, gy),
+                down=mouse_down,
+                up=mouse_up,
+                held=mouse_held,
+                scroll_delta=(scroll_x, scroll_y),
+            )
+        ]
+        for touch in Input.touches:
+            touch_x = float(touch.normalized_position[0]) * float(game_w)
+            touch_y = (1.0 - float(touch.normalized_position[1])) * float(game_h)
+            pointers.append(
+                UIPointerFrame(
+                    pointer_id=int(touch.finger_id),
+                    pointer_type=PointerType.Touch,
+                    canvas_positions=canvas_positions(touch_x, touch_y),
+                    down=touch.phase is TouchPhase.BEGAN,
+                    up=touch.phase in (TouchPhase.ENDED, TouchPhase.CANCELED),
+                    held=touch.phase
+                    in (
+                        TouchPhase.BEGAN,
+                        TouchPhase.MOVED,
+                        TouchPhase.STATIONARY,
+                    ),
+                    canceled=touch.phase is TouchPhase.CANCELED,
+                )
+            )
 
         from Infernux.timing import Time
         dt = Time.unscaled_delta_time
 
-        self._ui_event_processor.process(
-            canvases, canvas_positions,
-            mouse_down, mouse_up, mouse_held,
-            scroll, dt,
-        )
+        self._ui_event_processor.process_pointers(canvases, pointers, dt)

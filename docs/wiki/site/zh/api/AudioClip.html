@@ -342,7 +342,7 @@
 <p>音频剪辑资源。</p>
 <!-- USER CONTENT START -->
 <p>description
-<strong>状态：</strong> Preview · <strong>验证版本：</strong> 0.3.7</p>
+<strong>状态：</strong> Preview · <strong>验证版本：</strong> 0.4.0</p>
 <p>当前可靠解码器支持 WAV。当 AudioSource Track 或 One-shot 仍可能引用时，应保持 Clip 已加载。</p>
 <!-- USER CONTENT END -->
 
@@ -485,9 +485,9 @@
 <h2 id="_7">示例<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h2>
 <!-- USER CONTENT START -->
 <p>example
-<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.core.audio_clip</span><span class="w"> </span><span class="kn">import</span> <span class="n">AudioClip</span>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">clip</span> <span class="o">=</span> <span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/click.wav"</span><span class="p">)</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/click.wav"</span><span class="p">)</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">if</span> <span class="n">clip</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">clip</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">clip</span><span class="o">.</span><span class="n">duration</span><span class="p">,</span> <span class="n">clip</span><span class="o">.</span><span class="n">sample_rate</span><span class="p">,</span> <span class="n">clip</span><span class="o">.</span><span class="n">channels</span><span class="p">)</span>
 </code></pre></div></p>

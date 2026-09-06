@@ -3,9 +3,10 @@ from __future__ import annotations
 import sys
 import json
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
+import yaml
 
 
 PACKAGING_ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,7 @@ if str(PACKAGING_ROOT) not in sys.path:
 
 import build_hub
 from private_python_runtime import PYTHON_VERSION, runtime_archive_for_machine
+from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 
 
 _VALID_MSVC_REPORT = """\
@@ -24,6 +26,73 @@ clang_mode=False
 msvc_mode=True
 mingw_mode=False
 """
+
+
+def test_hub_and_installer_use_declared_qt_runtime_dependencies(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_hub.os, "name", "posix")
+    monkeypatch.setattr(build_hub.sys, "platform", "linux")
+    command = build_hub._common_nuitka_command(
+        tmp_path / "out", tmp_path, product_name="Hub",
+        description="Hub", original_filename="Hub",
+    )
+    assert f"--user-package-configuration-file={tmp_path / 'packaging/hub.nuitka-package.config.yml'}" in command
+    assert "--include-data-file=/usr/share/doc/libxcb-cursor0/copyright=licenses/libxcb-cursor0.txt" in command
+    assert len([argument for argument in command if argument.startswith("--include-data-file=/usr/share/doc/")]) == 7
+
+
+def test_linux_qt_helpers_are_explicit_libraries_not_data_files(monkeypatch):
+    config = yaml.safe_load((PACKAGING_ROOT / "hub.nuitka-package.config.yml").read_text())
+    rule = config[0]["dlls"][0]
+    assert config[0]["module-name"] == "PySide6.QtWidgets"
+    assert rule["when"] == "linux"
+    assert rule["dest_path"] == "PySide6"
+    required = (
+        "libxcb-cursor.so.0", "libxcb-icccm.so.4", "libxcb-image.so.0",
+        "libxcb-keysyms.so.1", "libxcb-render-util.so.0", "libxcb-util.so.1",
+        "libxkbcommon-x11.so.0",
+    )
+    import subprocess
+    monkeypatch.setattr(subprocess, "check_output", lambda *_a, **_k: "\n".join(
+        f"{name} (libc6,x86-64) => /lib/x86_64-linux-gnu/{name}" for name in required))
+    namespace = {}
+    exec(rule["by_code"]["setup_code"], namespace)
+    assert eval(rule["by_code"]["filename_code"], namespace) == [
+        f"/lib/x86_64-linux-gnu/{name}" for name in required]
+    del namespace["libraries"]["libxcb-cursor.so.0"]
+    with pytest.raises(KeyError):
+        eval(rule["by_code"]["filename_code"], namespace)
+
+
+def test_installer_publishes_only_its_versioned_file(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text('[project]\nversion = "0.4.0"\n')
+    stage = tmp_path / "stage"
+    (stage / "hub").mkdir(parents=True)
+    hub_executable = "Infernux Hub.exe" if sys.platform == "win32" else "Infernux Hub"
+    (stage / "hub" / hub_executable).write_bytes(b"Hub payload")
+    build = tmp_path / "build"
+    release = tmp_path / "dist/releases/0.4.0"
+    release.mkdir(parents=True)
+    sibling = release / "other-platform.bin"
+    sibling.write_bytes(b"keep")
+    filename = "InfernuxHubInstaller.exe" if sys.platform == "win32" else "InfernuxHubInstaller"
+
+    def compile_installer(command, **kwargs):
+        (build / "nuitka" / filename).write_bytes(b"compiled installer")
+
+    monkeypatch.setattr(build_hub, "_common_nuitka_command", lambda *a, **kw: ["nuitka"])
+    monkeypatch.setattr(build_hub, "_run", compile_installer)
+    monkeypatch.setattr(build_hub, "_validate_msvc_reports", lambda *a: [])
+    monkeypatch.setattr(build_hub, "_sign_windows_binary", lambda *a: None)
+    monkeypatch.setattr(build_hub, "_validate_windows_pe", lambda *a: None)
+    build_hub._build_installer(source, build, stage, release_dir=release, build_env={})
+    suffix = ".exe" if sys.platform == "win32" else ""
+    artifact = release / f"InfernuxHubInstaller-0.4.0-{build_hub.host_platform_id()}{suffix}"
+    assert artifact.read_bytes() == b"compiled installer"
+    assert sibling.read_bytes() == b"keep"
+    assert set(release.iterdir()) == {artifact, sibling}
+    assert not (stage / "installer").exists()
 
 
 def test_msbuild_generator_is_required_on_windows(monkeypatch: pytest.MonkeyPatch):
@@ -62,19 +131,17 @@ def test_hub_build_embeds_the_private_runtime_bundle(
         "owner": "Infernux Hub",
         "kind": "private-python-runtime",
         "python_version": PYTHON_VERSION,
+        "python_series": DEFAULT_PYTHON_RUNTIME.series,
         "source_archive": archive.name,
         "source_archive_sha256": archive.sha256,
     }
     with zipfile.ZipFile(runtime_bundle, "w") as bundle:
         bundle.writestr(
-            "python312/.infernux-private-python-runtime.json",
+            f"{DEFAULT_PYTHON_RUNTIME.directory_name}/.infernux-private-python-runtime.json",
             json.dumps(marker),
         )
     (packaging_dir / "resources").mkdir(parents=True)
     (packaging_dir / "resources" / "icon.png").write_bytes(b"icon")
-    (packaging_dir / "resources" / "hub_notifications.json").write_text(
-        '{"schema": 1, "notifications": []}\n', encoding="utf-8"
-    )
     (packaging_dir / "launcher.py").write_text("pass\n", encoding="utf-8")
 
     build_dir = tmp_path / "build"
@@ -106,14 +173,14 @@ def test_hub_build_embeds_the_private_runtime_bundle(
 
     assert captured
     assert any(
+        argument.endswith("=InfernuxHubData/uninstaller/hub_uninstall.ps1")
+        for argument in captured[0]
+    )
+    assert any(
         argument.endswith(
             "=InfernuxHubData/runtime/runtime_bundle.zip"
         )
         and str(runtime_bundle) in argument
-        for argument in captured[0]
-    )
-    assert any(
-        argument.endswith("=InfernuxHubData/hub_notifications.json")
         for argument in captured[0]
     )
 
@@ -124,19 +191,51 @@ def test_hub_build_rejects_a_stale_private_runtime_bundle(tmp_path: Path):
     runtime_bundle.parent.mkdir(parents=True)
     with zipfile.ZipFile(runtime_bundle, "w") as bundle:
         bundle.writestr(
-            "python312/.infernux-private-python-runtime.json",
+            f"{DEFAULT_PYTHON_RUNTIME.directory_name}/.infernux-private-python-runtime.json",
             json.dumps(
                 {
                     "owner": "Infernux Hub",
                     "kind": "private-python-runtime",
-                    "python_version": "3.12.8",
-                    "source_archive": "python-3.12.8-amd64.exe",
+                    "python_version": "3.11.9",
+                    "python_series": "3.11",
+                    "source_archive": "python-3.11.9-amd64.exe",
                     "source_archive_sha256": "revoked-installer",
                 }
             ),
         )
 
     with pytest.raises(RuntimeError, match="runtime bundle is stale"):
+        build_hub._build_hub(
+            source_root,
+            tmp_path / "build",
+            tmp_path / "dist",
+            cmake_generator="Visual Studio 17 2022",
+            build_env=None,
+            tools=None,
+        )
+
+
+def test_hub_build_rejects_extra_legacy_runtime_payload(tmp_path: Path):
+    source_root = tmp_path / "source"
+    runtime_bundle = tmp_path / "dist" / "runtime" / "runtime_bundle.zip"
+    runtime_bundle.parent.mkdir(parents=True)
+    archive = runtime_archive_for_machine()
+    marker = {
+        "owner": "Infernux Hub",
+        "kind": "private-python-runtime",
+        "python_version": PYTHON_VERSION,
+        "python_series": DEFAULT_PYTHON_RUNTIME.series,
+        "source_archive": archive.name,
+        "source_archive_sha256": archive.sha256,
+    }
+    with zipfile.ZipFile(runtime_bundle, "w") as bundle:
+        bundle.writestr(
+            f"{DEFAULT_PYTHON_RUNTIME.directory_name}/.infernux-private-python-runtime.json",
+            json.dumps(marker),
+        )
+        bundle.writestr("python311/python.exe", b"non-target runtime")
+
+    with pytest.raises(RuntimeError, match="contains files outside"):
         build_hub._build_hub(
             source_root,
             tmp_path / "build",
@@ -177,6 +276,21 @@ def test_msvc_report_validation_accepts_only_msvc(tmp_path: Path):
 )
 def test_mingw_paths_are_removed_from_release_environment(path: str, expected: bool):
     assert build_hub._is_mingw_path(path) is expected
+
+
+def test_nuitka_build_uses_an_ascii_temporary_directory():
+    build_dir = Path(r"C:\Users\测试\source\build")
+    build_env = {
+        "ProgramData": r"C:\ProgramData",
+        "TEMP": r"C:\Users\测试\AppData\Local\Temp",
+    }
+
+    result = build_hub._nuitka_temp_directory(build_env, build_dir)
+
+    str(result).encode("ascii")
+    assert PureWindowsPath(result).is_relative_to(
+        PureWindowsPath(r"C:\ProgramData\Infernux\BuildTemp")
+    )
 
 
 @pytest.mark.parametrize(

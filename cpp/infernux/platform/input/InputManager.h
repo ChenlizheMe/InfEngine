@@ -20,8 +20,6 @@
 
 #pragma once
 
-#include <SDL3/SDL.h>
-
 #include <array>
 #include <cstdint>
 #include <string>
@@ -29,6 +27,10 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+union SDL_Event;
+struct SDL_Window;
+struct SDL_Sensor;
 
 namespace infernux
 {
@@ -38,6 +40,64 @@ static constexpr int INPUT_MAX_KEYS = 512;
 
 /// Maximum number of mouse buttons tracked (SDL supports up to 5, reserve 8).
 static constexpr int INPUT_MAX_MOUSE_BUTTONS = 8;
+
+enum class TouchPhase : uint8_t
+{
+    Began,
+    Moved,
+    Stationary,
+    Ended,
+    Canceled,
+};
+
+enum class MotionSensorType : uint8_t
+{
+    Accelerometer,
+    Gyroscope,
+};
+
+struct AccelerationEvent
+{
+    std::array<float, 3> acceleration{};
+    float deltaTime = 0.0f;
+};
+
+struct TouchState
+{
+    uint64_t touchId = 0;
+    uint64_t fingerId = 0;
+    uint64_t timestampNs = 0;
+    uint32_t windowId = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float deltaX = 0.0f;
+    float deltaY = 0.0f;
+    float deltaTime = 0.0f;
+    float pressure = 0.0f;
+    float contactWidth = 0.0f;
+    float contactHeight = 0.0f;
+    bool isPrimary = false;
+    std::string cancelReason;
+    TouchPhase phase = TouchPhase::Stationary;
+};
+
+struct ScreenState
+{
+    uint64_t revision = 0;
+    int logicalWidth = 1;
+    int logicalHeight = 1;
+    int framebufferWidth = 1;
+    int framebufferHeight = 1;
+    float pixelRatio = 1.0f;
+    int safeAreaX = 0;
+    int safeAreaY = 0;
+    int safeAreaWidth = 1;
+    int safeAreaHeight = 1;
+    int keyboardInset = 0;
+    bool keyboardInsetKnown = false;
+    bool focused = true;
+    bool occluded = false;
+};
 
 /**
  * @class InputManager
@@ -58,8 +118,40 @@ class InputManager
     /// @brief Begin a new input frame. Clears transition edges and deltas.
     void BeginFrame();
 
+    /// @brief Monotonic input-frame identity used by higher-level action maps.
+    [[nodiscard]] uint64_t GetFrameIndex() const noexcept
+    {
+        return m_frameIndex;
+    }
+
     /// @brief Feed an SDL event into the input state.
     void ProcessSDLEvent(const SDL_Event &event);
+
+    // ---- Platform-neutral event ingestion ----
+    // Window-system adapters translate their native events once and feed this
+    // semantic layer. Web, Android, and desktop therefore share the exact same
+    // held/edge/touch lifecycle instead of maintaining parallel input models.
+    void ProcessKeyEvent(int scancode, bool pressed);
+    void ProcessPointerButtonEvent(int button, bool pressed);
+    void ProcessPointerMotionEvent(float x, float y, float deltaX, float deltaY);
+    void ProcessScrollEvent(float deltaX, float deltaY);
+    void ProcessTextInputEvent(const std::string &text);
+    /// Feed one motion-sensor sample. Accelerometer values use SI m/s²;
+    /// gyroscope values use radians per second.
+    void ProcessMotionSensorEvent(MotionSensorType type, uint64_t timestampNs, float x, float y, float z);
+    void ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64_t timestampNs, uint32_t windowId, float x,
+                           float y, float deltaX, float deltaY, float pressure, TouchPhase phase,
+                           float contactWidth = 0.0f, float contactHeight = 0.0f, bool isPrimary = false,
+                           const std::string &cancelReason = {});
+    void ProcessFocusEvent(bool focused);
+    void ProcessScreenMetrics(int logicalWidth, int logicalHeight, int framebufferWidth, int framebufferHeight,
+                              float pixelRatio, int safeAreaX, int safeAreaY, int safeAreaWidth, int safeAreaHeight,
+                              bool keyboardInsetKnown = false, int keyboardInset = 0);
+
+    /// Open the first platform accelerometer and gyroscope exposed by SDL.
+    /// Missing hardware is a supported capability state, not an initialization error.
+    void InitializeMotionSensors();
+    void ShutdownMotionSensors();
 
     /// @brief Mark a trusted synthetic pointer position for the current GUI frame.
     ///
@@ -77,10 +169,23 @@ class InputManager
     /// normal desktop interaction, such as native file dialogs.
     void MarkSyntheticInputForFrame();
 
+    /// @brief Track trusted automation-held state without claiming OS or editor focus.
+    ///
+    /// Synthetic key/button presses can span many rendered frames. Keeping their
+    /// ownership separate from the ordinary SDL held-state lets gameplay accept
+    /// MCP input while the Editor remains in the background.
+    void TrackSyntheticEvent(const SDL_Event &event);
+
     /// @brief True when at least one trusted synthetic event was handled this frame.
     [[nodiscard]] bool IsSyntheticInputFrame() const
     {
         return m_syntheticInputThisFrame;
+    }
+
+    /// @brief True while trusted automation supplied this frame's input or holds a control.
+    [[nodiscard]] bool HasSyntheticGameplayInput() const
+    {
+        return m_syntheticInputThisFrame || m_syntheticHeldCount != 0;
     }
 
     // ---- Keyboard queries (Unity: Input.GetKey / GetKeyDown / GetKeyUp) ----
@@ -165,12 +270,67 @@ class InputManager
         return m_inputString;
     }
 
-    // ---- Touch (placeholder for future mobile support) ----
+    /// @brief Ask the current platform window to begin committed text input.
+    ///
+    /// Desktop and Android use SDL's platform text-input bridge. Browser hosts
+    /// install a DOM-backed runtime service and keep this logical state in sync.
+    bool StartTextInput();
 
-    /// @brief Number of active touch contacts this frame.
+    /// @brief End platform text input and dismiss its software keyboard.
+    void StopTextInput();
+
+    /// @brief True while gameplay requested platform text input.
+    [[nodiscard]] bool IsTextInputActive() const
+    {
+        return m_textInputActive;
+    }
+
+    // ---- Touch ----
+
+    /// @brief Number of touch contacts reported by the current frame snapshot.
     [[nodiscard]] int GetTouchCount() const
     {
-        return m_touchCount;
+        return static_cast<int>(m_touches.size());
+    }
+
+    /// @brief Return one stable-indexed touch from the current frame snapshot.
+    [[nodiscard]] const TouchState &GetTouch(int index) const;
+
+    /// @brief Return every touch in first-contact order for this frame.
+    [[nodiscard]] const std::vector<TouchState> &GetTouches() const
+    {
+        return m_touches;
+    }
+
+    [[nodiscard]] bool HasAccelerometer() const noexcept
+    {
+        return m_accelerometerAvailable;
+    }
+
+    [[nodiscard]] bool HasGyroscope() const noexcept
+    {
+        return m_gyroscopeAvailable;
+    }
+
+    [[nodiscard]] const std::array<float, 3> &GetAcceleration() const noexcept
+    {
+        return m_acceleration;
+    }
+
+    [[nodiscard]] const std::array<float, 3> &GetGyroscopeRotationRate() const noexcept
+    {
+        return m_gyroscopeRotationRate;
+    }
+
+    [[nodiscard]] const std::vector<AccelerationEvent> &GetAccelerationEvents() const noexcept
+    {
+        return m_accelerationEvents;
+    }
+
+    /// @brief Current logical/framebuffer/safe-area snapshot for the game window.
+    [[nodiscard]] const ScreenState &GetScreenState() const
+    {
+        return m_screenState;
     }
 
     // ---- File drop (OS drag-drop) ----
@@ -259,20 +419,40 @@ class InputManager
     float m_syntheticMouseY = 0.f;
     bool m_hasSyntheticMousePositionThisFrame = false;
     bool m_syntheticInputThisFrame = false;
+    std::array<uint8_t, INPUT_MAX_KEYS> m_syntheticKeys{};
+    std::array<uint8_t, INPUT_MAX_MOUSE_BUTTONS> m_syntheticMouseButtons{};
+    uint32_t m_syntheticHeldCount = 0;
 
     std::string m_inputString;
-    int m_touchCount = 0;
+    std::vector<TouchState> m_touches;
+    std::vector<AccelerationEvent> m_accelerationEvents;
     std::vector<std::string> m_droppedFiles;
+
+    std::array<float, 3> m_acceleration{};
+    std::array<float, 3> m_gyroscopeRotationRate{};
+    SDL_Sensor *m_accelerometer = nullptr;
+    SDL_Sensor *m_gyroscope = nullptr;
+    uint32_t m_accelerometerId = 0;
+    uint32_t m_gyroscopeId = 0;
+    uint64_t m_lastAccelerationTimestampNs = 0;
+    bool m_accelerometerAvailable = false;
+    bool m_gyroscopeAvailable = false;
 
     SDL_Window *m_window = nullptr;
     bool m_cursorLocked = false;
     bool m_editorMouseCaptured = false;
+    bool m_textInputActive = false;
+    ScreenState m_screenState;
+    uint64_t m_frameIndex = 0;
 
     // ---- Name → scancode lookup ----
     static std::unordered_map<std::string, int> s_nameToScancode;
     static bool s_nameTableBuilt;
     static void BuildNameTable();
 
+    void ResetPhysicalInputForFocusLoss();
+    void CancelActiveTouches(const std::string &reason);
+    void RefreshScreenState();
     void ApplyRelativeMouseMode();
 };
 

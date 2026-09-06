@@ -11,13 +11,23 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from Infernux.engine import player_package_native
+from Infernux.engine.player_package_native import read_entry
 from Infernux.plugins import InxPackage, PluginManager
 from Infernux.plugins.content import parse_markdown_blocks
 from Infernux.plugins.official import install_default_libraries
+
+
+@pytest.fixture(autouse=True)
+def _isolated_package_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "INFERNUX_PACKAGE_CACHE_ROOT",
+        str(tmp_path / "hub-package-cache"),
+    )
 
 
 def _native_available() -> bool:
@@ -28,20 +38,111 @@ def _native_available() -> bool:
         return False
 
 
+@pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
+def test_export_uses_writer_manifest_without_reading_its_own_package(tmp_path):
+    import Infernux.plugins.package as package_module
+
+    source = tmp_path / "author"
+    source.mkdir()
+    (source / "message.txt").write_text("exported text", encoding="utf-8")
+    with (
+        patch.object(package_module, "read_manifest", wraps=package_module.read_manifest) as manifests,
+        patch.object(package_module, "read_entry", wraps=package_module.read_entry) as entries,
+    ):
+        preview = InxPackage.export(
+            str(source), [str(source)], str(tmp_path / "Output.inxpkg")
+        )
+        assert (manifests.call_count, entries.call_count) == (0, 0)
+    assert preview == InxPackage.inspect(preview.package_path)
+
+
+@pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
+@pytest.mark.parametrize("worker", [False, True])
+def test_package_temporary_workspace_belongs_to_output(tmp_path, monkeypatch, worker):
+    import tempfile
+
+    source = tmp_path / "message.txt"
+    source.write_text("owned temporary data", encoding="utf-8")
+    destination = tmp_path / "output" / "probe.inxpkg"
+    workspaces = []
+    create = tempfile.TemporaryDirectory
+
+    def temporary_directory(*args, **kwargs):
+        workspace = create(*args, **kwargs)
+        workspaces.append(Path(workspace.name))
+        return workspace
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", temporary_directory)
+    if worker:
+        player_package_native.write_pack_isolated([("message.txt", source)], destination)
+    else:
+        InxPackage.export(str(tmp_path), [str(source)], str(destination))
+    assert workspaces
+    assert all(path.parent == destination.parent for path in workspaces)
+    assert all(not path.exists() for path in workspaces)
+
+
 def _source(path: Path, reference: str) -> Path:
     path.mkdir(parents=True)
-    (path / "InxPackage.json").write_text(
+    (path / "inx_package.json").write_text(
         json.dumps(
             {
                 "reference": reference,
                 "name": reference,
                 "version": "1.0.0",
-                "requirements": "requirements.txt",
             }
         ),
         encoding="utf-8",
     )
     return path
+
+
+@pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
+def test_repository_package_script_is_standalone_deterministic_and_native_compatible(
+    tmp_path,
+):
+    repository = Path(__file__).parents[2]
+    plugin_roots = tuple(
+        repository / "external" / "plugins" / name
+        for name in (
+            "infernux_android",
+            "infernux_linux",
+            "infernux_web",
+            "infernux_windows",
+        )
+    )
+    scripts = [(root / "package.py").read_bytes() for root in plugin_roots]
+    assert len({script.replace(b"\r\n", b"\n").rstrip(b"\n") for script in scripts}) == 1
+    assert b"from Infernux" not in scripts[0]
+    assert b"import Infernux" not in scripts[0]
+
+    outputs = (tmp_path / "first.inxpkg", tmp_path / "second.inxpkg")
+    for destination in outputs:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(plugin_roots[-1] / "package.py"),
+                str(destination),
+            ],
+            cwd=tmp_path,
+            env={"PATH": os.environ.get("PATH", "")},
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + "\n" + result.stderr
+        assert destination.is_file()
+
+    assert outputs[0].read_bytes() == outputs[1].read_bytes()
+    preview = InxPackage.inspect(str(outputs[0]))
+    assert preview.metadata["reference"] == "infernux/platform-windows"
+    assert preview.logical_entries
+    assert all(not path.startswith("README") for path in preview.logical_entries)
+    assert "package.py" not in preview.logical_entries
 
 
 @pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
@@ -66,7 +167,7 @@ def test_native_inxpackage_installs_only_explicit_nested_requirement(tmp_path):
     assert {item["reference"] for item in manager.registry.installed()} == {
         "native/parent"
     }
-    assert (project / "Assets/Plugins/native/parent/vendor/Child.inxpkg").is_file()
+    assert (project / "Assets/Plugins/vendor/Child.inxpkg").is_file()
     manager.uninstall("native/parent")
 
     (parent / "requirements.txt").write_text(
@@ -80,7 +181,7 @@ def test_native_inxpackage_installs_only_explicit_nested_requirement(tmp_path):
         "native/parent",
     }
     assert (
-        project / "Assets/Plugins/native/child/child.txt"
+        project / "Assets/Plugins/child.txt"
     ).read_text(encoding="utf-8") == "child payload"
     with pytest.raises(RuntimeError, match="required by"):
         manager.uninstall("native/child")
@@ -89,7 +190,7 @@ def test_native_inxpackage_installs_only_explicit_nested_requirement(tmp_path):
 
 
 @pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
-def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
+def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     tmp_path, monkeypatch
 ):
     repository = Path(__file__).parents[2]
@@ -105,7 +206,7 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
                 sys.executable,
                 "-m",
                 "pytest",
-                f"{Path(__file__).resolve()}::{test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls.__name__}",
+                f"{Path(__file__).resolve()}::{test_official_mcp_default_install_uninstall_reinstalls_on_restart.__name__}",
                 "-q",
             ],
             cwd=repository,
@@ -121,18 +222,28 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
         return
 
     resources = repository / "python" / "Infernux" / "resources"
-    artifact = resources / "official_packages" / "infernux.mcp.inxpkg"
+    artifact = resources / "infernux.mcp.inxpkg"
     preview = InxPackage.inspect(str(artifact))
     assert preview.metadata["reference"] == "infernux/mcp"
-    assert preview.metadata["format_version"] == 2
+    requirements = next(
+        item
+        for item in preview.file_records
+        if item["logical_path"] == "requirements.txt"
+    )
+    assert read_entry(
+        preview.package_path,
+        str(requirements["archive_path"]),
+    ).decode("utf-8").splitlines() == [
+        "mcp>=1.24,<2",
+        "fastmcp>=3,<4",
+    ]
+    assert "format_version" not in preview.metadata
     assert "preload" not in preview.metadata
     assert "plugin_root" not in preview.metadata
     assert {item["role"] for item in preview.file_records} == {"editor", "control"}
     assert {
         (page["id"], page.get("locale", "")) for page in preview.metadata["pages"]
     } >= {
-        ("intro", ""),
-        ("intro", "zh-CN"),
         ("operations", ""),
         ("operations", "zh-CN"),
         ("trust", ""),
@@ -141,20 +252,17 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
     assert {
         item["logical_path"]
         for item in preview.file_records
-        if item["logical_path"].startswith("InxPluginPages/media/")
+        if item["logical_path"].startswith("plugin_pages/media/")
     } >= {
-        "InxPluginPages/media/agent-loop.png",
-        "InxPluginPages/media/system-overview.png",
-        "InxPluginPages/media/trust-gates.png",
+        "plugin_pages/media/agent_loop.png",
+        "plugin_pages/media/system_overview.png",
+        "plugin_pages/media/trust_gates.png",
     }
 
     project = tmp_path / "project"
     (project / "Assets").mkdir(parents=True)
     (project / "Assets" / "protocol-probe.txt").write_text("probe", encoding="utf-8")
     (project / "ProjectSettings").mkdir()
-    mirrored = project / "Library" / "Resources" / "official_packages"
-    mirrored.mkdir(parents=True)
-    shutil.copy2(artifact, mirrored / artifact.name)
 
     monkeypatch.setattr(
         PluginManager,
@@ -197,24 +305,26 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
     assert states[0].loaded is True
     assert PluginManager.instance() is None
     assert (
-        project / "Packages/infernux/mcp/Editor/infernux_mcp/lifecycle.py"
+        project / "Packages/infernux/mcp/editor/infernux_mcp/lifecycle.py"
     ).is_file()
     assert (
-        project / "Packages/infernux/mcp/Editor/infernux_mcp/scene_operations.py"
+        project / "Packages/infernux/mcp/editor/infernux_mcp/scene_operations.py"
     ).is_file()
     assert (
-        project / "Packages/infernux/mcp/Editor/infernux_mcp/material_operations.py"
+        project / "Packages/infernux/mcp/editor/infernux_mcp/material_operations.py"
     ).is_file()
     assert {item["reference"] for item in manager.registry.available()} == {
-        "infernux/mcp"
+        "infernux/mcp",
+        "infernux/platform-android",
+        "infernux/platform-linux",
+        "infernux/platform-web",
+        "infernux/platform-windows",
     }
     record = manager.registry.installed_record("infernux/mcp")
     localized_pages = manager.content_pages(record, locale="zh")
     assert [page["id"] for page in localized_pages] == [
-        "intro",
         "operations",
         "trust",
-        "license",
     ]
     for page in localized_pages:
         for block in parse_markdown_blocks(page["content"]):
@@ -323,7 +433,7 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
         for item in authoring_result["data"]["operations"]
     )
     assert capabilities_result["ok"] is True
-    assert capabilities_result["data"]["operation_count"] == 80
+    assert capabilities_result["data"]["operation_count"] == 82
 
     manager.uninstall("infernux/mcp")
     assert manager.registry.installed() == ()
@@ -336,15 +446,17 @@ def test_official_mcp_default_install_uninstall_stays_absent_and_reinstalls(
         ".gemini/settings.json",
     ):
         assert not (project / discovery_path).exists()
-    assert not any(
-        name == "infernux_mcp" or name.startswith("infernux_mcp.")
-        for name in sys.modules
-    )
+    remaining_mcp_modules = {
+        name: str(getattr(module, "__file__", "") or "")
+        for name, module in sys.modules.items()
+        if name == "infernux_mcp" or name.startswith("infernux_mcp.")
+    }
+    assert not remaining_mcp_modules, remaining_mcp_modules
     manager = PluginManager.startup(str(project), runtime=False)
-    assert manager.registry.installed() == ()
-
-    reinstalled = manager.install_reference("infernux/mcp")
-    assert reinstalled.loaded is True
+    assert {
+        item["reference"] for item in manager.registry.installed()
+    } == {"infernux/mcp"}
+    assert manager.states["infernux/mcp"].loaded is True
     manager.uninstall("infernux/mcp")
     with socket.socket() as probe:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

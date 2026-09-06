@@ -313,7 +313,7 @@ class AnimClip2DEditorPanel(EditorPanel):
         service = AssetMutationService.instance()
         self._asset_mutation_service = service
         if service is not None:
-            service.add_listener(self._on_asset_changed)
+            service.add_observer(self._on_asset_changed)
         selection = SelectionService.instance()
         self._selection_service = selection
         selection.add_listener(self._on_global_selection_changed)
@@ -322,7 +322,7 @@ class AnimClip2DEditorPanel(EditorPanel):
     def on_disable(self):
         service = getattr(self, "_asset_mutation_service", None)
         if service is not None:
-            service.remove_listener(self._on_asset_changed)
+            service.remove_observer(self._on_asset_changed)
         self._asset_mutation_service = None
         selection = getattr(self, "_selection_service", None)
         if selection is not None:

@@ -1,5 +1,7 @@
 [CmdletBinding(SupportsShouldProcess)]
-param()
+param(
+    [switch]$LegacyStagingOnly
+)
 
 $ErrorActionPreference = 'Stop'
 $Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -14,6 +16,26 @@ function Remove-GeneratedPath([string]$Path) {
     if ($PSCmdlet.ShouldProcess($Resolved, 'Remove generated workspace output')) {
         Remove-Item -LiteralPath $Resolved -Recurse -Force
     }
+}
+
+# A Windows staging root passed verbatim into WSL can be materialized as a
+# malformed, repository-local directory (for example a Unicode-escaped form
+# of ``C:\_InxBuild``). It is always generated output. Resolve candidates from
+# the workspace itself and pass every removal through the same containment
+# check as the canonical output roots.
+$LegacyStagingRoots = @(
+    Get-ChildItem -LiteralPath $Root -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Name.EndsWith('_InxBuild', [StringComparison]::OrdinalIgnoreCase) -or
+            $_.Name.EndsWith('_InfBuild', [StringComparison]::OrdinalIgnoreCase)
+        }
+)
+foreach ($LegacyStagingRoot in $LegacyStagingRoots) {
+    Remove-GeneratedPath $LegacyStagingRoot.FullName
+}
+if ($LegacyStagingOnly) {
+    Write-Host 'Legacy repository-local staging outputs cleaned.' -ForegroundColor Green
+    return
 }
 
 # Canonical policy:

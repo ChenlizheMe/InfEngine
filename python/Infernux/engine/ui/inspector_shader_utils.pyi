@@ -43,7 +43,7 @@ def get_shader_file_path(shader_id: str, ext: str) -> str:
     ...
 
 def shader_ref_id(value: object) -> str:
-    """Return the shader ID from a legacy string or structured reference."""
+    """Return the compiler shader ID from a catalog value or asset reference."""
     ...
 
 def make_shader_reference(value: object, ext: str) -> Dict[str, str]:

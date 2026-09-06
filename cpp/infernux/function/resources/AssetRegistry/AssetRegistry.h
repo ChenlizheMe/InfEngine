@@ -49,6 +49,10 @@ struct PublishedAssetVersion
 class AssetLoadTicket final
 {
   public:
+    void Wait() const
+    {
+        JobSystem::Get().WaitPassive(m_job);
+    }
     [[nodiscard]] const std::string &GetGuid() const noexcept
     {
         return m_guid;
@@ -92,6 +96,10 @@ class AssetLoadTicket final
 class TextureUploadStagingTicket final
 {
   public:
+    void Wait() const
+    {
+        JobSystem::Get().WaitPassive(m_job);
+    }
     [[nodiscard]] const std::string &GetGuid() const noexcept
     {
         return m_guid;
@@ -218,8 +226,8 @@ class AssetRegistry
     TryConsumeTextureUploadStaging(const std::shared_ptr<TextureUploadStagingTicket> &ticket);
     void DrainPendingLoads() noexcept;
 
-    /// Patch path-bearing state after AssetDatabase has committed a GUID-stable move.
-    void UpdateLoadedAssetPath(const std::string &oldPath, const std::string &newPath);
+    /// Update path-bearing payload state after a GUID-stable catalog move.
+    void UpdateLoadedAssetPath(const std::string &guid, const std::string &newPath);
 
     // ── Built-in material helpers (named, no GUID) ───────────────────────────
 

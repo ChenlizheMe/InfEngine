@@ -5,7 +5,6 @@
 
 using infernux::MaterialPassPipelineDescriptor;
 using infernux::MaterialPassPipelineDescriptorHash;
-using infernux::MaterialPassRenderingMode;
 using infernux::ShaderCompileTarget;
 using infernux::rhi::PixelFormat;
 using infernux::rhi::SampleCount;
@@ -105,83 +104,58 @@ int main()
     invalidReadOnlyDepth.depthReadOnly = true;
     assert(!invalidReadOnlyDepth.IsValid());
 
-    auto dynamicForward = forward;
-    dynamicForward.renderingMode = MaterialPassRenderingMode::DynamicRendering;
-    assert(dynamicForward.IsValid());
-    assert(dynamicForward != forward);
-    assert(MaterialPassPipelineDescriptorHash{}(dynamicForward) != MaterialPassPipelineDescriptorHash{}(forward));
-    const auto forwardSignature = dynamicForward.RenderingSignature();
+    const auto forwardSignature = forward.RenderingSignature();
     assert(forwardSignature.IsValid());
     assert(forwardSignature.colorFormatCount == 1);
     assert(forwardSignature.colorFormats[0] == PixelFormat::RGBA16SFloat);
     assert(forwardSignature.depthFormat == PixelFormat::D32SFloat);
     assert(forwardSignature.samples == SampleCount::Four);
-    assert(dynamicForward.MatchesRenderingSignature(forwardSignature));
+    assert(forward.MatchesRenderingSignature(forwardSignature));
     auto mismatchedForwardSignature = forwardSignature;
     mismatchedForwardSignature.samples = SampleCount::One;
-    assert(!dynamicForward.MatchesRenderingSignature(mismatchedForwardSignature));
+    assert(!forward.MatchesRenderingSignature(mismatchedForwardSignature));
 
-    auto dynamicGBuffer = gbuffer;
-    dynamicGBuffer.renderingMode = MaterialPassRenderingMode::DynamicRendering;
-    assert(dynamicGBuffer.IsValid());
-    assert(dynamicGBuffer != gbuffer);
-    assert(MaterialPassPipelineDescriptorHash{}(dynamicGBuffer) != MaterialPassPipelineDescriptorHash{}(gbuffer));
-    const auto gbufferSignature = dynamicGBuffer.RenderingSignature();
+    const auto gbufferSignature = gbuffer.RenderingSignature();
     assert(gbufferSignature.IsValid());
     assert(gbufferSignature.colorFormatCount == gbuffer.colorFormats.size());
     assert(gbufferSignature.colorFormats[4] == PixelFormat::RG32UInt);
     assert(gbufferSignature.samples == SampleCount::One);
 
-    auto dynamicShadow = depth;
-    dynamicShadow.target = ShaderCompileTarget::Shadow;
-    dynamicShadow.renderingMode = MaterialPassRenderingMode::DynamicRendering;
-    assert(dynamicShadow.IsValid());
-    assert(dynamicShadow.RenderingSignature().colorFormatCount == 0);
-    assert(dynamicShadow.RenderingSignature().depthFormat == PixelFormat::D32SFloat);
+    auto shadow = depth;
+    shadow.target = ShaderCompileTarget::Shadow;
+    assert(shadow.IsValid());
+    assert(shadow.RenderingSignature().colorFormatCount == 0);
+    assert(shadow.RenderingSignature().depthFormat == PixelFormat::D32SFloat);
 
-    auto dynamicPicking = picking;
-    dynamicPicking.renderingMode = MaterialPassRenderingMode::DynamicRendering;
-    assert(dynamicPicking.IsValid());
-    assert(dynamicPicking.RenderingSignature().colorFormats[0] == PixelFormat::RG32UInt);
-    assert(dynamicPicking.RenderingSignature().depthFormat == PixelFormat::D32SFloat);
+    assert(picking.RenderingSignature().colorFormats[0] == PixelFormat::RG32UInt);
+    assert(picking.RenderingSignature().depthFormat == PixelFormat::D32SFloat);
 
-    auto dynamicMotion = motion;
-    dynamicMotion.renderingMode = MaterialPassRenderingMode::DynamicRendering;
-    dynamicMotion.depthReadOnly = true;
-    assert(dynamicMotion.IsValid());
-    assert(dynamicMotion.RenderingSignature().colorFormats[0] == PixelFormat::RG16SFloat);
-    assert(dynamicMotion.RenderingSignature().depthFormat == PixelFormat::D32SFloat);
+    auto readOnlyMotion = motion;
+    readOnlyMotion.depthReadOnly = true;
+    assert(readOnlyMotion.IsValid());
+    assert(readOnlyMotion.RenderingSignature().colorFormats[0] == PixelFormat::RG16SFloat);
+    assert(readOnlyMotion.RenderingSignature().depthFormat == PixelFormat::D32SFloat);
 
-    infernux::rhi::GraphicsPipelineDesc dynamicPipeline;
-    dynamicPipeline.samples = dynamicForward.samples;
-    dynamicPipeline.colorTargets[0].format = dynamicForward.colorFormats[0];
-    dynamicPipeline.colorTargetCount = 1;
-    dynamicPipeline.depth.testEnabled = true;
-    dynamicForward.ApplyRenderingContract(dynamicPipeline, {77, 1});
-    assert(dynamicPipeline.useDynamicRendering);
-    assert(!dynamicPipeline.renderTargetLayout.IsValid());
-    assert(dynamicPipeline.HasValidRenderingContract());
+    infernux::rhi::GraphicsPipelineDesc pipeline;
+    pipeline.samples = forward.samples;
+    pipeline.colorTargets[0].format = forward.colorFormats[0];
+    pipeline.colorTargetCount = 1;
+    pipeline.depth.testEnabled = true;
+    forward.ApplyRenderingContract(pipeline);
+    assert(pipeline.useDynamicRendering);
+    assert(!pipeline.renderTargetLayout.IsValid());
+    assert(pipeline.HasValidRenderingContract());
 
-    infernux::rhi::GraphicsPipelineDesc legacyPipeline = dynamicPipeline;
-    legacyPipeline.useDynamicRendering = false;
-    forward.ApplyRenderingContract(legacyPipeline, {77, 1});
-    assert(!legacyPipeline.useDynamicRendering);
-    assert(legacyPipeline.renderTargetLayout.IsValid());
-    assert(legacyPipeline.renderingSignature.IsEmpty());
-    assert(legacyPipeline.HasValidRenderingContract());
-    legacyPipeline.renderingSignature = forwardSignature;
-    assert(!legacyPipeline.HasValidRenderingContract());
+    infernux::rhi::GraphicsPipelineDesc gbufferPipeline;
+    gbufferPipeline.samples = gbuffer.samples;
+    gbufferPipeline.colorTargetCount = static_cast<uint32_t>(gbuffer.colorFormats.size());
+    for (size_t index = 0; index < gbuffer.colorFormats.size(); ++index)
+        gbufferPipeline.colorTargets[index].format = gbuffer.colorFormats[index];
+    gbufferPipeline.depth.testEnabled = true;
+    gbuffer.ApplyRenderingContract(gbufferPipeline);
+    assert(gbufferPipeline.HasValidRenderingContract());
 
-    infernux::rhi::GraphicsPipelineDesc dynamicGBufferPipeline;
-    dynamicGBufferPipeline.samples = dynamicGBuffer.samples;
-    dynamicGBufferPipeline.colorTargetCount = static_cast<uint32_t>(dynamicGBuffer.colorFormats.size());
-    for (size_t index = 0; index < dynamicGBuffer.colorFormats.size(); ++index)
-        dynamicGBufferPipeline.colorTargets[index].format = dynamicGBuffer.colorFormats[index];
-    dynamicGBufferPipeline.depth.testEnabled = true;
-    dynamicGBuffer.ApplyRenderingContract(dynamicGBufferPipeline, {99, 1});
-    assert(dynamicGBufferPipeline.HasValidRenderingContract());
-
-    auto depthStencil = dynamicForward;
+    auto depthStencil = forward;
     depthStencil.depthFormat = PixelFormat::D24UNormS8UInt;
     const auto depthStencilSignature = depthStencil.RenderingSignature();
     assert(depthStencilSignature.depthFormat == PixelFormat::D24UNormS8UInt);

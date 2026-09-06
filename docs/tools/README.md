@@ -25,3 +25,22 @@ The GitHub workflows in `.github/workflows/build-wiki.yml` and
 `.github/workflows/website-quality.yml` define the authoritative execution
 order. When adding a new generator, add its check to the quality workflow and
 document whether it mutates a committed artifact.
+
+## Release versions
+
+The current website, API baseline, Hub catalog, and engine use the same version
+from `pyproject.toml`. Keep older release notes, download options, and API snapshots
+as history; do not relabel their artifacts.
+
+Generate `release.json` and `hub-catalog.json` from the versioned Windows/Linux
+distribution directory with `python scripts/release/build_release_catalog.py
+--release-dir dist/releases/<version>`. The optional `--linux-inventory` accepts
+a verified CI archive inventory (`files` mapping archive paths to byte sizes,
+plus its parsed Hub `manifest`). Artifact filenames and sizes come from those
+inputs, not from the previous release.
+
+Before publication, `published_at` is null and current-release downloads stay
+disabled. After uploading the matching GitHub Release assets, rerun the generator
+with its actual `--published-at` timestamp, regenerate release notes and the
+Service Worker, and deploy the catalogs. Changing version metadata alone does
+not upload binaries or publish a release.

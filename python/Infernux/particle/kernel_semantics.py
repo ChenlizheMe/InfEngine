@@ -14,7 +14,7 @@ from Infernux.graph.types import (
     TypeRef,
     ValueType,
 )
-from Infernux.graph.ramp import Curve, Gradient
+from Infernux.graph.ramp import AnimationCurve, Gradient
 
 
 class KernelSemanticError(ValueError):
@@ -660,7 +660,7 @@ def _validate_opcode_types(
         if result_type != f32 or operands != (f32,):
             raise KernelSemanticError("curve sampling requires one f32 input and an f32 result")
         try:
-            Curve.from_dict(immediates["curve"])
+            AnimationCurve.from_dict(immediates["curve"])
         except (TypeError, ValueError) as exc:
             raise KernelSemanticError(f"invalid curve literal: {exc}") from exc
     elif opcode == "sample_curve_parameter":

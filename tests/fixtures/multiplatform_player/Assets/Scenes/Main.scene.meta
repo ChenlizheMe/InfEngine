@@ -1,0 +1,52 @@
+{
+    "metadata": {
+        "character_count": {
+            "type": "size_t",
+            "value": 6973
+        },
+        "content_hash": {
+            "type": "string",
+            "value": "16000c7c4ba7d590"
+        },
+        "encoding": {
+            "type": "string",
+            "value": "ascii"
+        },
+        "file_extension": {
+            "type": "string",
+            "value": ".scene"
+        },
+        "file_path": {
+            "type": "string",
+            "value": "E:/project/InfEngine/tests/fixtures/multiplatform_player/Assets/Scenes/Main.scene"
+        },
+        "file_size": {
+            "type": "size_t",
+            "value": 6973
+        },
+        "file_type": {
+            "type": "string",
+            "value": "text"
+        },
+        "guid": {
+            "type": "string",
+            "value": "04000000000000000000000000000001"
+        },
+        "is_readable": {
+            "type": "bool",
+            "value": true
+        },
+        "last_modified": {
+            "type": "string",
+            "value": "1788264744"
+        },
+        "line_count": {
+            "type": "size_t",
+            "value": 259
+        },
+        "resource_type": {
+            "type": "enum infernux::ResourceType",
+            "value": "DefaultText"
+        }
+    }
+}

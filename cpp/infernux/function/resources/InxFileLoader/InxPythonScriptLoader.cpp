@@ -9,13 +9,11 @@ namespace infernux
 
 InxPythonScriptLoader::InxPythonScriptLoader()
 {
-    INXLOG_DEBUG("InxPythonScriptLoader initialized");
 }
 
 void InxPythonScriptLoader::CreateMeta(const char *content, size_t contentSize, const std::string &filePath,
                                        InxResourceMeta &metaData) const
 {
-    INXLOG_DEBUG("Creating metadata for Python script: ", filePath);
 
     // Initialize with Script type
     metaData.Init(content, contentSize, filePath, ResourceType::Script);
@@ -29,8 +27,6 @@ void InxPythonScriptLoader::CreateMeta(const char *content, size_t contentSize, 
     metaData.AddMetadata("file_extension", extension);
     metaData.AddMetadata("language", std::string("python"));
     metaData.AddMetadata("file_size", contentSize);
-
-    INXLOG_DEBUG("Python script metadata created: ", FromFsPath(path.filename()));
 }
 
 } // namespace infernux

@@ -173,38 +173,31 @@ class RuntimeTypeDispatchDescriptor:
         return None if descriptor is None else descriptor.bind(instance)
 
 
-def _build_retired_type_descriptor(
-    component_type: type,
-    *,
-    epoch_id: int,
-) -> RuntimeTypeDispatchDescriptor:
-    """Build the inert compatibility descriptor used after type retirement.
-
-    A retired class object can remain alive through an old frame or callback,
-    but a cache miss in the current epoch must never rediscover and execute
-    its old class body.  The inert descriptor keeps that failure explicit.
-    """
-    return RuntimeTypeDispatchDescriptor(
-        component_type=component_type,
-        epoch_id=int(epoch_id),
-        phase_methods=(None, None, None),
-        methods={},
-    )
-
-
 @dataclass(frozen=True)
 class RuntimeRevisionEpoch:
     """An immutable publication of all runtime dispatch descriptors."""
 
     epoch_id: int
     descriptors: Mapping[type, RuntimeTypeDispatchDescriptor]
+    retired_types: frozenset[type] = frozenset()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "epoch_id", int(self.epoch_id))
         object.__setattr__(self, "descriptors", MappingProxyType(dict(self.descriptors)))
+        object.__setattr__(self, "retired_types", frozenset(self.retired_types))
 
     def descriptor_for(self, component_type: type) -> Optional[RuntimeTypeDispatchDescriptor]:
         return self.descriptors.get(component_type)
+
+    def require_descriptor(self, component_type: type) -> RuntimeTypeDispatchDescriptor:
+        descriptor = self.descriptor_for(component_type)
+        if descriptor is not None:
+            return descriptor
+        status = "retired" if component_type in self.retired_types else "unpublished"
+        raise RuntimeError(
+            f"runtime component type is {status}: "
+            f"{getattr(component_type, '__qualname__', component_type)}"
+        )
 
     def has_phase(self, component_type: type, phase: str) -> bool:
         descriptor = self.descriptor_for(component_type)
@@ -233,7 +226,7 @@ class CallbackResolution:
 
     @property
     def resolved(self) -> bool:
-        return self.status in {"resolved", "legacy_pinned"}
+        return self.status in {"resolved", "direct"}
 
 
 @dataclass(frozen=True)
@@ -251,8 +244,8 @@ class ReloadableCallbackRef:
 
     Bound method objects are deliberately not stored.  Resolution obtains the
     current epoch descriptor and creates a short-lived bound method only for
-    the invocation.  Arbitrary functions, lambdas and closures remain pinned
-    legacy callables with their creation epoch recorded for diagnostics.
+    the invocation. Arbitrary functions, lambdas, closures and bound methods
+    on non-component owners are direct callables outside reload semantics.
     """
 
     owner_ref: Optional[weakref.ReferenceType[Any]]
@@ -261,13 +254,11 @@ class ReloadableCallbackRef:
     method_name: str
     expected_signature: str
     registration_epoch: int
-    legacy_callable: Optional[Callable[..., Any]] = None
-    pinned_revision: Optional[int] = None
-    fallback_descriptor: Optional[RuntimeTypeDispatchDescriptor] = None
+    direct_callable: Optional[Callable[..., Any]] = None
 
     @property
-    def is_legacy(self) -> bool:
-        return self.legacy_callable is not None
+    def is_direct(self) -> bool:
+        return self.direct_callable is not None
 
     @classmethod
     def normalize(
@@ -291,15 +282,13 @@ class ReloadableCallbackRef:
                 method_name="",
                 expected_signature=str(expected_signature or _safe_signature(callback)),
                 registration_epoch=registration_epoch,
-                legacy_callable=callback,
-                pinned_revision=registration_epoch,
+                direct_callable=callback,
             )
 
         # Only InxComponent instances have a stable runtime identity and an
         # epoch descriptor that can safely re-resolve their methods.  A plain
-        # Python object's bound method remains a legacy pinned callback: this
-        # preserves the old UI/event lifetime semantics and supports owners
-        # that cannot be weak-referenced.
+        # Python object's bound method is a direct callback because its owner
+        # has no component identity or epoch-published method table.
         try:
             from Infernux.components.component import InxComponent
 
@@ -314,8 +303,7 @@ class ReloadableCallbackRef:
                 method_name=str(getattr(function, "__name__", "") or ""),
                 expected_signature=str(expected_signature or _safe_signature(callback)),
                 registration_epoch=registration_epoch,
-                legacy_callable=callback,
-                pinned_revision=registration_epoch,
+                direct_callable=callback,
             )
 
         try:
@@ -327,7 +315,7 @@ class ReloadableCallbackRef:
         method_name = str(getattr(function, "__name__", "") or "")
         if not method_name:
             raise TypeError("bound callback has no stable method name")
-        descriptor = _descriptor_for_type(selected_epoch, type(owner))
+        descriptor = selected_epoch.require_descriptor(type(owner))
         method = descriptor.methods.get(method_name)
         if method is None:
             raise ValueError(
@@ -346,22 +334,11 @@ class ReloadableCallbackRef:
             method_name=method_name,
             expected_signature=expected,
             registration_epoch=registration_epoch,
-            fallback_descriptor=descriptor,
         )
 
     def resolve(self, epoch: Optional[RuntimeRevisionEpoch] = None) -> CallbackResolution:
-        if self.is_legacy:
-            selected_epoch = current_runtime_epoch() if epoch is None else epoch
-            message = ""
-            if (
-                self.pinned_revision is not None
-                and selected_epoch.epoch_id != self.pinned_revision
-            ):
-                message = (
-                    "legacy callback remains pinned to runtime epoch "
-                    f"{self.pinned_revision} while epoch {selected_epoch.epoch_id} is active"
-                )
-            return CallbackResolution("legacy_pinned", self.legacy_callable, message)
+        if self.is_direct:
+            return CallbackResolution("direct", self.direct_callable)
         owner = self.owner_ref() if self.owner_ref is not None else None
         if owner is None:
             return CallbackResolution("owner_unavailable", message="callback owner was collected")
@@ -371,18 +348,6 @@ class ReloadableCallbackRef:
             return CallbackResolution("owner_invalid", message="callback owner identity changed")
         selected_epoch = current_runtime_epoch() if epoch is None else epoch
         descriptor = selected_epoch.descriptor_for(type(owner))
-        if descriptor is None:
-            # A fallback is only valid for the exact epoch in which this
-            # reference was created.  Once a newer epoch is selected, a
-            # missing type is an explicit publication result, not permission
-            # to execute an old body.  This keeps removed callback contracts
-            # from silently surviving a reload.
-            fallback = self.fallback_descriptor
-            if (
-                fallback is not None
-                and selected_epoch.epoch_id == self.registration_epoch
-            ):
-                descriptor = fallback
         if descriptor is None or descriptor.component_type is not type(owner):
             return CallbackResolution(
                 "method_missing",
@@ -423,8 +388,8 @@ class ReloadableCallbackRef:
         return CallbackInvocation(self, resolution.status, resolution.message)
 
     def matches(self, callback: Callable[..., Any]) -> bool:
-        if self.is_legacy:
-            return self.legacy_callable is callback or self.legacy_callable == callback
+        if self.is_direct:
+            return self.direct_callable is callback or self.direct_callable == callback
         owner = getattr(callback, "__self__", None)
         function = getattr(callback, "__func__", None)
         return (
@@ -437,10 +402,10 @@ class ReloadableCallbackRef:
     def matches_owner_method(self, owner: Any, method_name: str) -> bool:
         """Match a persistent owner/path without inspecting the current body."""
         method_name = str(method_name or "")
-        if self.is_legacy:
+        if self.is_direct:
             callback = getattr(owner, method_name, None)
             return callable(callback) and (
-                self.legacy_callable is callback or self.legacy_callable == callback
+                self.direct_callable is callback or self.direct_callable == callback
             )
         return (
             owner is not None
@@ -491,8 +456,7 @@ class ReloadableCallbackRegistry:
         propagate_exceptions: bool = False,
     ) -> tuple[CallbackInvocation, ...]:
         # Resolve the epoch once per batch.  Callers that already captured an
-        # owner-safe-point epoch can pass it explicitly; legacy callers retain
-        # the previous current-epoch behavior.
+        # owner-safe-point epoch can pass it explicitly.
         selected_epoch = current_runtime_epoch() if epoch is None else epoch
         results = []
         for reference in tuple(self._callbacks):
@@ -517,7 +481,7 @@ class ReloadableCallbackRegistry:
     ) -> None:
         touched = set(component_types)
         for reference in tuple(self._callbacks):
-            if reference.is_legacy or reference.owner_type not in touched:
+            if reference.is_direct or reference.owner_type not in touched:
                 continue
             owner = reference.owner_ref() if reference.owner_ref is not None else None
             if owner is None or bool(getattr(owner, "_is_destroyed", False)):
@@ -541,16 +505,6 @@ def _owner_identity(owner: Any) -> RuntimeOwnerIdentity:
     )
 
 
-def _descriptor_for_type(
-    epoch: RuntimeRevisionEpoch,
-    component_type: type,
-) -> RuntimeTypeDispatchDescriptor:
-    descriptor = epoch.descriptor_for(component_type)
-    if descriptor is not None:
-        return descriptor
-    return build_type_dispatch_descriptor(component_type, epoch_id=epoch.epoch_id)
-
-
 def validate_runtime_callback_bindings(
     epoch: RuntimeRevisionEpoch,
     component_types: Iterable[type],
@@ -568,11 +522,6 @@ class RuntimeDispatchPublication:
         "after",
         "_defer_commit",
         "_published",
-        "_mirror_snapshots",
-        "_mirror_types",
-        "_retired_types",
-        "_instances_by_type",
-        "_sync_compatibility",
         "_scheduler_changes",
         "_scheduler_notified",
         "_rolled_back",
@@ -586,25 +535,12 @@ class RuntimeDispatchPublication:
         *,
         defer_commit: bool = False,
         published: bool = True,
-        mirror_snapshots: tuple[object, ...] = (),
-        mirror_types: tuple[type, ...] = (),
-        retired_types: tuple[type, ...] = (),
-        instances_by_type: Optional[Mapping[type, Iterable[Any]]] = None,
-        sync_compatibility: bool = True,
         scheduler_changes: tuple[object, ...] = (),
     ) -> None:
         self.before = before
         self.after = after
         self._defer_commit = bool(defer_commit)
         self._published = bool(published)
-        self._mirror_snapshots = mirror_snapshots
-        self._mirror_types = mirror_types
-        self._retired_types = retired_types
-        self._instances_by_type = {
-            component_type: tuple(values)
-            for component_type, values in (instances_by_type or {}).items()
-        }
-        self._sync_compatibility = bool(sync_compatibility)
         self._scheduler_changes = scheduler_changes
         self._scheduler_notified = False
         self._rolled_back = False
@@ -629,20 +565,8 @@ class RuntimeDispatchPublication:
                     raise RuntimeError(
                         "runtime dispatch publication lost its owner transaction ordering"
                     )
-                try:
-                    _apply_compatibility_publication(
-                        self.after,
-                        self._mirror_types,
-                        self._retired_types,
-                        self._instances_by_type,
-                        sync_compatibility=self._sync_compatibility,
-                    )
-                    _set_current_epoch(self.after)
-                    self._published = True
-                except Exception:
-                    _restore_mirror_snapshots(self._mirror_snapshots)
-                    self._published = False
-                    raise
+                _set_current_epoch(self.after)
+                self._published = True
         self._committed = True
         self._notify_scheduler_changes()
         _notify_coroutine_epoch(self.after)
@@ -665,7 +589,6 @@ class RuntimeDispatchPublication:
             # publication if a caller violates that contract.
             if self._published and _current_epoch is self.after:
                 _set_current_epoch(self.before)
-            _restore_mirror_snapshots(self._mirror_snapshots)
         if self._scheduler_notified:
             # The scheduler invalidation is deliberately symmetric: a
             # committed rollback is another topology/body publication from
@@ -677,11 +600,8 @@ class RuntimeDispatchPublication:
                         phase_presence_changed=phase_presence_changed,
                     )
                 except Exception:
-                    # The immutable epoch and compatibility mirrors above are
-                    # authoritative.  A failed observer must not strand a
-                    # half-rolled-back script transaction; schedulers already
-                    # notified by the forward commit remain invalidated, and
-                    # untouched schedulers still own the original plan.
+                    # Epoch publication is already restored. Scheduler
+                    # invalidation is an observer and cannot own rollback.
                     pass
             self._scheduler_notified = False
         self._committed = False
@@ -787,157 +707,6 @@ def _make_method_descriptor(component_type: type, name: str, raw: Any) -> Runtim
     return RuntimeMethodDescriptor(name, raw, "instance")
 
 
-def ensure_runtime_compatibility_mirror(
-    component_type: type,
-) -> RuntimeTypeDispatchDescriptor:
-    """Lazily expose the current epoch descriptor to legacy callers.
-
-    A few direct lifecycle/native proxy entry points still read the historic
-    class-owned tables.  Lightweight mixins and test doubles do not pass
-    through ``InxComponent.__init_subclass__``, so their first direct phase
-    call must establish the mirror as well.  This is deliberately a
-    cache-miss-only operation: steady-state phase dispatch reads the already
-    published class table and performs no reflection or bound-method
-    allocation.
-    """
-    class_dict = component_type.__dict__
-    cached = class_dict.get("_runtime_dispatch_compatibility_descriptor")
-    if cached is not None:
-        return cached
-
-    current = current_runtime_epoch()
-    descriptor = current.descriptor_for(component_type)
-    if descriptor is None:
-        if bool(component_type.__dict__.get("_runtime_dispatch_retired", False)):
-            descriptor = _build_retired_type_descriptor(
-                component_type,
-                epoch_id=current.epoch_id,
-            )
-        else:
-            descriptor = build_type_dispatch_descriptor(
-                component_type,
-                epoch_id=current.epoch_id,
-            )
-    if (
-        "_runtime_phase_dispatch" not in class_dict
-        or "_runtime_phase_invokers" not in class_dict
-    ):
-        component_type._runtime_phase_dispatch = descriptor.phase_dispatch
-        component_type._runtime_phase_invokers = descriptor.phase_invokers
-    else:
-        # A legacy class may have been initialized before it entered an epoch.
-        # Preserve its already-published immutable table identity when the
-        # helper is queried again, rather than rebuilding a second descriptor.
-        object.__setattr__(descriptor, "_phase_dispatch", class_dict["_runtime_phase_dispatch"])
-        object.__setattr__(descriptor, "_phase_invokers", class_dict["_runtime_phase_invokers"])
-    component_type._runtime_dispatch_compatibility_descriptor = descriptor
-    return descriptor
-
-
-def _set_compatibility_mirrors(
-    descriptor: RuntimeTypeDispatchDescriptor,
-    instances: Iterable[Any],
-) -> None:
-    component_type = descriptor.component_type
-    # These mirrors are retained for existing lifecycle/native bridge callers;
-    # frame execution itself reads the immutable epoch descriptor.
-    component_type._runtime_phase_dispatch = descriptor.phase_dispatch
-    component_type._runtime_phase_invokers = descriptor.phase_invokers
-    component_type._runtime_dispatch_compatibility_descriptor = descriptor
-    invokers = component_type.__dict__.get("_runtime_phase_invokers")
-    live_instances = list(instances)
-    active_registry = getattr(component_type, "_active_instances", {})
-    for active in active_registry.values():
-        live_instances.extend(active)
-    seen: set[int] = set()
-    for component in live_instances:
-        if id(component) in seen or type(component) is not component_type:
-            continue
-        seen.add(id(component))
-        try:
-            component.__dict__["_runtime_phase_invokers_instance"] = invokers
-            lifecycle_cache = component.__dict__.get("_lifecycle_dispatch_cache")
-            if lifecycle_cache is not None:
-                lifecycle_cache.clear()
-        except (AttributeError, TypeError):
-            pass
-        native = getattr(component, "_cpp_component", None)
-        refresh_native = getattr(native, "refresh_python_lifecycle_dispatch", None)
-        if callable(refresh_native):
-            try:
-                refresh_native()
-            except (AttributeError, ReferenceError, RuntimeError):
-                pass
-
-
-def _restore_mirror_snapshots(snapshots: Iterable[object]) -> None:
-    """Restore class/instance compatibility mirrors after owner rollback."""
-    for entry in snapshots:
-        try:
-            component_type, class_snapshot, instance_snapshots = entry
-        except (TypeError, ValueError):
-            continue
-        for name, (present, value) in class_snapshot.items():
-            if present:
-                setattr(component_type, name, value)
-            elif name in component_type.__dict__:
-                delattr(component_type, name)
-        for component, snapshot in instance_snapshots:
-            values = getattr(component, "__dict__", None)
-            if values is None:
-                continue
-            for name, (present, value) in snapshot.items():
-                if present:
-                    values[name] = value
-                else:
-                    values.pop(name, None)
-            native = getattr(component, "_cpp_component", None)
-            refresh_native = getattr(native, "refresh_python_lifecycle_dispatch", None)
-            if callable(refresh_native):
-                try:
-                    refresh_native()
-                except (AttributeError, ReferenceError, RuntimeError):
-                    pass
-
-
-def _apply_compatibility_publication(
-    epoch: RuntimeRevisionEpoch,
-    types: Iterable[type],
-    retired: Iterable[type],
-    instances_by_type: Mapping[type, Iterable[Any]],
-    *,
-    sync_compatibility: bool,
-) -> None:
-    """Apply class/instance mirrors only at the owner transaction edge."""
-    if sync_compatibility:
-        for component_type in types:
-            descriptor = epoch.descriptor_for(component_type)
-            if descriptor is None:
-                continue
-            values = instances_by_type.get(component_type, ())
-            _set_compatibility_mirrors(descriptor, values)
-    for component_type in retired:
-        class_dict = component_type.__dict__
-        setattr(component_type, "_runtime_dispatch_retired", True)
-        for name in (
-            "_runtime_phase_dispatch",
-            "_runtime_phase_invokers",
-            "_runtime_dispatch_compatibility_descriptor",
-        ):
-            if name in class_dict:
-                delattr(component_type, name)
-        active_registry = getattr(component_type, "_active_instances", {})
-        for active in tuple(active_registry.values()):
-            for component in tuple(active):
-                values = getattr(component, "__dict__", None)
-                if values is not None:
-                    values.pop("_runtime_phase_invokers_instance", None)
-                    values.pop("_lifecycle_dispatch_cache", None)
-    for component_type in types:
-        if "_runtime_dispatch_retired" in component_type.__dict__:
-            delattr(component_type, "_runtime_dispatch_retired")
-
-
 def _set_current_epoch(epoch: RuntimeRevisionEpoch) -> None:
     global _current_epoch
     _current_epoch = epoch
@@ -963,9 +732,7 @@ def ensure_runtime_dispatch_types(component_types: Iterable[type]) -> RuntimeRev
         component_type
         for component_type in types
         if component_type not in current.descriptors
-        and not bool(
-            component_type.__dict__.get("_runtime_dispatch_retired", False)
-        )
+        and component_type not in current.retired_types
     )
     if not missing:
         return current
@@ -976,19 +743,16 @@ def ensure_runtime_dispatch_types(component_types: Iterable[type]) -> RuntimeRev
 
 def publish_runtime_dispatch_epoch(
     component_types: Iterable[type],
-    instances_by_type: Optional[Mapping[type, Iterable[Any]]] = None,
     *,
-    sync_compatibility: bool = True,
     retired_types: Iterable[type] = (),
     defer_commit: bool = False,
 ) -> RuntimeDispatchPublication:
     """Atomically stage one owner-side epoch publication.
 
     ``retired_types`` removes types from the new epoch.  With
-    ``defer_commit=True`` mirror state is snapshotted and the publication is
-    staged, but mirrors and the current epoch pointer are applied only at
-    ``publication.commit()``.  Script move/delete transactions use this so a
-    failed transaction cannot retire a type early.
+    ``defer_commit=True`` the new immutable epoch is staged and becomes
+    current only at ``publication.commit()``. Script move/delete transactions
+    use this so a failed transaction cannot retire a type early.
     """
     types = tuple(dict.fromkeys(component_types))
     retired = tuple(
@@ -999,54 +763,6 @@ def publish_runtime_dispatch_epoch(
     changed_types = tuple(dict.fromkeys((*types, *retired)))
     if changed_types:
         assert_runtime_dispatch_safe_point()
-    mirror_snapshots = []
-    if sync_compatibility or retired:
-        for component_type in changed_types:
-            values = () if instances_by_type is None else instances_by_type.get(component_type, ())
-            live_instances = list(values)
-            active_registry = getattr(component_type, "_active_instances", {})
-            for active in active_registry.values():
-                live_instances.extend(active)
-            seen: set[int] = set()
-            instance_snapshots = []
-            for component in live_instances:
-                if id(component) in seen or type(component) is not component_type:
-                    continue
-                seen.add(id(component))
-                try:
-                    values_dict = component.__dict__
-                except AttributeError:
-                    continue
-                instance_snapshots.append(
-                    (
-                        component,
-                        {
-                            name: (name in values_dict, values_dict.get(name))
-                            for name in (
-                                "_runtime_phase_invokers_instance",
-                                "_lifecycle_dispatch_cache",
-                            )
-                        },
-                    )
-                )
-            mirror_snapshots.append(
-                (
-                    component_type,
-                    {
-                        name: (
-                            name in component_type.__dict__,
-                            component_type.__dict__.get(name),
-                        )
-                        for name in (
-                            "_runtime_phase_dispatch",
-                            "_runtime_phase_invokers",
-                            "_runtime_dispatch_compatibility_descriptor",
-                            "_runtime_dispatch_retired",
-                        )
-                    },
-                    tuple(instance_snapshots),
-                )
-            )
     with _EPOCH_LOCK:
         before = _current_epoch
         if not changed_types:
@@ -1058,36 +774,13 @@ def publish_runtime_dispatch_epoch(
             descriptors[component_type] = descriptor
         for component_type in retired:
             descriptors.pop(component_type, None)
-        after = RuntimeRevisionEpoch(next_id, descriptors)
-        try:
-            validate_runtime_callback_bindings(after, types)
-            if not defer_commit:
-                _apply_compatibility_publication(
-                    after,
-                    types,
-                    retired,
-                    instances_by_type or {},
-                    sync_compatibility=sync_compatibility,
-                )
-            # The epoch pointer is the final owner-safe-point operation.  A
-            # deferred owner transaction performs it only at commit.
-            if not defer_commit:
-                _set_current_epoch(after)
-        except Exception:
-            for component_type, class_snapshot, instance_snapshots in mirror_snapshots:
-                for name, (present, value) in class_snapshot.items():
-                    if present:
-                        setattr(component_type, name, value)
-                    elif name in component_type.__dict__:
-                        delattr(component_type, name)
-                for component, snapshot in instance_snapshots:
-                    values = component.__dict__
-                    for name, (present, value) in snapshot.items():
-                        if present:
-                            values[name] = value
-                        else:
-                            values.pop(name, None)
-            raise
+        retired_state = set(before.retired_types)
+        retired_state.update(retired)
+        retired_state.difference_update(types)
+        after = RuntimeRevisionEpoch(next_id, descriptors, frozenset(retired_state))
+        validate_runtime_callback_bindings(after, types)
+        if not defer_commit:
+            _set_current_epoch(after)
 
     # Body reload changes dispatch, not topology.  Scheduler invalidation is
     # stored in the publication and runs only after commit.
@@ -1114,11 +807,6 @@ def publish_runtime_dispatch_epoch(
         after,
         defer_commit=defer_commit,
         published=not defer_commit,
-        mirror_snapshots=tuple(mirror_snapshots),
-        mirror_types=types,
-        retired_types=retired,
-        instances_by_type=instances_by_type,
-        sync_compatibility=sync_compatibility,
         scheduler_changes=tuple(scheduler_changes),
     )
 
@@ -1143,7 +831,7 @@ def has_runtime_phase(component_type: type, phase: str) -> bool:
     descriptor = epoch.descriptor_for(component_type)
     if descriptor is not None:
         return descriptor.has_phase(phase)
-    if bool(component_type.__dict__.get("_runtime_dispatch_retired", False)):
+    if component_type in epoch.retired_types:
         return False
     return build_type_dispatch_descriptor(component_type).has_phase(phase)
 
@@ -1158,7 +846,7 @@ def runtime_descriptor_diagnostic(component_type: type) -> dict[str, Any]:
             "type_name": getattr(component_type, "__qualname__", str(component_type)),
             "status": (
                 "retired"
-                if bool(component_type.__dict__.get("_runtime_dispatch_retired", False))
+                if component_type in epoch.retired_types
                 else "absent"
             ),
             "phase_presence": (False, False, False),

@@ -80,10 +80,14 @@ void ValidateStencil(const json &document, std::string_view path)
         "failOp", "passOp", "depthFailOp", "compareOp", "compareMask", "writeMask", "reference",
     };
     RequireExactFields(document, required, {}, path);
-    RequireIntegerRange(document, "failOp", VK_STENCIL_OP_KEEP, VK_STENCIL_OP_DECREMENT_AND_WRAP, path);
-    RequireIntegerRange(document, "passOp", VK_STENCIL_OP_KEEP, VK_STENCIL_OP_DECREMENT_AND_WRAP, path);
-    RequireIntegerRange(document, "depthFailOp", VK_STENCIL_OP_KEEP, VK_STENCIL_OP_DECREMENT_AND_WRAP, path);
-    RequireIntegerRange(document, "compareOp", VK_COMPARE_OP_NEVER, VK_COMPARE_OP_ALWAYS, path);
+    RequireIntegerRange(document, "failOp", static_cast<int>(MaterialStencilOp::Keep),
+                        static_cast<int>(MaterialStencilOp::DecrementAndWrap), path);
+    RequireIntegerRange(document, "passOp", static_cast<int>(MaterialStencilOp::Keep),
+                        static_cast<int>(MaterialStencilOp::DecrementAndWrap), path);
+    RequireIntegerRange(document, "depthFailOp", static_cast<int>(MaterialStencilOp::Keep),
+                        static_cast<int>(MaterialStencilOp::DecrementAndWrap), path);
+    RequireIntegerRange(document, "compareOp", static_cast<int>(MaterialCompareOp::Never),
+                        static_cast<int>(MaterialCompareOp::Always), path);
     RequireUnsigned(document, "compareMask", path);
     RequireUnsigned(document, "writeMask", path);
     RequireUnsigned(document, "reference", path);
@@ -125,17 +129,25 @@ void ValidateRenderState(const json &document, std::string_view path)
             Fail(path, std::string(field) + " must be a boolean");
     }
 
-    RequireIntegerRange(document, "cullMode", VK_CULL_MODE_NONE, VK_CULL_MODE_FRONT_AND_BACK, path);
-    RequireIntegerRange(document, "frontFace", VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_FRONT_FACE_CLOCKWISE, path);
-    RequireIntegerRange(document, "polygonMode", VK_POLYGON_MODE_FILL, VK_POLYGON_MODE_POINT, path);
-    RequireIntegerRange(document, "topology", VK_PRIMITIVE_TOPOLOGY_POINT_LIST, VK_PRIMITIVE_TOPOLOGY_PATCH_LIST, path);
-    RequireIntegerRange(document, "depthCompareOp", VK_COMPARE_OP_NEVER, VK_COMPARE_OP_ALWAYS, path);
+    RequireIntegerRange(document, "cullMode", static_cast<int>(MaterialCullMode::None),
+                        static_cast<int>(MaterialCullMode::FrontAndBack), path);
+    RequireIntegerRange(document, "frontFace", static_cast<int>(MaterialFrontFace::CounterClockwise),
+                        static_cast<int>(MaterialFrontFace::Clockwise), path);
+    RequireIntegerRange(document, "polygonMode", static_cast<int>(MaterialPolygonMode::Fill),
+                        static_cast<int>(MaterialPolygonMode::Point), path);
+    RequireIntegerRange(document, "topology", static_cast<int>(MaterialPrimitiveTopology::PointList),
+                        static_cast<int>(MaterialPrimitiveTopology::TriangleStrip), path);
+    RequireIntegerRange(document, "depthCompareOp", static_cast<int>(MaterialCompareOp::Never),
+                        static_cast<int>(MaterialCompareOp::Always), path);
     for (const char *field :
          {"srcColorBlendFactor", "dstColorBlendFactor", "srcAlphaBlendFactor", "dstAlphaBlendFactor"}) {
-        RequireIntegerRange(document, field, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA, path);
+        RequireIntegerRange(document, field, static_cast<int>(MaterialBlendFactor::Zero),
+                            static_cast<int>(MaterialBlendFactor::SourceAlphaSaturate), path);
     }
-    RequireIntegerRange(document, "colorBlendOp", VK_BLEND_OP_ADD, VK_BLEND_OP_MAX, path);
-    RequireIntegerRange(document, "alphaBlendOp", VK_BLEND_OP_ADD, VK_BLEND_OP_MAX, path);
+    RequireIntegerRange(document, "colorBlendOp", static_cast<int>(MaterialBlendOp::Add),
+                        static_cast<int>(MaterialBlendOp::Maximum), path);
+    RequireIntegerRange(document, "alphaBlendOp", static_cast<int>(MaterialBlendOp::Add),
+                        static_cast<int>(MaterialBlendOp::Maximum), path);
 
     const double lineWidth = RequireFiniteNumber(document, "lineWidth", path);
     RequireFiniteNumber(document, "depthBiasConstantFactor", path);

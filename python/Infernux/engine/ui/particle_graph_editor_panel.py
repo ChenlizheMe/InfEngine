@@ -45,7 +45,7 @@ from Infernux.graph.parameters import (
     GraphParameterCollection,
 )
 from Infernux.graph.parameter_transactions import GraphParameterTransaction
-from Infernux.graph.ramp import CURVE_WRAP_MODES, GRADIENT_MODES, MAX_RAMP_KEYS, Curve, Gradient
+from Infernux.graph.ramp import AnimationCurve, Gradient
 from Infernux.graph.types import (
     AssetReference,
     BUILTIN_MESH_NAMES,
@@ -246,7 +246,7 @@ def _particle_asset_reference(asset_type: str, value) -> AssetReference:
 
 def _event_field_default(value_type: ValueType):
     if value_type is ValueType.CURVE:
-        return Curve().to_dict()
+        return AnimationCurve().to_dict()
     if value_type is ValueType.GRADIENT:
         return Gradient().to_dict()
     if value_type in {ValueType.TEXTURE2D, ValueType.MESH}:
@@ -1517,7 +1517,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             isinstance(candidate, dict)
             and not any(
                 str(candidate.get(name) or "").strip()
-                for name in ("guid", "path_hint", "path", "builtin", "built_in")
+                for name in ("guid", "path_hint", "builtin")
             )
         ):
             reference = AssetReference().to_dict()
@@ -5043,90 +5043,18 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         *,
         semantic_prefix: str = "",
     ):
-        curve = Curve.from_dict(value)
-        keys = [item.to_dict() for item in curve.keys]
-        pre_index = CURVE_WRAP_MODES.index(curve.pre_wrap)
-        post_index = CURVE_WRAP_MODES.index(curve.post_wrap)
-        pre_index = ctx.combo(
-            f"{t('particle_graph_editor.pre_wrap')}##{node_uid}_{key}_pre",
-            pre_index,
-            list(CURVE_WRAP_MODES),
-            -1,
+        from .curve_editor import render_curve_property
+
+        return render_curve_property(
+            ctx,
+            f"{node_uid}_{key}",
+            value,
+            semantic_prefix=(
+                semantic_prefix
+                or f"particle_graph.node.{node_uid}.property.{key}"
+            ),
+            non_negative=str(key).casefold() == "width_curve",
         )
-        post_index = ctx.combo(
-            f"{t('particle_graph_editor.post_wrap')}##{node_uid}_{key}_post",
-            post_index,
-            list(CURVE_WRAP_MODES),
-            -1,
-        )
-        remove_index = -1
-        for index, item in enumerate(keys):
-            ctx.separator()
-            ctx.label(f"{t('particle_graph_editor.key')} {index + 1}")
-            minimum = keys[index - 1]["time"] + 1.0e-4 if index else -1.0e7
-            maximum = (
-                keys[index + 1]["time"] - 1.0e-4
-                if index + 1 < len(keys)
-                else 1.0e7
-            )
-            item["time"] = float(
-                ctx.drag_float(
-                    f"{t('particle_graph_editor.time')}##{node_uid}_{key}_{index}_time",
-                    item["time"],
-                    0.01,
-                    minimum,
-                    maximum,
-                )
-            )
-            ctx.record_semantic_item(
-                "drag_float",
-                t("particle_graph_editor.time"),
-                True,
-                f"{semantic_prefix or f'particle_graph.node.{node_uid}.property.{key}'}.key.{index}.time",
-                numeric_value=item["time"],
-            )
-            for tangent_key in ("value", "in_tangent", "out_tangent"):
-                item[tangent_key] = float(
-                    ctx.drag_float(
-                        f"{t(f'particle_graph_editor.{tangent_key}')}##{node_uid}_{key}_{index}_{tangent_key}",
-                        item[tangent_key],
-                        0.02,
-                        -1.0e7,
-                        1.0e7,
-                    )
-                )
-                ctx.record_semantic_item(
-                    "drag_float",
-                    t(f"particle_graph_editor.{tangent_key}"),
-                    True,
-                    f"{semantic_prefix or f'particle_graph.node.{node_uid}.property.{key}'}.key.{index}.{tangent_key}",
-                    numeric_value=item[tangent_key],
-                )
-            if len(keys) > 1 and ctx.button(
-                f"{t('particle_graph_editor.remove_key')}##{node_uid}_{key}_{index}_remove"
-            ):
-                remove_index = index
-        if remove_index >= 0:
-            del keys[remove_index]
-        if len(keys) < MAX_RAMP_KEYS and ctx.button(
-            f"{t('particle_graph_editor.add_key')}##{node_uid}_{key}_add"
-        ):
-            last = keys[-1]
-            keys.append(
-                {
-                    "time": last["time"] + 1.0,
-                    "value": last["value"],
-                    "in_tangent": last["in_tangent"],
-                    "out_tangent": last["out_tangent"],
-                }
-            )
-        return Curve.from_dict(
-            {
-                "keys": keys,
-                "pre_wrap": CURVE_WRAP_MODES[pre_index],
-                "post_wrap": CURVE_WRAP_MODES[post_index],
-            }
-        ).to_dict()
 
     @staticmethod
     def _render_gradient_property(
@@ -5137,100 +5065,18 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         *,
         semantic_prefix: str = "",
     ):
-        gradient = Gradient.from_dict(value)
-        keys = [item.to_dict() for item in gradient.keys]
-        mode_index = GRADIENT_MODES.index(gradient.mode)
-        mode_index = ctx.combo(
-            f"{t('particle_graph_editor.gradient_mode')}##{node_uid}_{key}_mode",
-            mode_index,
-            list(GRADIENT_MODES),
-            -1,
+        from .gradient_editor import render_gradient_property
+
+        return render_gradient_property(
+            ctx,
+            f"{node_uid}_{key}",
+            value,
+            semantic_prefix=(
+                semantic_prefix
+                or f"particle_graph.node.{node_uid}.property.{key}"
+            ),
+            hdr=True,
         )
-        remove_index = -1
-        for index, item in enumerate(keys):
-            ctx.separator()
-            ctx.label(f"{t('particle_graph_editor.key')} {index + 1}")
-            minimum = keys[index - 1]["time"] + 1.0e-4 if index else 0.0
-            maximum = (
-                keys[index + 1]["time"] - 1.0e-4
-                if index + 1 < len(keys)
-                else 1.0
-            )
-            item["time"] = float(
-                ctx.drag_float(
-                    f"{t('particle_graph_editor.time')}##{node_uid}_{key}_{index}_time",
-                    item["time"],
-                    0.01,
-                    minimum,
-                    maximum,
-                )
-            )
-            ctx.record_semantic_item(
-                "drag_float",
-                t("particle_graph_editor.time"),
-                True,
-                f"{semantic_prefix or f'particle_graph.node.{node_uid}.property.{key}'}.key.{index}.time",
-                numeric_value=item["time"],
-            )
-            color = list(
-                ctx.color_edit(
-                    f"{t('particle_graph_editor.color')}##{node_uid}_{key}_{index}_color",
-                    *item["color"],
-                    hdr=True,
-                )
-            )
-            for channel_index, channel in enumerate(("r", "g", "b", "a")):
-                maximum = 1.0 if channel == "a" else 64.0
-                color[channel_index] = float(
-                    ctx.drag_float(
-                        f"{channel.upper()}##{node_uid}_{key}_{index}_{channel}",
-                        color[channel_index],
-                        0.01,
-                        0.0,
-                        maximum,
-                    )
-                )
-                ctx.record_semantic_item(
-                    "drag_float",
-                    channel.upper(),
-                    True,
-                    f"{semantic_prefix or f'particle_graph.node.{node_uid}.property.{key}'}.key.{index}.color.{channel}",
-                    numeric_value=color[channel_index],
-                )
-            item["color"] = color
-            if len(keys) > 1 and ctx.button(
-                f"{t('particle_graph_editor.remove_key')}##{node_uid}_{key}_{index}_remove"
-            ):
-                remove_index = index
-        if remove_index >= 0:
-            del keys[remove_index]
-        if len(keys) < MAX_RAMP_KEYS and ctx.button(
-            f"{t('particle_graph_editor.add_key')}##{node_uid}_{key}_add"
-        ):
-            if len(keys) == 1:
-                new_time = 1.0 if keys[0]["time"] < 1.0 else 0.0
-                keys.append({"time": new_time, "color": list(keys[0]["color"])})
-                keys.sort(key=lambda item: item["time"])
-            else:
-                gap_index = max(
-                    range(len(keys) - 1),
-                    key=lambda index: keys[index + 1]["time"] - keys[index]["time"],
-                )
-                left = keys[gap_index]
-                right = keys[gap_index + 1]
-                keys.insert(
-                    gap_index + 1,
-                    {
-                        "time": (left["time"] + right["time"]) * 0.5,
-                        "color": [
-                            a + (b - a) * 0.5
-                            for a, b in zip(left["color"], right["color"])
-                        ],
-                    },
-                )
-        return Gradient.from_dict(
-            {"keys": keys, "mode": GRADIENT_MODES[mode_index]}
-        ).to_dict()
 
     def _before_node_graph_render(self, ctx: InxGUIContext) -> None:
         del ctx

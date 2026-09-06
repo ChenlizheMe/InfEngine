@@ -1,122 +1,70 @@
 (() => {
     "use strict";
 
-    const releasesApiRoot = "https://api.github.com/repos/ChenlizheMe/Infernux/releases";
-    const latestReleaseUrl = `${releasesApiRoot}/latest`;
-    const publicReleasesUrl = `${releasesApiRoot}?per_page=100`;
-
-    function releaseVersion(release) {
-        return String(release?.tag_name || release?.version || "")
-            .replace(/^v/i, "")
-            .trim();
-    }
-
-    function releaseAssets(release) {
-        return Array.isArray(release?.assets) ? release.assets : [];
-    }
-
-    function assetUrl(asset) {
-        return asset?.browser_download_url || asset?.url || "";
-    }
-
-    function findAsset(release, pattern) {
-        return releaseAssets(release).find((asset) => pattern.test(String(asset?.name || "")));
-    }
-
-    function findHub(release) {
-        return findAsset(release, /^InfernuxHub(?:Installer)?[-_].*\.exe$/i);
-    }
-
-    function findWheel(release) {
-        return findAsset(release, /^infernux-.*-cp312-cp312-win_amd64\.whl$/i);
-    }
+    const catalogUrl = "hub-catalog.json";
+    let currentRelease = null;
 
     function syncVersionLink(select) {
         const link = select.closest(".version-picker")?.querySelector("[data-version-link]");
-        if (link) link.href = select.value;
+        if (!link || !currentRelease) return;
+        const pending = currentRelease && !currentRelease.published_at
+            && select.value.includes(`/v${currentRelease.version}/`);
+        if (pending) {
+            link.removeAttribute("href");
+            link.setAttribute("aria-disabled", "true");
+            link.classList.add("is-disabled");
+        } else {
+            link.href = select.value;
+            link.removeAttribute("aria-disabled");
+            link.classList.remove("is-disabled");
+        }
     }
 
-    function makeWheelOption(select, release, latestVersion) {
-        const version = releaseVersion(release);
-        const option = select.ownerDocument.createElement("option");
-        option.value = assetUrl(findWheel(release));
-        const isChinese = select.id.endsWith("-zh");
-        option.textContent = version === latestVersion
-            ? `${version} · ${isChinese ? "最新公开版本" : "latest public release"}`
-            : version;
-        return option;
+    function stableRelease(catalog) {
+        if (catalog?.$schema !== "infernux.hub_catalog" || !Array.isArray(catalog.releases)) {
+            throw new Error("Hub catalog does not match the current contract");
+        }
+        const matches = catalog.releases.filter((release) => release?.version === catalog.stable);
+        if (
+            matches.length !== 1
+            || matches[0].channel !== "stable"
+            || typeof matches[0].minimum_updatable_version !== "string"
+        ) {
+            throw new Error("Hub catalog does not identify one stable release");
+        }
+        return matches[0];
     }
 
-    function installReleaseWheels(select, releases, latestRelease) {
-        const latestVersion = releaseVersion(latestRelease);
-        const seen = new Set();
-        const ordered = [latestRelease, ...releases].filter((release) => {
-            if (release?.draft || release?.prerelease) return false;
-            const version = releaseVersion(release);
-            const wheelUrl = assetUrl(findWheel(release));
-            if (!version || !wheelUrl || seen.has(version)) return false;
-            seen.add(version);
-            return true;
+    function applyPlatform(release, platform) {
+        const platformRelease = release.platforms?.[platform];
+        const links = document.querySelectorAll(`[data-hub-link='${platform}']`);
+        const labels = document.querySelectorAll(`[data-hub-meta='${platform}']`);
+        const available = Boolean(release.published_at && platformRelease?.installer?.url);
+
+        links.forEach((link) => {
+            if (available) {
+                link.href = platformRelease.installer.url;
+                link.removeAttribute("aria-disabled");
+                link.classList.remove("is-disabled");
+            } else {
+                link.removeAttribute("href");
+                link.setAttribute("aria-disabled", "true");
+                link.classList.add("is-disabled");
+            }
         });
-        if (!ordered.length) return;
-
-        const options = ordered.map((release) => makeWheelOption(select, release, latestVersion));
-        select.replaceChildren(...options);
-        select.value = options[0].value;
-        syncVersionLink(select);
-    }
-
-    function applyReleaseCatalog({ latest, releases }) {
-        const version = releaseVersion(latest);
-        if (!version) throw new Error("latest release has no version tag");
-        const hubUrl = assetUrl(findHub(latest));
-        const wheelUrl = assetUrl(findWheel(latest));
-        if (!hubUrl || !wheelUrl) throw new Error("latest release is missing the Hub or CPython wheel");
-
-        document.querySelectorAll("[data-latest-hub]").forEach((link) => { link.href = hubUrl; });
-        document.querySelectorAll("[data-hub-meta]").forEach((label) => {
+        labels.forEach((label) => {
             const isChinese = label.closest("[data-page-language='zh']") !== null;
-            label.textContent = isChinese
-                ? `Windows x64 · GitHub 最新公开版本 ${version}`
-                : `Windows x64 · latest public release ${version}`;
-        });
-        document.querySelectorAll("[data-version-select]").forEach((select) => {
-            installReleaseWheels(select, releases, latest);
+            const platformLabel = platform === "windows-x64" ? "Windows x64" : "Linux x64";
+            label.textContent = available
+                ? `${platformLabel} · ${release.version}`
+                : `${platformLabel} · ${release.version} · ${isChinese ? "制品待发布" : "release files pending publication"}`;
         });
     }
 
-    async function fetchReleaseJson(url) {
-        const response = await fetch(url, {
-            headers: { Accept: "application/vnd.github+json" },
-            cache: "default"
-        });
-        if (!response.ok) throw new Error(`GitHub Releases returned ${response.status}`);
-        return response.json();
-    }
-
-    async function loadReleaseCatalog() {
-        const [latestResult, releasesResult] = await Promise.allSettled([
-            fetchReleaseJson(latestReleaseUrl),
-            fetchReleaseJson(publicReleasesUrl)
-        ]);
-
-        let latest = latestResult.status === "fulfilled" ? latestResult.value : null;
-        const releases = releasesResult.status === "fulfilled" && Array.isArray(releasesResult.value)
-            ? releasesResult.value
-            : [];
-        if (!latest) {
-            latest = releases.find((release) => !release?.draft && !release?.prerelease) || null;
-        }
-        if (latest) return { latest, releases };
-
-        try {
-            const fallback = await fetch("release.json", { cache: "no-store" });
-            if (!fallback.ok) throw new Error(`release fallback returned ${fallback.status}`);
-            const release = await fallback.json();
-            return { latest: release, releases: [release] };
-        } catch (fallbackError) {
-            throw latestResult.reason || releasesResult.reason || fallbackError;
-        }
+    async function loadHubCatalog() {
+        const response = await fetch(catalogUrl, { cache: "no-store" });
+        if (!response.ok) throw new Error(`Hub catalog returned ${response.status}`);
+        return stableRelease(await response.json());
     }
 
     document.addEventListener("DOMContentLoaded", () => {
@@ -124,8 +72,11 @@
             syncVersionLink(select);
             select.addEventListener("change", () => syncVersionLink(select));
         });
-        loadReleaseCatalog().then(applyReleaseCatalog).catch(() => {
-            // The checked-in links remain a usable offline and rate-limit fallback.
+        loadHubCatalog().then((release) => {
+            currentRelease = release;
+            applyPlatform(release, "windows-x64");
+            applyPlatform(release, "linux-x64");
+            document.querySelectorAll("[data-version-select]").forEach(syncVersionLink);
         });
     });
 })();

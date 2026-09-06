@@ -1,9 +1,9 @@
-#include "InxFileLoader/InxTextureLoader.hpp"
-#include "InxResource/InxResourceMeta.h"
 #include "JsonPyBridge.h"
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
 #include <platform/filesystem/DocumentStore.h>
 #include <platform/filesystem/InxPack.h>
@@ -53,7 +53,6 @@ py::dict InxPackManifestToPython(const inxpack::Manifest &manifest)
 {
     py::dict result;
     result["format"] = "infernux-native-inxpack";
-    result["revision"] = manifest.revision;
     result["codec"] = "zstd-or-store";
     result["file_count"] = manifest.entries.size();
     result["raw_bytes"] = manifest.rawBytes;
@@ -69,8 +68,6 @@ py::dict InxPackManifestToPython(const inxpack::Manifest &manifest)
         item["stored_bytes"] = entry.storedBytes;
         item["raw_bytes"] = entry.rawBytes;
         item["codec"] = inxpack::CodecName(entry.codec);
-        item["sha256"] = inxpack::HashToHex(entry.hash);
-        item["stored_sha256"] = inxpack::HashToHex(entry.storedHash);
         files.append(std::move(item));
     }
     result["files"] = std::move(files);
@@ -754,7 +751,9 @@ void RegisterResourceBindings(py::module_ &m)
             "Get a copy of the material's render state")
         .def(
             "set_render_state", [](InxMaterial &mat, const RenderState &state) { mat.SetRenderState(state); },
-            py::arg("state"), "Set the material's render state")
+            py::arg("state"),
+            "Explicitly author the full render state; every field becomes an override so shader "
+            "annotation defaults can never replace it (switching shaders resets authorship)")
         // RenderState override mechanism
         .def_property("render_state_overrides", &InxMaterial::GetRenderStateOverrides,
                       &InxMaterial::SetRenderStateOverrides,
@@ -765,6 +764,10 @@ void RegisterResourceBindings(py::module_ &m)
              "Clear a RenderState field override (revert to shader default)")
         .def("has_override", &InxMaterial::HasOverride, py::arg("flag"),
              "Check if a RenderState field is user-overridden")
+        .def("apply_shader_render_meta", &InxMaterial::ApplyShaderRenderMeta, py::arg("cull_mode"),
+             py::arg("depth_write"), py::arg("depth_test"), py::arg("blend"), py::arg("queue"),
+             py::arg("pass_tag") = "", py::arg("stencil") = "", py::arg("alpha_clip") = "",
+             "Apply shader annotation defaults to render-state fields the material has not authored")
         .def("sync_alpha_clip_property", &InxMaterial::SyncAlphaClipProperty,
              "Sync internal _AlphaClipThreshold material property from RenderState")
         // Clone / Instantiate (Unity-style Object.Instantiate for materials)
@@ -801,43 +804,47 @@ void RegisterResourceBindings(py::module_ &m)
     py::class_<RenderState>(m, "RenderState")
         .def(py::init<>())
         // Rasterization
-        .def_readwrite("cull_mode", &RenderState::cullMode, "VkCullModeFlags: 0=None, 1=Front, 2=Back, 3=FrontAndBack")
+        .def_property(
+            "cull_mode", [](const RenderState &rs) { return static_cast<int>(rs.cullMode); },
+            [](RenderState &rs, int v) { rs.cullMode = static_cast<MaterialCullMode>(v); },
+            "Material cull mode: 0=None, 1=Front, 2=Back, 3=FrontAndBack")
         .def_property(
             "front_face", [](const RenderState &rs) { return static_cast<int>(rs.frontFace); },
-            [](RenderState &rs, int v) { rs.frontFace = static_cast<VkFrontFace>(v); },
-            "VkFrontFace: 0=CounterClockwise, 1=Clockwise")
+            [](RenderState &rs, int v) { rs.frontFace = static_cast<MaterialFrontFace>(v); },
+            "Material front face: 0=CounterClockwise, 1=Clockwise")
         .def_property(
             "polygon_mode", [](const RenderState &rs) { return static_cast<int>(rs.polygonMode); },
-            [](RenderState &rs, int v) { rs.polygonMode = static_cast<VkPolygonMode>(v); },
-            "VkPolygonMode: 0=Fill, 1=Line, 2=Point")
+            [](RenderState &rs, int v) { rs.polygonMode = static_cast<MaterialPolygonMode>(v); },
+            "Material polygon mode: 0=Fill, 1=Line, 2=Point")
         .def_readwrite("line_width", &RenderState::lineWidth)
         // Depth
         .def_readwrite("depth_test_enable", &RenderState::depthTestEnable)
         .def_readwrite("depth_write_enable", &RenderState::depthWriteEnable)
         .def_property(
             "depth_compare_op", [](const RenderState &rs) { return static_cast<int>(rs.depthCompareOp); },
-            [](RenderState &rs, int v) { rs.depthCompareOp = static_cast<VkCompareOp>(v); },
-            "VkCompareOp: 0=Never,1=Less,2=Equal,3=LessOrEqual,4=Greater,5=NotEqual,6=GreaterOrEqual,7=Always")
+            [](RenderState &rs, int v) { rs.depthCompareOp = static_cast<MaterialCompareOp>(v); },
+            "Material depth compare: "
+            "0=Never,1=Less,2=Equal,3=LessOrEqual,4=Greater,5=NotEqual,6=GreaterOrEqual,7=Always")
         // Blending
         .def_readwrite("blend_enable", &RenderState::blendEnable)
         .def_property(
             "src_color_blend_factor", [](const RenderState &rs) { return static_cast<int>(rs.srcColorBlendFactor); },
-            [](RenderState &rs, int v) { rs.srcColorBlendFactor = static_cast<VkBlendFactor>(v); })
+            [](RenderState &rs, int v) { rs.srcColorBlendFactor = static_cast<MaterialBlendFactor>(v); })
         .def_property(
             "dst_color_blend_factor", [](const RenderState &rs) { return static_cast<int>(rs.dstColorBlendFactor); },
-            [](RenderState &rs, int v) { rs.dstColorBlendFactor = static_cast<VkBlendFactor>(v); })
+            [](RenderState &rs, int v) { rs.dstColorBlendFactor = static_cast<MaterialBlendFactor>(v); })
         .def_property(
             "color_blend_op", [](const RenderState &rs) { return static_cast<int>(rs.colorBlendOp); },
-            [](RenderState &rs, int v) { rs.colorBlendOp = static_cast<VkBlendOp>(v); })
+            [](RenderState &rs, int v) { rs.colorBlendOp = static_cast<MaterialBlendOp>(v); })
         .def_property(
             "src_alpha_blend_factor", [](const RenderState &rs) { return static_cast<int>(rs.srcAlphaBlendFactor); },
-            [](RenderState &rs, int v) { rs.srcAlphaBlendFactor = static_cast<VkBlendFactor>(v); })
+            [](RenderState &rs, int v) { rs.srcAlphaBlendFactor = static_cast<MaterialBlendFactor>(v); })
         .def_property(
             "dst_alpha_blend_factor", [](const RenderState &rs) { return static_cast<int>(rs.dstAlphaBlendFactor); },
-            [](RenderState &rs, int v) { rs.dstAlphaBlendFactor = static_cast<VkBlendFactor>(v); })
+            [](RenderState &rs, int v) { rs.dstAlphaBlendFactor = static_cast<MaterialBlendFactor>(v); })
         .def_property(
             "alpha_blend_op", [](const RenderState &rs) { return static_cast<int>(rs.alphaBlendOp); },
-            [](RenderState &rs, int v) { rs.alphaBlendOp = static_cast<VkBlendOp>(v); })
+            [](RenderState &rs, int v) { rs.alphaBlendOp = static_cast<MaterialBlendOp>(v); })
         // Render queue
         .def_readwrite("render_queue", &RenderState::renderQueue, "Sorting order: 2000=Opaque, 3000=Transparent")
         // Alpha clip

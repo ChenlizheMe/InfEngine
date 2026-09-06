@@ -228,7 +228,7 @@ class InxGUIContext
     /* tab bars */
     bool BeginTabBar(const std::string &id);
     void EndTabBar();
-    bool BeginTabItem(const std::string &label, bool *open = nullptr);
+    bool BeginTabItem(const std::string &label, bool *open = nullptr, bool selected = false);
     void EndTabItem();
 
     /* main-menu / menus */

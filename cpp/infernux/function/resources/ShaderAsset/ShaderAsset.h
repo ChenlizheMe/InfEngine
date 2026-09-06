@@ -55,8 +55,8 @@ struct ShaderAsset
     /// Parsed authoring contract retained for stage linking and diagnostics.
     ShaderDescriptor descriptor;
 
-    /// Compiled variants keyed by semantic render target. Forward is required
-    /// for a loadable legacy stage; optional targets are emitted as supported.
+    /// Compiled variants keyed by semantic render target. Forward is required;
+    /// optional targets are emitted as supported.
     std::vector<ShaderStageVariant> variants;
 
     /// Render-state annotations (fragment shaders only)

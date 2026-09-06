@@ -1,7 +1,7 @@
 #include "SpriteRenderer.h"
 #include "ComponentFactory.h"
-#include <InxLog.h>
 #include <algorithm>
+#include <core/log/InxLog.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <nlohmann/json.hpp>

@@ -1144,11 +1144,15 @@ def test_ui_editor_uses_global_scene_commands_and_selection_clear():
     core.shutdown()
 
 
-def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
+def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy(tmp_path):
     class BootstrapHarness(BootstrapWiringMixin):
         pass
 
     calls = []
+    assets = tmp_path / "Project" / "Assets"
+    assets.mkdir(parents=True)
+    smoke_material = str(assets / "Smoke.mat")
+    pasted_material = str(assets / "Pasted.mat")
     bootstrap = BootstrapHarness()
     bootstrap.interaction_core = EditorInteractionCore()
     bootstrap.engine = SimpleNamespace(_play_mode_manager=None)
@@ -1163,7 +1167,7 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
         paste=lambda destination, *, origin: calls.append(
             ("paste_asset", destination, origin)
         )
-        or ("C:/Project/Assets/Pasted.mat",),
+        or (pasted_material,),
         request_delete=lambda paths, *, origin: calls.append(
             ("delete_asset", tuple(paths), origin)
         )
@@ -1187,7 +1191,7 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
         begin_rename_selected_asset=lambda path="": calls.append(("rename_asset", path)) or True,
         can_rename_selected_asset=lambda path="": True,
         can_navigate_to_path=lambda path: bool(path),
-        get_current_path=lambda: "C:/Project/Assets",
+        get_current_path=lambda: str(assets),
         set_current_path=lambda path: calls.append(("navigate", path)) or True,
         get_folder_expanded_paths=lambda: [],
         set_folder_expanded_paths=lambda paths: calls.append(
@@ -1217,7 +1221,7 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
     core = bootstrap.interaction_core
     core.focus.activate_panel("project", view_id="project")
     core.selection.select(
-        SelectionTarget.asset("C:/Project/Assets/Smoke.mat"),
+        SelectionTarget.asset(smoke_material),
         owner_id="project",
     )
 
@@ -1235,23 +1239,23 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
         ).status is ShortcutRouteStatus.EXECUTED
 
     assert calls == [
-        ("copy_asset", (os.path.normpath("C:/Project/Assets/Smoke.mat"),), False),
-        ("copy_asset", (os.path.normpath("C:/Project/Assets/Smoke.mat"),), True),
-        ("paste_asset", "C:/Project/Assets", ActionOrigin.USER),
-        ("delete_asset", (os.path.normpath("C:/Project/Assets/Smoke.mat"),), ActionOrigin.USER),
-        ("rename_asset", os.path.normpath("C:/Project/Assets/Smoke.mat")),
-        ("copy_asset", (os.path.normpath("C:/Project/Assets/Smoke.mat"),), False),
-        ("paste_asset", "C:/Project/Assets", ActionOrigin.USER),
+        ("copy_asset", (os.path.normpath(smoke_material),), False),
+        ("copy_asset", (os.path.normpath(smoke_material),), True),
+        ("paste_asset", str(assets), ActionOrigin.USER),
+        ("delete_asset", (os.path.normpath(smoke_material),), ActionOrigin.USER),
+        ("rename_asset", os.path.normpath(smoke_material)),
+        ("copy_asset", (os.path.normpath(smoke_material),), False),
+        ("paste_asset", str(assets), ActionOrigin.USER),
         (
             "create_asset",
             "folder",
-            "C:/Project/Assets",
+            str(assets),
             "NewFolder",
             "",
             "",
             ActionOrigin.USER,
         ),
-        ("rename_asset", os.path.normpath("C:/Project/Assets/NewFolder")),
+        ("rename_asset", os.path.normpath(str(assets / "NewFolder"))),
     ]
 
     created = core.commands.execute(
@@ -1266,26 +1270,26 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
     assert created.accepted
     assert calls[-1] == (
         "rename_asset",
-        os.path.normpath("C:/Project/Assets/NewMaterial.mat"),
+        os.path.normpath(str(assets / "NewMaterial.mat")),
     )
     opened = core.commands.execute(
         "asset.open",
-        payload={"kind": "particle_graph", "path": "C:/Project/Assets/Smoke.particlegraph"},
+        payload={"kind": "particle_graph", "path": str(assets / "Smoke.particlegraph")},
     )
     assert opened.accepted
     assert calls[-1] == (
         "open_asset",
         "particle_graph",
-        "C:/Project/Assets/Smoke.particlegraph",
+        str(assets / "Smoke.particlegraph"),
     )
     revealed = core.commands.execute(
         "project.reveal_in_explorer",
-        payload={"path": "C:/Project/Assets/Smoke.particlegraph"},
+        payload={"path": str(assets / "Smoke.particlegraph")},
     )
     assert revealed.accepted
     assert calls[-1] == (
         "reveal",
-        "C:/Project/Assets/Smoke.particlegraph",
+        str(assets / "Smoke.particlegraph"),
     )
 
     # Pointer commands emitted by the native Project panel must keep their
@@ -1295,10 +1299,10 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
     navigated = core.commands.execute(
         "project.navigate_directory",
         source=CommandSource.POINTER,
-        payload={"target_id": "C:/Project/Assets/Materials"},
+        payload={"target_id": str(assets / "Materials")},
     )
     assert navigated.accepted
-    assert calls[-1] == ("navigate", os.path.normpath("C:/Project/Assets/Materials"))
+    assert calls[-1] == ("navigate", os.path.normpath(str(assets / "Materials")))
     core.focus.activate_panel("project", view_id="project", record_history=False)
 
     assert core.commands.get("project.navigate_back") is not None
@@ -1306,14 +1310,14 @@ def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy():
 
     frozen_target = core.commands.context(
         CommandSource.CONTEXT_MENU,
-        {"target_id": "C:/Project/Assets/RightClicked.mat"},
+        {"target_id": str(assets / "RightClicked.mat")},
     )
     copied = core.commands.execute_context("edit.copy", frozen_target)
 
     assert copied.accepted
     assert calls[-1] == (
         "copy_asset",
-        (os.path.normpath("C:/Project/Assets/RightClicked.mat"),),
+        (os.path.normpath(str(assets / "RightClicked.mat")),),
         False,
     )
 

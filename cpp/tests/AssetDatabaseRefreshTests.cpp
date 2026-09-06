@@ -145,19 +145,80 @@ void TestPathOnlyDependencyIsRejectedOnInitialRefresh()
     std::filesystem::remove_all(root);
 }
 
-void TestLegacySidecarWithoutContentHashIsRebuilt()
+void TestScriptReimportRefreshesContentHashAndPreservesGuid()
 {
-    const auto root = std::filesystem::temp_directory_path() / "infernux-asset-refresh-legacy-sidecar";
+    const auto root = std::filesystem::temp_directory_path() / "infernux-script-reimport-content-hash";
     std::filesystem::remove_all(root);
-    const auto script = root / "Assets" / "Scripts" / "Legacy.py";
-    const auto sidecar = root / "Assets" / "Scripts" / "Legacy.py.meta";
-    WriteText(script, "class Legacy:\n    pass\n");
+    const auto script = root / "Assets" / "Scripts" / "Gameplay.py";
+    WriteText(script, "VALUE = 1\n");
+
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Script, std::make_unique<infernux::InxPythonScriptLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        assetDatabase->Refresh();
+
+        const std::string scriptPath = infernux::FromFsPath(script);
+        const std::string originalGuid = assetDatabase->GetGuidFromPath(scriptPath);
+        const auto originalMetadata = assetDatabase->GetMetaByGuid(originalGuid);
+        Require(!originalGuid.empty() && originalMetadata != nullptr,
+                "initial script refresh did not publish metadata");
+        const std::string originalHash = originalMetadata->GetDataAs<std::string>("content_hash");
+
+        // Preserve byte count so the regression cannot be hidden by a size-only check.
+        WriteText(script, "VALUE = 2\n");
+        const auto result = assetDatabase->ReimportAsset(scriptPath);
+        Require(result.succeeded, "script reimport failed");
+        Require(result.guid == originalGuid, "script reimport changed its GUID");
+        const auto rebuiltMetadata = assetDatabase->GetMetaByGuid(originalGuid);
+        Require(rebuiltMetadata != nullptr, "script reimport removed its metadata");
+        Require(rebuiltMetadata->GetDataAs<std::string>("content_hash") != originalHash,
+                "script reimport retained the stale source hash");
+        Require(rebuiltMetadata->GetDataAs<size_t>("file_size") == std::string("VALUE = 2\n").size(),
+                "script reimport retained the stale source size");
+
+        assetDatabase->FlushDerivedIndex();
+        infernux::AssetIndex index;
+        Require(index.Load(infernux::FromFsPath(root / "Library" / "AssetIndex.json"),
+                           infernux::FilesystemPathKey(infernux::FromFsPath(root))),
+                "script reimport did not persist the derived index");
+        const auto *entry = index.Find(infernux::FilesystemPathKey(scriptPath));
+        Require(entry != nullptr && entry->guid == originalGuid, "script reimport index lost the original identity");
+        Require(entry->contentHash == rebuiltMetadata->GetDataAs<std::string>("content_hash"),
+                "script reimport index did not publish the rebuilt source hash");
+
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
+void TestValidButStaleSidecarIsRebuiltFromCurrentSource()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-asset-refresh-stale-sidecar";
+    std::filesystem::remove_all(root);
+    const auto script = root / "Assets" / "Scripts" / "Migrated.py";
+    const auto sidecar = root / "Assets" / "Scripts" / "Migrated.py.meta";
+    WriteText(script, "class Migrated:\n    VALUE = 2\n");
     WriteText(sidecar, R"({
   "metadata": {
+    "content_hash": {"type": "string", "value": "0123456789abcdef"},
     "file_extension": {"type": "string", "value": ".py"},
-    "file_path": {"type": "string", "value": "Assets/Scripts/Legacy.py"},
+    "file_path": {"type": "string", "value": "D:/OldProject/Assets/Scripts/Migrated.py"},
+    "file_size": {"type": "size_t", "value": 12},
     "file_type": {"type": "string", "value": "script"},
-    "guid": {"type": "string", "value": "1234567890abcdef1234567890abcdef"},
+    "guid": {"type": "string", "value": "fedcba0987654321fedcba0987654321"},
     "language": {"type": "string", "value": "python"},
     "resource_type": {"type": "enum infernux::ResourceType", "value": "Script"}
   }
@@ -165,31 +226,29 @@ void TestLegacySidecarWithoutContentHashIsRebuilt()
 
     infernux::JobSystem::Initialize(2);
     try {
-        {
-            auto database = std::make_unique<infernux::AssetDatabase>();
-            database->Initialize(infernux::FromFsPath(root));
-            auto &registry = infernux::AssetRegistry::Instance();
-            registry.Initialize(std::move(database));
-            registry.RegisterLoader(infernux::ResourceType::Script,
-                                    std::make_unique<infernux::InxPythonScriptLoader>());
-            registry.PopulateAssetDatabaseLoaders();
-            auto *assetDatabase = registry.GetAssetDatabase();
-            assetDatabase->Refresh();
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Script, std::make_unique<infernux::InxPythonScriptLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        assetDatabase->Refresh();
 
-            infernux::AssetIndex index;
-            const auto indexPath = root / "Library" / "AssetIndex.json";
-            Require(
-                index.Load(infernux::FromFsPath(indexPath), infernux::FilesystemPathKey(infernux::FromFsPath(root))),
-                "legacy sidecar refresh did not persist the asset index");
-            const auto *entry = index.Find(infernux::FilesystemPathKey(infernux::FromFsPath(script)));
-            Require(entry != nullptr, "legacy script is absent from the rebuilt asset index");
-            Require(entry->guid == "1234567890abcdef1234567890abcdef",
-                    "legacy sidecar rebuild did not preserve its GUID");
-            Require(entry->importSucceeded, "legacy script import failed during metadata rebuild");
-            Require(!entry->contentHash.empty(), "legacy script retained an empty content hash");
-            Require(entry->metadata.HasKey("content_hash"), "rebuilt metadata did not publish a content hash");
-            registry.Shutdown();
-        }
+        const std::string scriptPath = infernux::FromFsPath(script);
+        const std::string guid = assetDatabase->GetGuidFromPath(scriptPath);
+        const auto metadata = assetDatabase->GetMetaByGuid(guid);
+        Require(guid == "fedcba0987654321fedcba0987654321", "stale sidecar rebuild did not preserve its GUID");
+        Require(metadata != nullptr, "stale sidecar rebuild did not publish metadata");
+        Require(metadata->GetDataAs<std::string>("content_hash") != "0123456789abcdef",
+                "stale sidecar rebuild retained the old content hash");
+        Require(metadata->GetDataAs<size_t>("file_size") == std::filesystem::file_size(script),
+                "stale sidecar rebuild retained the old source size");
+        Require(metadata->GetDataAs<std::string>("file_path") ==
+                    infernux::InxResourceMeta::NormalizeFilePath(scriptPath),
+                "stale sidecar rebuild retained the old source path");
+
+        registry.Shutdown();
         infernux::JobSystem::Shutdown();
     } catch (...) {
         if (infernux::AssetRegistry::Instance().IsInitialized())
@@ -273,14 +332,6 @@ void TestStartupCatalogSurvivesLiveIndexInvalidation()
         const auto startupIndex = root / "Library" / "AssetIndex.startup-cache.json";
         Require(std::filesystem::is_regular_file(liveIndex), "initial refresh did not publish the live index");
         Require(std::filesystem::is_regular_file(startupIndex), "initial refresh did not publish the startup index");
-        std::filesystem::remove(startupIndex);
-        {
-            infernux::AssetDatabase legacyRestore;
-            legacyRestore.Initialize(infernux::FromFsPath(root));
-            Require(legacyRestore.RestoreCachedCatalog(), "legacy live index did not restore");
-            Require(std::filesystem::is_regular_file(startupIndex),
-                    "legacy live index did not seed the startup fallback");
-        }
         std::filesystem::remove(liveIndex);
 
         {
@@ -439,6 +490,36 @@ void TestRuntimeAssetCatalogResolvesPrimaryContentArtifact()
             "runtime identity retained a missing authoring path");
     std::filesystem::remove_all(root);
 }
+
+void TestMoveRequiresRegisteredGuidIdentity()
+{
+    const auto root = std::filesystem::current_path() / "infernux-asset-move-guid-contract";
+    std::filesystem::remove_all(root);
+    const auto source = root / "Assets" / "Source.txt";
+    const auto destination = root / "Assets" / "Destination.txt";
+    WriteText(source, "identity\n");
+
+    infernux::InxResourceMeta metadata;
+    metadata.Init("identity\n", 9, infernux::FromFsPath(source), infernux::ResourceType::DefaultText);
+    const auto sourceMetadata = infernux::InxResourceMeta::GetMetaFilePath(infernux::FromFsPath(source));
+    Require(metadata.SaveToFile(sourceMetadata), "failed to write relocation metadata fixture");
+    std::filesystem::rename(source, destination);
+
+    infernux::AssetDatabase database;
+    database.Initialize(infernux::FromFsPath(root));
+    const infernux::AssetMutationResult result =
+        database.MoveAsset(infernux::FromFsPath(source), infernux::FromFsPath(destination));
+
+    Require(!result, "unregistered asset relocation recovered identity from a sidecar");
+    Require(result.errorCode == infernux::AssetMutationErrorCode::NotFound,
+            "unregistered asset relocation returned the wrong error");
+    Require(std::filesystem::is_regular_file(sourceMetadata), "failed relocation moved the source metadata sidecar");
+    Require(!std::filesystem::exists(infernux::InxResourceMeta::GetMetaFilePath(infernux::FromFsPath(destination))),
+            "failed relocation created destination metadata");
+    Require(database.GetGuidFromPath(infernux::FromFsPath(destination)).empty(),
+            "failed relocation imported a replacement GUID");
+    std::filesystem::remove_all(root);
+}
 } // namespace
 
 int main()
@@ -446,12 +527,14 @@ int main()
     try {
         TestImporterExtensionsAreCaseInsensitive();
         TestPathOnlyDependencyIsRejectedOnInitialRefresh();
-        TestLegacySidecarWithoutContentHashIsRebuilt();
+        TestScriptReimportRefreshesContentHashAndPreservesGuid();
+        TestValidButStaleSidecarIsRebuiltFromCurrentSource();
         TestProjectPackagesScanRootSharesTheGuidCatalog();
         TestStartupCatalogSurvivesLiveIndexInvalidation();
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
         TestRuntimeAssetCatalogResolvesBuiltInArchiveResources();
         TestRuntimeAssetCatalogResolvesPrimaryContentArtifact();
+        TestMoveRequiresRegisteredGuidIdentity();
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "Asset database refresh test failed: " << error.what() << '\n';

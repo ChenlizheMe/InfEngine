@@ -48,6 +48,10 @@ class UICanvas(InxUIComponent):
         """
         ...
 
+    def compute_logical_size(self, screen_w: float, screen_h: float) -> Tuple[float, float]:
+        """Return the live logical Canvas extent for the viewport."""
+        ...
+
     def invalidate_element_cache(self) -> None:
         """Mark the cached element list as stale.
 

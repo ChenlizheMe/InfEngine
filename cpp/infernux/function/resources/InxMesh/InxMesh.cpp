@@ -46,9 +46,6 @@ void InxMesh::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indice
 
     RecalculateBounds();
     ++m_generation;
-
-    INXLOG_DEBUG("InxMesh::SetData: '", m_name, "' — ", m_vertices.size(), " verts, ", m_indices.size(), " indices, ",
-                 m_subMeshes.size(), " submesh(es)");
 }
 
 void InxMesh::RecalculateBounds()

@@ -7,8 +7,9 @@
 #include "GpuResidency.h"
 #include "InxRenderStruct.h"
 #include "ProfileConfig.h"
-#include "ScenePickingService.h"
+#include "ScenePickingTypes.h"
 #include "particle/ParticleGpuViewDiagnostics.h"
+#include "rhi/RhiDescriptors.h"
 #include <array>
 #include <chrono>
 #include <core/log/InxLog.h>           // LogLevel enum (used in SetLogLevel)
@@ -48,6 +49,7 @@ struct ParticleProgramBootstrap;
 class RenderPipelineCallback;
 class ResourcePreviewManager;
 class Scene;
+class ScenePickingService;
 class SceneRenderGraph;
 class SceneRenderTarget;
 class TransientResourcePool;
@@ -246,6 +248,14 @@ class InxRenderer
     void PreparePipeline();
     void DrawFrame();
 
+    /// @brief Force the next DrawFrame() to simulate with an exact delta time
+    /// instead of the wall clock. Used by Infernux::Tick so graphical frames
+    /// can be stepped deterministically with the same contract as headless.
+    void OverrideNextFrameDeltaTime(float seconds)
+    {
+        m_nextFrameDeltaTimeOverride = seconds;
+    }
+
     /// @brief Drain GPU work before destructive scene/resource replacement.
     void WaitForGpuIdle();
     [[nodiscard]] size_t GetPendingMeshUploadCount() const;
@@ -344,7 +354,7 @@ class InxRenderer
 
     // ImGui texture management
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
-                                   int height, VkFilter filter = VK_FILTER_LINEAR, bool pinned = false);
+                                   int height, rhi::FilterMode filter = rhi::FilterMode::Linear, bool pinned = false);
     uint64_t QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid);
     void SupersedePendingImGuiTextureUploads(const std::string &name);
     void RemoveImGuiTexture(const std::string &name);
@@ -441,7 +451,7 @@ class InxRenderer
     bool RefreshMaterialsUsingShader(const std::string &shaderId);
 
     // Invalidate shader cache for hot-reload (must call before loading new shader code)
-    void InvalidateShaderCache(const std::string &shaderId);
+    void InvalidateShaderCache(const std::string &shaderId, const std::string &shaderType = "");
 
     // Invalidate cached GPU texture and force materials to re-resolve it
     void InvalidateTextureCache(const std::string &texturePath);
@@ -615,8 +625,14 @@ class InxRenderer
     /// @brief Get the editor-mode FPS cap.
     float GetEditorFpsCap() const;
 
+    /// @brief Set the play/player-mode FPS cap. 0 = uncapped.
+    void SetPlayFpsCap(float fps);
+
+    /// @brief Get the play/player-mode FPS cap.
+    float GetPlayFpsCap() const;
+
     /// @brief Tell the renderer whether the engine is in play mode.
-    /// In play mode, the frame-rate cap and idle sleep are both disabled.
+    /// In play mode, editor idling is disabled; an explicit play cap may remain.
     /// A Play/Stop edge also drains GPU work and drops Game/Scene view caches
     /// so particle graphs cannot keep retired buffer bindings.
     void SetPlayModeRendering(bool play);
@@ -647,6 +663,8 @@ class InxRenderer
     // Delta time tracking
     std::chrono::high_resolution_clock::time_point m_lastFrameTime;
     float m_deltaTime = 0.016f;
+    /// Negative = no override. Consumed by the next DrawFrame().
+    float m_nextFrameDeltaTimeOverride = -1.0f;
     float m_totalTime = 0.0f;
     float m_smoothDeltaTime = 0.016f;
     uint64_t m_frameCount = 0;

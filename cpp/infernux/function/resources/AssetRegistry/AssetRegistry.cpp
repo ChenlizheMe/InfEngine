@@ -46,12 +46,10 @@ void AssetRegistry::Initialize(std::unique_ptr<AssetDatabase> adb)
     m_cpuBudgetBytes = 512ULL * 1024ULL * 1024ULL;
     m_cpuEvictionCount = 0;
     m_initialized = true;
-    INXLOG_INFO("AssetRegistry initialized.");
 }
 
 void AssetRegistry::Shutdown()
 {
-    INXLOG_INFO("Shutting down AssetRegistry...");
     DrainPendingLoads();
     m_loadedAssets.clear();
     m_totalCpuBytes = 0;
@@ -94,7 +92,6 @@ void AssetRegistry::PopulateAssetDatabaseLoaders()
     for (auto &[type, loader] : m_loaders) {
         m_assetDb->SetMetaLoader(type, loader.get());
     }
-    INXLOG_INFO("AssetRegistry: populated AssetDatabase with ", m_loaders.size(), " loaders");
 }
 
 // =============================================================================
@@ -210,7 +207,6 @@ void AssetRegistry::InvalidateAsset(const std::string &guid)
     auto it = m_loadedAssets.find(guid);
     if (it != m_loadedAssets.end()) {
         RemoveEntry(it);
-        INXLOG_DEBUG("AssetRegistry: invalidated cache for GUID ", guid);
     }
 }
 
@@ -255,6 +251,8 @@ std::shared_ptr<AssetLoadTicket> AssetRegistry::BeginLoadAsset(const std::string
         throw std::invalid_argument("AssetRegistry has no loader for worker request");
     if (!loader->second->SupportsWorkerLoad())
         throw std::invalid_argument("AssetRegistry loader does not support worker loading");
+    if (type == ResourceType::Mesh && !m_assetDb->EnsureRuntimeArtifactCurrent(guid, type))
+        throw std::runtime_error("AssetRegistry could not rebuild the runtime CPU artifact for GUID: " + guid);
     if (!JobSystem::IsAvailable())
         throw std::logic_error("AssetRegistry worker load requires JobSystem");
 
@@ -440,42 +438,29 @@ void AssetRegistry::DrainPendingLoads() noexcept
     m_pendingTextureStagingLoads.clear();
 }
 
-void AssetRegistry::UpdateLoadedAssetPath(const std::string &oldPath, const std::string &newPath)
+void AssetRegistry::UpdateLoadedAssetPath(const std::string &guid, const std::string &newPath)
 {
-    if (!m_assetDb)
-        return;
+    if (guid.empty() || newPath.empty())
+        throw std::invalid_argument("AssetRegistry::UpdateLoadedAssetPath requires GUID and destination path");
 
-    // AssetDatabase should have updated the GUID↔path mapping before we get here.
-    // Because our cache is keyed by GUID, no cache surgery is needed.
-    // However, some asset types store an internal path (InxMaterial::m_filePath)
-    // that must be patched so SaveToFile() writes to the correct location.
-    std::string guid = m_assetDb->GetGuidFromPath(newPath);
-    if (guid.empty()) {
-        // Fallback: try oldPath in case AssetDatabase hasn't updated yet
-        guid = m_assetDb->GetGuidFromPath(oldPath);
-    }
-    if (guid.empty())
-        return;
     ++m_assetMutationGenerations[guid];
-
     auto it = m_loadedAssets.find(guid);
     if (it == m_loadedAssets.end())
         return;
 
     auto newName = FromFsPath(ToFsPath(newPath).stem());
-
     if (it->second.type == ResourceType::Material) {
-        auto mat = it->second.payload.Get<InxMaterial>();
-        if (mat) {
-            mat->SetFilePath(newPath);
-            mat->SetName(newName);
+        auto material = it->second.payload.Get<InxMaterial>();
+        if (material) {
+            material->SetFilePath(newPath);
+            material->SetName(newName);
         }
     }
     if (it->second.type == ResourceType::Texture) {
-        auto tex = it->second.payload.Get<InxTexture>();
-        if (tex) {
-            tex->SetFilePath(newPath);
-            tex->SetName(newName);
+        auto texture = it->second.payload.Get<InxTexture>();
+        if (texture) {
+            texture->SetFilePath(newPath);
+            texture->SetName(newName);
         }
     }
     if (it->second.type == ResourceType::PhysicMaterial) {
@@ -485,7 +470,6 @@ void AssetRegistry::UpdateLoadedAssetPath(const std::string &oldPath, const std:
             material->SetName(newName);
         }
     }
-    // Future: add per-type path patching for Audio, Scene, etc.
 }
 
 // =============================================================================
@@ -529,8 +513,6 @@ bool AssetRegistry::LoadBuiltinMaterialFromFile(const std::string &key, const st
     material->SetFilePath(matFilePath);
     material->SetBuiltin(true);
     RegisterBuiltinMaterial(key, material);
-
-    INXLOG_INFO("AssetRegistry: loaded builtin material '", key, "' from: ", matFilePath);
     return true;
 }
 
@@ -540,8 +522,6 @@ bool AssetRegistry::LoadBuiltinMaterialFromFile(const std::string &key, const st
 
 void AssetRegistry::InitializeBuiltinMaterials()
 {
-    INXLOG_INFO("AssetRegistry: initializing built-in materials...");
-
     auto registerBuiltin = [this](const std::string &key, std::shared_ptr<InxMaterial> mat) {
         if (mat) {
             mat->SetBuiltin(true);
@@ -551,6 +531,7 @@ void AssetRegistry::InitializeBuiltinMaterials()
 
     registerBuiltin("DefaultLit", InxMaterial::CreateDefaultLit());
     registerBuiltin("DefaultUnlit", InxMaterial::CreateDefaultUnlit());
+    registerBuiltin("DefaultLineMaterial", InxMaterial::CreateDefaultLineMaterial());
     registerBuiltin("ParticleSpriteMaterial", InxMaterial::CreateParticleSpriteMaterial());
     registerBuiltin("ParticleSixWaySmokeMaterial", InxMaterial::CreateParticleSixWaySmokeMaterial());
     registerBuiltin("GizmoMaterial", InxMaterial::CreateGizmoMaterial());
@@ -563,8 +544,6 @@ void AssetRegistry::InitializeBuiltinMaterials()
     registerBuiltin("EditorToolsMaterial", InxMaterial::CreateEditorToolsMaterial());
     registerBuiltin("SkyboxProcedural", InxMaterial::CreateSkyboxProceduralMaterial());
     registerBuiltin("ErrorMaterial", InxMaterial::CreateErrorMaterial());
-
-    INXLOG_INFO("AssetRegistry: built-in materials initialized.");
 }
 
 // =============================================================================

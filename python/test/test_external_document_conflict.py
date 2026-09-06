@@ -281,6 +281,9 @@ class _ConflictModalContext:
     def open_popup(self, popup_id):
         self.opened.append(popup_id)
 
+    def get_dpi_scale(self):
+        return 1.0
+
     def get_main_viewport_bounds(self):
         return (0.0, 0.0, 1280.0, 720.0)
 

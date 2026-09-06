@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -8,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
+from hub_utils import get_hub_user_data_dir
 from project_paths import canonical_project_path, normalize_project_path
 
 
@@ -24,13 +24,13 @@ class ProjectDatabase:
 
     def __init__(self, db_path: Path | None = None) -> None:
         if db_path is None:
-            home_dir = Path.home() / ".infernux"
-            home_dir.mkdir(parents=True, exist_ok=True)
-            db_path = home_dir / "projects.db"
+            state_dir = Path(get_hub_user_data_dir()) / "State"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            db_path = state_dir / "projects.db"
 
         self._conn = sqlite3.connect(db_path)
         self._conn.row_factory = sqlite3.Row
-        self._create_or_migrate_schema()
+        self._create_schema()
 
     @staticmethod
     def _record(row: sqlite3.Row | None) -> ProjectRecord | None:
@@ -97,7 +97,7 @@ class ProjectDatabase:
             return None
         return self.get_project(project_id)
 
-    def _create_or_migrate_schema(self) -> None:
+    def _create_schema(self) -> None:
         exists = self._conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'projects';"
         ).fetchone()
@@ -111,31 +111,13 @@ class ProjectDatabase:
             row[1]
             for row in self._conn.execute("PRAGMA table_info(projects);").fetchall()
         }
-        if {"project_id", "normalized_path"}.issubset(columns):
-            with self._conn:
-                self._create_settings_table()
-            return
-
-        legacy_rows = self._conn.execute(
-            "SELECT name, created_at, path FROM projects ORDER BY id;"
-        ).fetchall()
+        required = {"project_id", "name", "created_at", "path", "normalized_path"}
+        if columns != required:
+            raise RuntimeError(
+                "Hub project database does not match the current schema; "
+                "remove projects.db and import projects again"
+            )
         with self._conn:
-            self._create_projects_table("projects_v2")
-            for row in legacy_rows:
-                name = row["name"]
-                legacy_path = row["path"] or ""
-                # The legacy schema stored the selected parent directory.
-                full_path = os.path.join(legacy_path, name)
-                project_path = canonical_project_path(full_path)
-                normalized = normalize_project_path(project_path)
-                project_id = uuid.uuid5(uuid.NAMESPACE_URL, normalized).hex
-                self._conn.execute(
-                    "INSERT OR IGNORE INTO projects_v2 "
-                    "(project_id, name, created_at, path, normalized_path) VALUES (?, ?, ?, ?, ?);",
-                    (project_id, name, row["created_at"], project_path, normalized),
-                )
-            self._conn.execute("DROP TABLE projects;")
-            self._conn.execute("ALTER TABLE projects_v2 RENAME TO projects;")
             self._create_settings_table()
 
     def _create_projects_table(self, table_name: str) -> None:

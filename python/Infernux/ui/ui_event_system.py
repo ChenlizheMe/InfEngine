@@ -1,72 +1,63 @@
-"""UIEventProcessor — per-frame pointer state machine for screen UI.
-
-One processor is created per Game View and updated each frame after
-screen UI is rendered.  It converts the raw ``Input`` mouse state into
-high-level pointer events (enter / exit / down / up / click) dispatched
-to ``InxUIScreenComponent`` handlers.
-"""
+"""Per-frame mouse and multi-touch dispatch for runtime screen UI."""
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import List, Optional, Sequence, Tuple, TYPE_CHECKING
 
-from .ui_event_data import PointerEventData, PointerButton
-from Infernux.engine.runtime_dispatch import current_runtime_epoch, resolve_runtime_method
+from Infernux.engine.runtime_dispatch import (
+    current_runtime_epoch,
+    resolve_runtime_method,
+)
+
+from .ui_event_data import PointerButton, PointerEventData, PointerType
 
 if TYPE_CHECKING:
     from .inx_ui_screen_component import InxUIScreenComponent
     from .ui_canvas import UICanvas
 
 
-# Drag begins once pointer moves farther than this many canvas-design pixels.
 _DRAG_THRESHOLD = 5.0
-
-# Maximum seconds between two clicks to count as double-click.
 _DOUBLE_CLICK_TIME = 0.3
+_MOUSE_POINTER_ID = -1
+
+
+@dataclass(frozen=True, slots=True)
+class UIPointerFrame:
+    """One physical pointer snapshot expressed in every canvas's coordinates."""
+
+    pointer_id: int
+    pointer_type: PointerType
+    canvas_positions: Tuple[Tuple[float, float], ...]
+    down: bool = False
+    up: bool = False
+    held: bool = False
+    canceled: bool = False
+    scroll_delta: Tuple[float, float] = (0.0, 0.0)
+
+
+@dataclass(slots=True)
+class _PointerState:
+    pointer_type: PointerType
+    hover_target: Optional[InxUIScreenComponent] = None
+    hover_canvas: Optional[UICanvas] = None
+    press_target: Optional[InxUIScreenComponent] = None
+    press_canvas: Optional[UICanvas] = None
+    press_position: Tuple[float, float] = (0.0, 0.0)
+    drag_target: Optional[InxUIScreenComponent] = None
+    is_dragging: bool = False
+    last_canvas_positions: Tuple[Tuple[float, float], ...] = field(default_factory=tuple)
+    last_click_time: float = 0.0
+    click_count: int = 0
 
 
 class UIEventProcessor:
-    """Per-frame pointer event dispatcher for screen-space UI.
-
-    Usage (from GameViewPanel):
-    >>> processor = UIEventProcessor()
-    >>> # Each frame, after rendering screen UI:
-    >>> processor.process(canvases, canvas_mouse_pos, mouse_btns, scroll, dt)
-    """
+    """Dispatch independent mouse and touch transactions to screen UI elements."""
 
     def __init__(self):
-        # Current hover target
-        self._hover_target: Optional[InxUIScreenComponent] = None
-        self._hover_canvas: Optional[UICanvas] = None
-
-        # Press tracking (per button, but simplified to left-button primary)
-        self._press_target: Optional[InxUIScreenComponent] = None
-        self._press_canvas: Optional[UICanvas] = None
-        self._press_position: Tuple[float, float] = (0.0, 0.0)
-
-        # Drag tracking
-        self._drag_target: Optional[InxUIScreenComponent] = None
-        self._is_dragging: bool = False
-
-        # Previous frame position (canvas-design pixels)
-        self._last_canvas_pos: Tuple[float, float] = (0.0, 0.0)
-
-        # Double-click detection
-        self._last_click_time: float = 0.0
-        self._click_count: int = 0
-
-        # Accumulated time
-        self._time: float = 0.0
-
-        # Structure version for cache invalidation
-        self._last_structure_version: int = -1
-
-        # Last button transition, exposed only through on-demand diagnostics.
+        self._pointers: dict[tuple[PointerType, int], _PointerState] = {}
+        self._time = 0.0
         self._last_pointer_debug: dict = {}
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def process(
         self,
@@ -77,244 +68,292 @@ class UIEventProcessor:
         mouse_held: bool,
         scroll_delta: Tuple[float, float],
         dt: float,
-    ):
-        """Run one frame of event processing.
+    ) -> None:
+        """Dispatch one mouse frame from the Editor Game View."""
 
-        Parameters:
-            canvases: Sorted list of active canvases (by sort_order).
-            canvas_positions: Per-canvas pointer position in design pixels.
-                              Must be same length as *canvases*.
-            mouse_down: True during the frame left-button was pressed.
-            mouse_up: True during the frame left-button was released.
-            mouse_held: True while left-button is held.
-            scroll_delta: (sx, sy) scroll delta this frame.
-            dt: Delta time in seconds since last frame.
-        """
-        self._time += dt
+        self.process_pointers(
+            canvases,
+            (
+                UIPointerFrame(
+                    pointer_id=_MOUSE_POINTER_ID,
+                    pointer_type=PointerType.Mouse,
+                    canvas_positions=tuple(canvas_positions),
+                    down=bool(mouse_down),
+                    up=bool(mouse_up),
+                    held=bool(mouse_held),
+                    scroll_delta=scroll_delta,
+                ),
+            ),
+            dt,
+        )
 
-        # Use the first canvas position as the "current" for delta calc
-        cur_pos = canvas_positions[0] if canvas_positions else (0.0, 0.0)
+    def process_pointers(
+        self,
+        canvases: Sequence[UICanvas],
+        pointers: Sequence[UIPointerFrame],
+        dt: float,
+    ) -> None:
+        """Dispatch one complete physical pointer snapshot."""
 
-        # Early-out: skip raycast + dispatch when nothing changed
-        has_activity = (mouse_down or mouse_up or
-                        scroll_delta[0] != 0 or scroll_delta[1] != 0 or
-                        cur_pos[0] != self._last_canvas_pos[0] or
-                        cur_pos[1] != self._last_canvas_pos[1])
-        if not has_activity and self._press_target is None:
+        self._time += float(dt)
+        seen: set[tuple[PointerType, int]] = set()
+        epoch = current_runtime_epoch()
+        for pointer in pointers:
+            pointer_id = int(pointer.pointer_id)
+            pointer_key = (pointer.pointer_type, pointer_id)
+            if pointer_key in seen:
+                raise ValueError(
+                    f"Duplicate UI {pointer.pointer_type.name} pointer id {pointer_id}"
+                )
+            if len(pointer.canvas_positions) != len(canvases):
+                raise ValueError(
+                    "UI pointer canvas position count does not match canvas count"
+                )
+            seen.add(pointer_key)
+            self._process_pointer(canvases, pointer, epoch)
+
+        missing_touches = tuple(
+            pointer_key
+            for pointer_key, state in self._pointers.items()
+            if state.pointer_type is PointerType.Touch and pointer_key not in seen
+        )
+        for pointer_key in missing_touches:
+            self._cancel_pointer(pointer_key, epoch)
+
+    def _process_pointer(self, canvases, pointer: UIPointerFrame, epoch) -> None:
+        pointer_id = int(pointer.pointer_id)
+        pointer_key = (pointer.pointer_type, pointer_id)
+        state = self._pointers.get(pointer_key)
+        if state is None:
+            state = _PointerState(pointer_type=pointer.pointer_type)
+            self._pointers[pointer_key] = state
+
+        current = pointer.canvas_positions[0] if pointer.canvas_positions else (0.0, 0.0)
+        previous = state.last_canvas_positions[0] if state.last_canvas_positions else current
+        delta = (current[0] - previous[0], current[1] - previous[1])
+        active = (
+            pointer.down
+            or pointer.up
+            or pointer.held
+            or pointer.canceled
+            or pointer.scroll_delta != (0.0, 0.0)
+            or current != previous
+            or state.press_target is not None
+        )
+        if not active:
+            state.last_canvas_positions = pointer.canvas_positions
             return
 
-        # All callbacks generated by this process call observe one immutable
-        # publication.  A callback may request a later safe-point reload, but
-        # it cannot make the rest of this pointer transaction mix revisions.
-        epoch = current_runtime_epoch()
-
-        delta = (cur_pos[0] - self._last_canvas_pos[0],
-                 cur_pos[1] - self._last_canvas_pos[1])
-
-        # ── Raycast: find topmost hit across all canvases ──
-        hit_elem: Optional[InxUIScreenComponent] = None
-        hit_canvas: Optional[UICanvas] = None
-        hit_pos: Tuple[float, float] = (0.0, 0.0)
-
-        # Iterate in reverse sort order (highest sort_order on top)
-        for i in range(len(canvases) - 1, -1, -1):
-            canvas = canvases[i]
-            # Skip inactive canvases
-            canvas_go = canvas.game_object
-            if canvas_go is not None and not canvas_go.active_in_hierarchy:
+        hit_element = None
+        hit_canvas = None
+        hit_position = current
+        for index in range(len(canvases) - 1, -1, -1):
+            canvas = canvases[index]
+            canvas_object = canvas.game_object
+            if canvas_object is not None and not canvas_object.active_in_hierarchy:
                 continue
-            if not getattr(canvas, 'enabled', True):
+            if not getattr(canvas, "enabled", True):
                 continue
-            cx, cy = canvas_positions[i]
-            elem = canvas.raycast(cx, cy)
-            if elem is not None:
-                hit_elem = elem
+            position = pointer.canvas_positions[index]
+            candidate = canvas.raycast(position[0], position[1])
+            if candidate is not None:
+                hit_element = candidate
                 hit_canvas = canvas
-                hit_pos = (cx, cy)
+                hit_position = position
                 break
 
-        if mouse_down or mouse_up:
-            hit_go = getattr(hit_elem, "game_object", None) if hit_elem is not None else None
+        if pointer.down or pointer.up or pointer.canceled:
+            hit_object = getattr(hit_element, "game_object", None) if hit_element is not None else None
             self._last_pointer_debug = {
+                "pointer_id": pointer_id,
+                "pointer_type": pointer.pointer_type.name,
                 "canvas_count": len(canvases),
-                "canvas_position": [float(hit_pos[0]), float(hit_pos[1])],
-                "mouse_down": bool(mouse_down),
-                "mouse_up": bool(mouse_up),
-                "mouse_held": bool(mouse_held),
-                "hit_type": type(hit_elem).__name__ if hit_elem is not None else "",
-                "hit_object": str(getattr(hit_go, "name", "") or ""),
-                "press_type": type(self._press_target).__name__ if self._press_target is not None else "",
-                "press_object": str(getattr(getattr(self._press_target, "game_object", None), "name", "") or ""),
+                "canvas_position": [float(hit_position[0]), float(hit_position[1])],
+                "down": bool(pointer.down),
+                "up": bool(pointer.up),
+                "held": bool(pointer.held),
+                "canceled": bool(pointer.canceled),
+                "hit_type": type(hit_element).__name__ if hit_element is not None else "",
+                "hit_object": str(getattr(hit_object, "name", "") or ""),
+                "press_type": type(state.press_target).__name__ if state.press_target is not None else "",
+                "press_object": str(
+                    getattr(getattr(state.press_target, "game_object", None), "name", "") or ""
+                ),
             }
 
-        # ── Enter / Exit ──
-        prev_hover = self._hover_target
-        if hit_elem is not prev_hover:
-            if prev_hover is not None:
-                ev = self._make_event(hit_pos, delta, self._hover_canvas, prev_hover)
-                self._dispatch_pointer_callback(prev_hover, "on_pointer_exit", ev, epoch)
-            self._hover_target = hit_elem
-            self._hover_canvas = hit_canvas
-            if hit_elem is not None:
-                ev = self._make_event(hit_pos, delta, hit_canvas, hit_elem)
-                self._dispatch_pointer_callback(hit_elem, "on_pointer_enter", ev, epoch)
-
-        # ── Down ──
-        if mouse_down and hit_elem is not None:
-            self._press_target = hit_elem
-            self._press_canvas = hit_canvas
-            self._press_position = hit_pos
-            self._drag_target = hit_elem
-            self._is_dragging = False
-
-            ev = self._make_event(hit_pos, delta, hit_canvas, hit_elem)
-            ev.press_position = self._press_position
-            self._dispatch_pointer_callback(hit_elem, "on_pointer_down", ev, epoch)
-
-        # ── Drag (held) ──
-        if mouse_held and self._drag_target is not None:
-            dx = cur_pos[0] - self._press_position[0]
-            dy = cur_pos[1] - self._press_position[1]
-            dist_sq = dx * dx + dy * dy
-            if not self._is_dragging and dist_sq > _DRAG_THRESHOLD * _DRAG_THRESHOLD:
-                self._is_dragging = True
-                ev = self._make_event(cur_pos, delta, self._press_canvas, self._drag_target)
-                ev.press_position = self._press_position
-                self._dispatch_pointer_callback(
-                    self._drag_target, "on_begin_drag", ev, epoch
+        previous_hover = state.hover_target
+        if hit_element is not previous_hover:
+            if previous_hover is not None:
+                event = self._make_event(
+                    pointer, hit_position, delta, state.hover_canvas, previous_hover
                 )
-            elif self._is_dragging:
-                ev = self._make_event(cur_pos, delta, self._press_canvas, self._drag_target)
-                ev.press_position = self._press_position
-                self._dispatch_pointer_callback(self._drag_target, "on_drag", ev, epoch)
+                self._dispatch_pointer_callback(previous_hover, "on_pointer_exit", event, epoch)
+            state.hover_target = hit_element
+            state.hover_canvas = hit_canvas
+            if hit_element is not None:
+                event = self._make_event(pointer, hit_position, delta, hit_canvas, hit_element)
+                self._dispatch_pointer_callback(hit_element, "on_pointer_enter", event, epoch)
 
-        # ── Up / Click ──
-        if mouse_up:
-            press_target = self._press_target
-            if press_target is not None:
-                ev = self._make_event(
-                    hit_pos if hit_elem is not None else cur_pos,
-                    delta,
-                    self._press_canvas,
-                    press_target,
-                )
-                ev.press_position = self._press_position
-                self._dispatch_pointer_callback(press_target, "on_pointer_up", ev, epoch)
+        if pointer.down and hit_element is not None:
+            state.press_target = hit_element
+            state.press_canvas = hit_canvas
+            state.press_position = hit_position
+            state.drag_target = hit_element
+            state.is_dragging = False
+            event = self._make_event(pointer, hit_position, delta, hit_canvas, hit_element)
+            event.press_position = state.press_position
+            self._dispatch_pointer_callback(hit_element, "on_pointer_down", event, epoch)
 
-                # Click = up on same element as down
-                if hit_elem is press_target:
-                    if (self._time - self._last_click_time) < _DOUBLE_CLICK_TIME:
-                        self._click_count += 1
-                    else:
-                        self._click_count = 1
-                    self._last_click_time = self._time
-
-                    ev_click = self._make_event(hit_pos, delta, hit_canvas, hit_elem)
-                    ev_click.press_position = self._press_position
-                    ev_click.click_count = self._click_count
-                    self._dispatch_pointer_callback(
-                        hit_elem, "on_pointer_click", ev_click, epoch
-                    )
-                    debug_dispatch = getattr(hit_elem, "debug_dispatch_state", None)
-                    if callable(debug_dispatch):
-                        self._last_pointer_debug["persistent_dispatch"] = debug_dispatch()
-
-            # End drag
-            if self._is_dragging and self._drag_target is not None:
-                ev_drag = self._make_event(cur_pos, delta, self._press_canvas, self._drag_target)
-                ev_drag.press_position = self._press_position
-                self._dispatch_pointer_callback(
-                    self._drag_target, "on_end_drag", ev_drag, epoch
-                )
-
-            self._press_target = None
-            self._press_canvas = None
-            self._drag_target = None
-            self._is_dragging = False
-
-        # ── Scroll ──
-        if (scroll_delta[0] != 0 or scroll_delta[1] != 0) and hit_elem is not None:
-            ev = self._make_event(hit_pos, delta, hit_canvas, hit_elem)
-            ev.scroll_delta = scroll_delta
-            self._dispatch_pointer_callback(hit_elem, "on_scroll", ev, epoch)
-
-        self._last_canvas_pos = cur_pos
-
-    def reset(self):
-        """Clear all transient state (e.g. when play mode stops)."""
-        if self._hover_target is not None:
-            ev = self._make_event(self._last_canvas_pos, (0, 0),
-                                  self._hover_canvas, self._hover_target)
-            self._dispatch_pointer_callback(
-                self._hover_target,
-                "on_pointer_exit",
-                ev,
-                current_runtime_epoch(),
+        if pointer.held and state.drag_target is not None:
+            dx = current[0] - state.press_position[0]
+            dy = current[1] - state.press_position[1]
+            distance_squared = dx * dx + dy * dy
+            event = self._make_event(
+                pointer, current, delta, state.press_canvas, state.drag_target
             )
-        self._hover_target = None
-        self._hover_canvas = None
-        self._press_target = None
-        self._press_canvas = None
-        self._drag_target = None
-        self._is_dragging = False
-        self._click_count = 0
-        self._last_structure_version = -1
+            event.press_position = state.press_position
+            if not state.is_dragging and distance_squared > _DRAG_THRESHOLD * _DRAG_THRESHOLD:
+                state.is_dragging = True
+                self._dispatch_pointer_callback(state.drag_target, "on_begin_drag", event, epoch)
+            elif state.is_dragging:
+                self._dispatch_pointer_callback(state.drag_target, "on_drag", event, epoch)
+
+        if pointer.scroll_delta != (0.0, 0.0) and hit_element is not None:
+            event = self._make_event(
+                pointer, hit_position, delta, hit_canvas, hit_element
+            )
+            self._dispatch_pointer_callback(hit_element, "on_scroll", event, epoch)
+
+        if pointer.up or pointer.canceled:
+            self._release_pointer(
+                pointer,
+                state,
+                current,
+                delta,
+                hit_element,
+                hit_canvas,
+                hit_position,
+                epoch,
+            )
+
+        state.last_canvas_positions = pointer.canvas_positions
+        if pointer.pointer_type is PointerType.Touch and (pointer.up or pointer.canceled):
+            if state.hover_target is not None:
+                event = self._make_event(
+                    pointer, hit_position, delta, state.hover_canvas, state.hover_target
+                )
+                self._dispatch_pointer_callback(state.hover_target, "on_pointer_exit", event, epoch)
+            self._pointers.pop(pointer_key, None)
+
+    def _release_pointer(
+        self,
+        pointer,
+        state,
+        current,
+        delta,
+        hit_element,
+        hit_canvas,
+        hit_position,
+        epoch,
+    ) -> None:
+        press_target = state.press_target
+        if press_target is not None:
+            event = self._make_event(
+                pointer,
+                hit_position if hit_element is not None else current,
+                delta,
+                state.press_canvas,
+                press_target,
+            )
+            event.press_position = state.press_position
+            self._dispatch_pointer_callback(press_target, "on_pointer_up", event, epoch)
+
+            if not pointer.canceled and hit_element is press_target:
+                if (self._time - state.last_click_time) < _DOUBLE_CLICK_TIME:
+                    state.click_count += 1
+                else:
+                    state.click_count = 1
+                state.last_click_time = self._time
+                click = self._make_event(pointer, hit_position, delta, hit_canvas, hit_element)
+                click.press_position = state.press_position
+                click.click_count = state.click_count
+                self._dispatch_pointer_callback(hit_element, "on_pointer_click", click, epoch)
+                debug_dispatch = getattr(hit_element, "debug_dispatch_state", None)
+                if callable(debug_dispatch):
+                    self._last_pointer_debug["persistent_dispatch"] = debug_dispatch()
+
+        if state.is_dragging and state.drag_target is not None:
+            event = self._make_event(
+                pointer, current, delta, state.press_canvas, state.drag_target
+            )
+            event.press_position = state.press_position
+            self._dispatch_pointer_callback(state.drag_target, "on_end_drag", event, epoch)
+
+        state.press_target = None
+        state.press_canvas = None
+        state.drag_target = None
+        state.is_dragging = False
+
+    def _cancel_pointer(
+        self, pointer_key: tuple[PointerType, int], epoch
+    ) -> None:
+        state = self._pointers.pop(pointer_key)
+        pointer_type, pointer_id = pointer_key
+        positions = state.last_canvas_positions
+        current = positions[0] if positions else (0.0, 0.0)
+        pointer = UIPointerFrame(
+            pointer_id=pointer_id,
+            pointer_type=pointer_type,
+            canvas_positions=positions,
+            up=True,
+            canceled=True,
+        )
+        self._release_pointer(
+            pointer, state, current, (0.0, 0.0), None, None, current, epoch
+        )
+        if state.hover_target is not None:
+            event = self._make_event(
+                pointer, current, (0.0, 0.0), state.hover_canvas, state.hover_target
+            )
+            self._dispatch_pointer_callback(state.hover_target, "on_pointer_exit", event, epoch)
+
+    def reset(self) -> None:
+        """Cancel every active pointer transaction."""
+
+        epoch = current_runtime_epoch()
+        for pointer_key in tuple(self._pointers):
+            self._cancel_pointer(pointer_key, epoch)
 
     def debug_state(self) -> dict:
-        """Return the last pointer transition without polling input each frame."""
-        return dict(self._last_pointer_debug)
+        """Return the latest transition without polling input each frame."""
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+        return dict(self._last_pointer_debug)
 
     @staticmethod
     def _dispatch_pointer_callback(target, method_name, event, epoch) -> None:
-        """Resolve and invoke one pointer hook without retrying user code."""
-        try:
-            callback = resolve_runtime_method(target, method_name, epoch=epoch)
-            if callback is None and epoch.descriptor_for(type(target)) is None:
-                # A lightweight UI test/runtime object may not have entered
-                # the active component scheduler yet.  Use the same cached
-                # descriptor construction as the lifecycle compatibility path
-                # only for that never-published type; a published type with a
-                # removed method must remain a real no-op.
-                from Infernux.engine.runtime_dispatch import (
-                    ensure_runtime_compatibility_mirror,
-                )
+        """Invoke one callback exactly once and propagate user-code failures."""
 
-                callback = ensure_runtime_compatibility_mirror(type(target)).resolve_method(
-                    target,
-                    method_name,
-                )
-            if callback is None:
-                return
+        callback = resolve_runtime_method(target, method_name, epoch=epoch)
+        epoch.require_descriptor(type(target))
+        if callback is not None:
             callback(event)
-        except Exception as exc:
-            reporter = getattr(target, "_report_lifecycle_exception", None)
-            if callable(reporter):
-                reporter(exc)
-                return
-            try:
-                from Infernux.debug import Debug
 
-                Debug.log_exception(exc, context=target)
-            except (ImportError, RuntimeError):
-                import traceback
-
-                traceback.print_exc()
-
+    @staticmethod
     def _make_event(
-        self,
-        pos: Tuple[float, float],
+        pointer: UIPointerFrame,
+        position: Tuple[float, float],
         delta: Tuple[float, float],
         canvas: Optional[UICanvas],
         target: Optional[InxUIScreenComponent],
     ) -> PointerEventData:
-        ev = PointerEventData()
-        ev.position = pos
-        ev.delta = delta
-        ev.button = PointerButton.Left
-        ev.canvas = canvas
-        ev.target = target
-        return ev
+        event = PointerEventData()
+        event.position = position
+        event.delta = delta
+        event.pointer_id = int(pointer.pointer_id)
+        event.pointer_type = pointer.pointer_type
+        event.canceled = bool(pointer.canceled)
+        event.button = PointerButton.Left
+        event.scroll_delta = pointer.scroll_delta
+        event.canvas = canvas
+        event.target = target
+        return event

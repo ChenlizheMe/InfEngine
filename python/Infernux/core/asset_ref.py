@@ -9,31 +9,24 @@ All asset ref types inherit from ``AssetRefBase`` and override ``_do_resolve``.
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import Any, Optional
-from Infernux.debug import Debug
-
-_log = logging.getLogger("Infernux.ref")
 
 
 def _get_asset_database():
     """Return the C++ AssetDatabase, trying AssetManager first then engine."""
+    from Infernux.core.assets import AssetManager
+
+    if AssetManager._asset_database is not None:
+        return AssetManager._asset_database
     try:
-        from Infernux.core.assets import AssetManager
-        if AssetManager._asset_database is not None:
-            return AssetManager._asset_database
-    except ImportError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
-    try:
+        # Editor-only module; absent in stripped player runtimes.
         from Infernux.engine.play_mode import PlayModeManager
-        pm = PlayModeManager.instance()
-        if pm and pm._asset_database is not None:
-            return pm._asset_database
-    except ImportError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
+    except ImportError:
+        return None
+    pm = PlayModeManager.instance()
+    if pm and pm._asset_database is not None:
+        return pm._asset_database
     return None
 
 
@@ -79,11 +72,11 @@ class AssetRefBase:
             except ImportError:
                 pass
             database = _get_asset_database()
-            if database is not None:
-                try:
-                    resolved = str(database.get_path_from_guid(self._guid) or "")
-                except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
-                    resolved = ""
+            # Duck-typed: headless play mode injects plain-Python database
+            # stubs that may not implement the display-path lookup.
+            resolve_path = getattr(database, "get_path_from_guid", None)
+            if callable(resolve_path):
+                resolved = str(resolve_path(self._guid) or "")
                 if resolved:
                     return resolved
         return self._path_hint
@@ -181,13 +174,7 @@ class GenericAssetRef(AssetRefBase):
     def _do_resolve(self):
         from Infernux.core.assets import AssetManager
 
-        if self._guid:
-            asset = AssetManager.load_by_guid(self._guid)
-            if asset is not None:
-                return asset
-        if self._path_hint:
-            return AssetManager.load(self._path_hint)
-        return None
+        return AssetManager.load_by_guid(self._guid)
 
 
 class TextureRef(AssetRefBase):
@@ -226,49 +213,39 @@ class PhysicMaterialRef(AssetRefBase):
 
 
 class AnimStateMachineRef(AssetRefBase):
-    """Reference to an AnimStateMachine (.animfsm) asset."""
+    """Reference to an AnimStateMachine (.animfsm) asset. GUID is the only identity."""
 
     def _do_resolve(self):
-        if not self._guid and self._path_hint:
-            from Infernux.core.anim_state_machine import AnimStateMachine
-            return AnimStateMachine.load(self._path_hint)
         db = _get_asset_database()
-        if db and self._guid:
-            try:
-                from Infernux.core.animation_clip3d import resolve_disk_path_for_guid_string
-                path = resolve_disk_path_for_guid_string(db, self._guid) or db.get_path_from_guid(self._guid)
-                if path:
-                    from Infernux.core.anim_state_machine import AnimStateMachine
-                    return AnimStateMachine.load(path)
-            except Exception:
-                pass
-        return None
+        if db is None:
+            return None
+        from Infernux.core.animation_clip3d import resolve_disk_path_for_guid_string
+        path = resolve_disk_path_for_guid_string(db, self._guid) or db.get_path_from_guid(self._guid)
+        if not path:
+            return None
+        from Infernux.core.anim_state_machine import AnimStateMachine
+        return AnimStateMachine.load(path)
 
 
 class ParticleGraphRef(AssetRefBase):
-    """Reference to a compiled ParticleGraph or ParticleScript asset."""
+    """Reference to a compiled ParticleGraph or ParticleScript asset. GUID only."""
 
     def _do_resolve(self):
-        path = self._path_hint
         db = _get_asset_database()
-        if self._guid:
-            path = (db.get_path_from_guid(self._guid) if db else "") or path
+        path = db.get_path_from_guid(self._guid) if db else ""
         if not path:
             return None
-        try:
-            if path.lower().endswith(".particle.py"):
-                from pathlib import Path
-                from Infernux.particle.script import ParticleScriptCompiler
+        if path.lower().endswith(".particle.py"):
+            from pathlib import Path
+            from Infernux.particle.script import ParticleScriptCompiler
 
-                return ParticleScriptCompiler().parse(
-                    Path(path).read_text(encoding="utf-8"),
-                    source_name=path,
-                )
-            from Infernux.particle.asset import ParticleGraphAsset
+            return ParticleScriptCompiler().parse(
+                Path(path).read_text(encoding="utf-8"),
+                source_name=path,
+            )
+        from Infernux.particle.asset import ParticleGraphAsset
 
-            return ParticleGraphAsset.load(path)
-        except (OSError, TypeError, ValueError):
-            return None
+        return ParticleGraphAsset.load(path)
 
 
 class RenderEffectRef(AssetRefBase):
@@ -294,11 +271,15 @@ class RenderEffectRef(AssetRefBase):
         from Infernux.renderstack.render_effect import RenderEffect
 
         if self._guid:
-            effect = AssetManager.load_by_guid(self._guid, asset_type=RenderEffect)
-            if effect is not None:
-                return effect
+            # GUID is the asset identity; never fall back to a path when the
+            # GUID lookup fails.
+            return AssetManager.load_by_guid(self._guid, asset_type=RenderEffect)
         if self._path_hint:
+            # Code-authored RenderStack references (Python-first API) may name
+            # an .effect file directly; without a GUID the explicit path *is*
+            # the identity, not a fallback.
             return AssetManager.load(self._path_hint, asset_type=RenderEffect)
+        # Runtime-created effects carry no GUID; the live object is the identity.
         return self._cached
 
     def __bool__(self):
@@ -325,81 +306,55 @@ class TimelineFSMRef(AssetRefBase):
     """Reference to a Timeline state machine (.timelinefsm) asset.
 
     Stored as an AnimStateMachine with ``mode == 'timeline'`` (nodes are all
-    timeline states); resolved the same way as an .animfsm.
+    timeline states); resolved the same way as an .animfsm. GUID only.
     """
 
     def _do_resolve(self):
-        if not self._guid and self._path_hint:
-            from Infernux.core.anim_state_machine import AnimStateMachine
-            return AnimStateMachine.load(self._path_hint)
         db = _get_asset_database()
-        if db and self._guid:
-            try:
-                from Infernux.core.animation_clip3d import resolve_disk_path_for_guid_string
-                path = resolve_disk_path_for_guid_string(db, self._guid) or db.get_path_from_guid(self._guid)
-                if path:
-                    from Infernux.core.anim_state_machine import AnimStateMachine
-                    return AnimStateMachine.load(path)
-            except Exception:
-                pass
-        return None
+        if db is None:
+            return None
+        from Infernux.core.animation_clip3d import resolve_disk_path_for_guid_string
+        path = resolve_disk_path_for_guid_string(db, self._guid) or db.get_path_from_guid(self._guid)
+        if not path:
+            return None
+        from Infernux.core.anim_state_machine import AnimStateMachine
+        return AnimStateMachine.load(path)
 
 
 class AnimationClipRef(AssetRefBase):
-    """Reference to an AnimationClip (.animclip2d) asset."""
+    """Reference to an AnimationClip (.animclip2d) asset. GUID only."""
 
     def _do_resolve(self):
-        if not self._guid and self._path_hint:
-            from Infernux.core.animation_clip import AnimationClip
-            return AnimationClip.load(self._path_hint)
         db = _get_asset_database()
-        if db and self._guid:
-            try:
-                path = db.get_path_from_guid(self._guid)
-                if path:
-                    from Infernux.core.animation_clip import AnimationClip
-                    return AnimationClip.load(path)
-            except Exception:
-                pass
-        return None
+        path = db.get_path_from_guid(self._guid) if db else ""
+        if not path:
+            return None
+        from Infernux.core.animation_clip import AnimationClip
+        return AnimationClip.load(path)
 
 
 class AnimationClip3DRef(AssetRefBase):
-    """Reference to an AnimationClip3D (.animclip3d) asset."""
+    """Reference to an AnimationClip3D (.animclip3d) asset. GUID only."""
 
     def _do_resolve(self):
-        if not self._guid and self._path_hint:
-            from Infernux.core.animation_clip3d import AnimationClip3D
-            return AnimationClip3D.load(self._path_hint)
         db = _get_asset_database()
-        if db and self._guid:
-            try:
-                path = db.get_path_from_guid(self._guid)
-                if path:
-                    from Infernux.core.animation_clip3d import AnimationClip3D
-                    return AnimationClip3D.load(path)
-            except Exception:
-                pass
-        return None
+        path = db.get_path_from_guid(self._guid) if db else ""
+        if not path:
+            return None
+        from Infernux.core.animation_clip3d import AnimationClip3D
+        return AnimationClip3D.load(path)
 
 
 class AnimationTimelineRef(AssetRefBase):
-    """Reference to an AnimationTimeline (.animtimeline) asset."""
+    """Reference to an AnimationTimeline (.animtimeline) asset. GUID only."""
 
     def _do_resolve(self):
-        if not self._guid and self._path_hint:
-            from Infernux.core.animation_timeline import AnimationTimeline
-            return AnimationTimeline.load(self._path_hint)
         db = _get_asset_database()
-        if db and self._guid:
-            try:
-                path = db.get_path_from_guid(self._guid)
-                if path:
-                    from Infernux.core.animation_timeline import AnimationTimeline
-                    return AnimationTimeline.load(path)
-            except Exception:
-                pass
-        return None
+        path = db.get_path_from_guid(self._guid) if db else ""
+        if not path:
+            return None
+        from Infernux.core.animation_timeline import AnimationTimeline
+        return AnimationTimeline.load(path)
 
 
 # ---------------------------------------------------------------------------
@@ -527,9 +482,10 @@ def get_asset_type_for_ref(ref) -> Optional[str]:
 class MaterialRef(AssetRefBase):
     """GUID-based reference to a Material asset.
 
-    Lazily loads the Material through ``AssetManager.load_by_guid`` on
-    first access and caches the result.  Falls back to path-hint resolution
-    and direct AssetDatabase lookup when the primary GUID path fails.
+    Lazily loads the Material through ``AssetManager.load_by_guid`` on first
+    access and caches the result. GUID is the only asset identity; a ref
+    without a GUID can only be a runtime-created material kept alive through
+    the cached object.
 
     Supports attribute forwarding to the underlying Material::
 
@@ -559,13 +515,9 @@ class MaterialRef(AssetRefBase):
         if file_path:
             db = _get_asset_database()
             if db:
-                try:
-                    g = db.get_guid_from_path(file_path)
-                    if g:
-                        return g
-                except Exception as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                    pass
+                g = db.get_guid_from_path(file_path)
+                if g:
+                    return g
         return ""
 
     def resolve(self):
@@ -581,51 +533,17 @@ class MaterialRef(AssetRefBase):
         return self._do_resolve()
 
     def _do_resolve(self):
-        if not self._guid and not self._path_hint:
+        if not self._guid:
             # Runtime-created materials (e.g. via Clone/Instantiate) have no
-            # GUID or path.  Keep the cached reference alive instead of
-            # discarding it — there is no asset database entry to re-resolve.
+            # GUID. Keep the cached reference alive instead of discarding
+            # it — there is no asset database entry to re-resolve.
             return self._cached
-        # Primary: load by GUID through AssetManager
-        if self._guid:
-            try:
-                from Infernux.core.assets import AssetManager
-                from Infernux.core.material import Material
-                mat = AssetManager.load_by_guid(self._guid, asset_type=Material)
-                if mat is not None:
-                    self._cached = mat
-                    return mat
-            except Exception as exc:
-                _log.warning("MaterialRef.resolve by GUID failed: %s", exc)
-            # Fallback: resolve GUID → path via C++ AssetDatabase
-            db = _get_asset_database()
-            if db:
-                try:
-                    path = db.get_path_from_guid(self._guid)
-                    if path:
-                        from Infernux.core.material import Material
-                        mat = Material.load(path)
-                        if mat is not None:
-                            self._cached = mat
-                            return mat
-                except Exception as exc:
-                    _log.warning("MaterialRef.resolve by path failed: %s", exc)
-        # Last resort: load by path_hint
-        if self._path_hint:
-            try:
-                from Infernux.core.material import Material
-                mat = Material.load(self._path_hint)
-                if mat is not None:
-                    self._cached = mat
-                    if not self._guid:
-                        g = self._extract_guid(mat)
-                        if g:
-                            self._guid = g
-                    return mat
-            except Exception as exc:
-                _log.warning("MaterialRef.resolve by path_hint failed: %s", exc)
-        self._cached = None
-        return None
+        from Infernux.core.assets import AssetManager
+        from Infernux.core.material import Material
+
+        mat = AssetManager.load_by_guid(self._guid, asset_type=Material)
+        self._cached = mat
+        return mat
 
     def __bool__(self):
         """True if the ref points to a valid material (asset or runtime)."""
@@ -666,7 +584,7 @@ class MaterialRef(AssetRefBase):
 
     def __eq__(self, other):
         if other is None:
-            return not self._guid and not self._path_hint
+            return not self._guid and self._cached is None
         if isinstance(other, AssetRefBase):
             return self._guid == other._guid
         return NotImplemented

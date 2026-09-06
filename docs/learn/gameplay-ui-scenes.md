@@ -4,7 +4,7 @@
 
 # UI actions and scene flow
 
-A menu Button can call a public method on an attached Python component. That method can validate the action, record a useful message, and ask `Infernux.scene.SceneManager` to load another authored scene from the build list.
+A menu Button can call a public method on an attached Python component. That method can validate the action, record a useful message, and ask `inx.SceneManager` to load another authored scene from the build list.
 
 This chapter builds a two-scene loop: `MainMenu.scene` contains a Play Button, and `Level01.scene` contains a Return Button. Both use persistent **On Click ()** bindings configured in the Inspector.
 
@@ -36,30 +36,28 @@ A new Canvas defaults to Screen Overlay. Two render modes exist: **Screen Overla
 Create `Assets/Scripts/scene_actions.py` with this complete component:
 
 ```python
-from Infernux.components import InxComponent
-from Infernux.debug import Debug
-from Infernux.scene import SceneManager
+import infernux as inx
 
 
-class SceneActions(InxComponent):
+class SceneActions(inx.InxComponent):
     def load_level_one(self):
-        if SceneManager.load_scene("Level01"):
-            Debug.log("Level01 scene load accepted.")
+        if inx.SceneManager.load_scene("Level01"):
+            inx.Debug.log("Level01 scene load accepted.")
         else:
-            Debug.log_error("Could not request Level01. Check Build Settings.")
+            inx.Debug.log_error("Could not request Level01. Check Build Settings.")
 
     def load_main_menu(self):
-        if SceneManager.load_scene("MainMenu"):
-            Debug.log("MainMenu scene load accepted.")
+        if inx.SceneManager.load_scene("MainMenu"):
+            inx.Debug.log("MainMenu scene load accepted.")
         else:
-            Debug.log_error("Could not request MainMenu. Check Build Settings.")
+            inx.Debug.log_error("Could not request MainMenu. Check Build Settings.")
 ```
 
 Attach `SceneActions` to the `SceneFlow` GameObject in both scenes. The two method names are public, take no arguments, and therefore appear in the Button method picker.
 
-`SceneManager.load_scene(...)` accepts a build index or a string resolved against the build list. A bare name such as `"Level01"` matches the scene filename without its extension. The return value reports whether the request was accepted. During Play mode, the editor defers the replacement to a safe frame boundary, so `True` does not mean that the new scene has already completed loading inside the current method call.
+`inx.SceneManager.load_scene(...)` accepts a build index or a string resolved against the build list. A bare name such as `"Level01"` matches the scene filename without its extension. The return value reports whether the request was accepted. During Play mode, the editor defers the replacement to a safe frame boundary, so `True` does not mean that the new scene has already completed loading inside the current method call.
 
-<div class="learn-note"><strong>Use the runtime scene API.</strong><p>Gameplay scripts import <code>SceneManager</code> from <code>Infernux.scene</code>. <code>Infernux.engine.SceneFileManager</code> owns editor file operations such as save prompts and authoring-time scene opening.</p></div>
+<div class="learn-note"><strong>Use the runtime scene API.</strong><p>Gameplay scripts import <code>SceneManager</code> from <code>infernux</code>. <code>Infernux.engine.SceneFileManager</code> owns editor file operations such as save prompts and authoring-time scene opening.</p></div>
 
 ## Bind a Button to a component method {#bind-button}
 
@@ -83,18 +81,16 @@ For events that need authored arguments, the same Inspector can reflect position
 Persistent Inspector binding is the best fit for authored menus. A component may also subscribe a zero-argument listener at runtime through the public `UIEvent` API:
 
 ```python
-from Infernux.components import InxComponent
-from Infernux.lib import GameObject
-from Infernux.ui import UIButton
+import infernux as inx
 
 
-class RuntimeButtonBinding(InxComponent):
+class RuntimeButtonBinding(inx.InxComponent):
     def start(self):
-        button_object = GameObject.find("PlayButton")
+        button_object = inx.GameObject.find("PlayButton")
         if button_object is None:
             return
 
-        button = button_object.get_component(UIButton)
+        button = button_object.get_component(inx.ui.UIButton)
         if button is not None:
             button.on_click.add_listener(self.handle_click)
 
@@ -114,7 +110,7 @@ Use one binding route for one action. If the same method is present in **On Clic
 4. Open `Level01.scene`, return to Build Settings, and choose **Add Open Scene** again. Keep `Level01.scene` at index `1`.
 5. Save both scenes after their Button bindings are complete.
 
-The string calls in `SceneActions` continue to work if the list order changes because they resolve by scene filename. Build-index loading is also public: `SceneManager.load_scene(1)` requests the scene currently stored at index `1`.
+The string calls in `SceneActions` continue to work if the list order changes because they resolve by scene filename. Build-index loading is also public: `inx.SceneManager.load_scene(1)` requests the scene currently stored at index `1`.
 
 ## Verify the scene loop {#verify-ui-scenes}
 
@@ -152,7 +148,7 @@ You now have a complete authored action path: pointer click, serialized componen
 
 # UI 操作与场景流程
 
-菜单 Button 可以调用 Python 组件的公开方法。这个方法可以检查操作、记录结果，再通过 `Infernux.scene.SceneManager` 请求加载 Build Settings 中的另一个场景。
+菜单 Button 可以调用 Python 组件的公开方法。这个方法可以检查操作、记录结果，再通过 `inx.SceneManager` 请求加载 Build Settings 中的另一个场景。
 
 本章会完成一个双场景循环：`MainMenu.scene` 提供 Play Button，`Level01.scene` 提供 Return Button。两个按钮都通过 Inspector 中的持久化 **On Click ()** 完成绑定。
 
@@ -184,30 +180,28 @@ You now have a complete authored action path: pointer click, serialized componen
 创建 `Assets/Scripts/scene_actions.py`，写入以下完整组件：
 
 ```python
-from Infernux.components import InxComponent
-from Infernux.debug import Debug
-from Infernux.scene import SceneManager
+import infernux as inx
 
 
-class SceneActions(InxComponent):
+class SceneActions(inx.InxComponent):
     def load_level_one(self):
-        if SceneManager.load_scene("Level01"):
-            Debug.log("Level01 scene load accepted.")
+        if inx.SceneManager.load_scene("Level01"):
+            inx.Debug.log("Level01 scene load accepted.")
         else:
-            Debug.log_error("Could not request Level01. Check Build Settings.")
+            inx.Debug.log_error("Could not request Level01. Check Build Settings.")
 
     def load_main_menu(self):
-        if SceneManager.load_scene("MainMenu"):
-            Debug.log("MainMenu scene load accepted.")
+        if inx.SceneManager.load_scene("MainMenu"):
+            inx.Debug.log("MainMenu scene load accepted.")
         else:
-            Debug.log_error("Could not request MainMenu. Check Build Settings.")
+            inx.Debug.log_error("Could not request MainMenu. Check Build Settings.")
 ```
 
 在两个场景的 `SceneFlow` 上都挂载 `SceneActions`。这两个方法是无参数公开方法，因此会出现在 Button 的方法选择器中。
 
-`SceneManager.load_scene(...)` 接受 Build Index，也接受按构建列表解析的字符串。`"Level01"` 这样的裸名称会匹配去掉扩展名后的场景文件名。返回值表示请求是否被接受。Play 模式中，编辑器会把场景替换推迟到安全的帧边界；方法返回 `True` 时，新场景仍可能处于待切换状态。
+`inx.SceneManager.load_scene(...)` 接受 Build Index，也接受按构建列表解析的字符串。`"Level01"` 这样的裸名称会匹配去掉扩展名后的场景文件名。返回值表示请求是否被接受。Play 模式中，编辑器会把场景替换推迟到安全的帧边界；方法返回 `True` 时，新场景仍可能处于待切换状态。
 
-<div class="learn-note"><strong>使用运行时场景 API。</strong><p>玩法脚本应从 <code>Infernux.scene</code> 导入 <code>SceneManager</code>。<code>Infernux.engine.SceneFileManager</code> 负责保存提示、编辑状态打开场景等文件操作。</p></div>
+<div class="learn-note"><strong>使用运行时场景 API。</strong><p>玩法脚本应从 <code>infernux</code> 导入 <code>SceneManager</code>。<code>Infernux.engine.SceneFileManager</code> 负责保存提示、编辑状态打开场景等文件操作。</p></div>
 
 ## 把 Button 绑定到组件方法 {#bind-button_1}
 
@@ -231,18 +225,16 @@ class SceneActions(InxComponent):
 持久化 Inspector 绑定很适合已编辑好的菜单。组件也可以通过公开 `UIEvent` API 在运行时订阅无参数 Listener：
 
 ```python
-from Infernux.components import InxComponent
-from Infernux.lib import GameObject
-from Infernux.ui import UIButton
+import infernux as inx
 
 
-class RuntimeButtonBinding(InxComponent):
+class RuntimeButtonBinding(inx.InxComponent):
     def start(self):
-        button_object = GameObject.find("PlayButton")
+        button_object = inx.GameObject.find("PlayButton")
         if button_object is None:
             return
 
-        button = button_object.get_component(UIButton)
+        button = button_object.get_component(inx.ui.UIButton)
         if button is not None:
             button.on_click.add_listener(self.handle_click)
 
@@ -262,7 +254,7 @@ class RuntimeButtonBinding(InxComponent):
 4. 打开 `Level01.scene`，回到 Build Settings，再次选择 **Add Open Scene**，让 `Level01.scene` 保持在索引 `1`。
 5. 完成 Button 绑定后，再保存两个场景。
 
-`SceneActions` 使用场景文件名解析，因此调整列表顺序后仍可工作。Build Index 加载也是公开 API：`SceneManager.load_scene(1)` 会请求当前位于索引 `1` 的场景。
+`SceneActions` 使用场景文件名解析，因此调整列表顺序后仍可工作。Build Index 加载也是公开 API：`inx.SceneManager.load_scene(1)` 会请求当前位于索引 `1` 的场景。
 
 ## 验证场景循环 {#verify-ui-scenes_1}
 

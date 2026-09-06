@@ -2,7 +2,7 @@
  * @file BindingVector3f.cpp
  * @brief Python bindings for glm::vec3 as "Vector3".
  *
- * Replaces the former custom Vector3f bindings.  Now operates directly on
+ * Operates directly on
  * glm::vec3 so that no manual conversion is needed anywhere in the binding
  * layer.
  */
@@ -343,8 +343,7 @@ void RegisterVector3Bindings(py::module_ &m)
              })
         .def("__neg__", [](const Vec &v) { return Vec(-v.x, -v.y, -v.z); })
         .def("__len__", [](const Vec &) { return 3; })
-        .def(
-            "__iter__", [](const Vec &v) { return py::make_iterator(&v.x, &v.x + 3); }, py::keep_alive<0, 1>())
+        .def("__iter__", [](const Vec &v) { return py::make_tuple(v.x, v.y, v.z).attr("__iter__")(); })
         .def("__hash__",
              [](const Vec &v) {
                  size_t h = std::hash<float>{}(v.x);

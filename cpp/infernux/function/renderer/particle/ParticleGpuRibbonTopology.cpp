@@ -329,7 +329,8 @@ bool ParticleGpuRibbonTopology::Create(rhi::Device &device, const GpuParticleRib
         &m_resetPipeline, &m_initializePipeline, &m_histogramPipeline, &m_scanPipeline, &m_scatterPipeline,
     };
     for (size_t index = 0; index < shaders.size(); ++index) {
-        const auto module = device.CreateShaderModule({shaders[index].words, shaders[index].wordCount});
+        const auto module =
+            device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(shaders[index].words, shaders[index].wordCount));
         if (!module.IsValid()) {
             Destroy();
             return false;

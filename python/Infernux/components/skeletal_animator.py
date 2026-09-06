@@ -8,7 +8,6 @@ state and pushing playback time to native code for an upcoming skinning path.
 
 from __future__ import annotations
 
-import os
 from typing import Dict, Optional
 
 from Infernux.components.component import InxComponent
@@ -21,112 +20,48 @@ from Infernux.core.anim_state_machine import (
 from Infernux.core.animation_clip3d import AnimationClip3D, resolve_disk_path_for_guid_string
 from Infernux.core.asset_ref import AnimStateMachineRef
 from Infernux.debug import Debug
-from Infernux.engine.path_utils import lexical_path, portable_path
 from Infernux.graph.types import ValueType
-
-
-def _try_guid_for_model_path(db, path: str) -> str:
-    """Resolve a model file path to its asset GUID via the database, if available."""
-    if not db or not (path or "").strip():
-        return ""
-    p0 = str(path).strip()
-    if not p0:
-        return ""
-    seen = set()
-    cands: list = []
-    for p in (p0, portable_path(p0), lexical_path(p0), portable_path(lexical_path(p0))):
-        if p and p not in seen:
-            seen.add(p)
-            cands.append(p)
-    for p in cands:
-        try:
-            g = db.get_guid_from_path(p)
-            if g and str(g).strip():
-                return str(g).strip()
-        except Exception:
-            pass
-    return ""
 
 
 def _animation_source_guid(clip: Optional[AnimationClip3D]) -> str:
     """Return the runtime model GUID that owns *clip*'s animation take."""
     if clip is None:
         return ""
-    guid = str(getattr(clip, "source_model_guid", "") or "").strip()
-    if guid:
-        return guid
-    path = str(getattr(clip, "source_model_path", "") or "").strip()
-    return _try_guid_for_model_path(_get_asset_database(), path)
+    return str(clip.source_model_guid or "").strip()
 
 
 def _get_asset_database():
-    try:
-        from Infernux.core.assets import AssetManager
-        if AssetManager._asset_database is not None:
-            return AssetManager._asset_database
-    except ImportError:
-        pass
-    try:
-        from Infernux.engine.play_mode import PlayModeManager
-        pm = PlayModeManager.instance()
-        if pm and pm._asset_database is not None:
-            return pm._asset_database
-    except ImportError:
-        pass
-    return None
+    from Infernux.core.assets import AssetManager
+
+    return AssetManager.require_asset_database()
 
 
-def _resolve_clip_path_from(guid: str, path_hint: str) -> Optional[str]:
-    """Resolve a clip GUID / path-hint to a usable disk path (or embedded take id)."""
-    if guid:
-        db = _get_asset_database()
-        if db:
-            try:
-                p = resolve_disk_path_for_guid_string(db, guid)
-                if p:
-                    return p
-            except Exception:
-                pass
-    raw = (path_hint or "").strip()
-    # Project panel: embedded FBX take as "<guid>::subanim:<index>" (not a file path).
-    if raw and "::subanim:" in raw:
-        return raw
-    if raw and os.path.isfile(raw):
-        return raw
-    return None
+def _resolve_clip_path_from(guid: str) -> Optional[str]:
+    """Resolve a clip exclusively through its asset GUID."""
+    if not guid:
+        return None
+    return resolve_disk_path_for_guid_string(_get_asset_database(), guid) or None
 
 
 def _resolve_clip_path(state: AnimState) -> Optional[str]:
-    return _resolve_clip_path_from(state.clip_guid, state.clip_path)
+    return _resolve_clip_path_from(state.clip_guid)
 
 
 def _resolve_clip_b_path(state: AnimState) -> Optional[str]:
-    return _resolve_clip_path_from(getattr(state, "clip_b_guid", ""), getattr(state, "clip_b_path", ""))
+    return _resolve_clip_path_from(state.clip_b_guid)
 
 
 def _resolve_timeline_path(state: AnimState) -> Optional[str]:
     """Resolve a timeline state's ``.animtimeline`` asset to a disk path."""
-    guid = getattr(state, "timeline_guid", "") or ""
-    path = (getattr(state, "timeline_path", "") or "").strip()
-    if guid:
-        db = _get_asset_database()
-        if db:
-            try:
-                p = db.get_path_from_guid(guid)
-                if p:
-                    return p
-            except Exception:
-                pass
-    return path or None
+    if not state.timeline_guid:
+        return None
+    return _get_asset_database().get_path_from_guid(state.timeline_guid) or None
 
 
 def _clip_duration_hint(clip: Optional[AnimationClip3D]) -> float:
     if clip is None:
         return 0.0
-    try:
-        return max(float(getattr(clip, "duration_hint", 0.0) or 0.0), 0.0)
-    except Exception:
-        return 0.0
+    return max(float(clip.duration_hint), 0.0)
 
 
 # When importer/meta leaves duration unknown (e.g. embedded FBX takes), use this for
@@ -181,7 +116,6 @@ class SkeletalAnimator(InxComponent):
     _blend_duration: float = 0.0
     _last_native_take_name: str = ""
     _last_native_pose_key = None
-    _last_native_submission_error: str = ""
     _duration_cache: Dict[tuple[str, str], float] = {}
     _current_timeline = None
     _timeline_cache: Dict[str, object] = {}
@@ -196,7 +130,6 @@ class SkeletalAnimator(InxComponent):
         self._timeline_base = None
         self._last_native_take_name = ""
         self._last_native_pose_key = None
-        self._last_native_submission_error = ""
         self._current_state_name = ""
         self._current_clip = None
         self._elapsed = 0.0
@@ -378,7 +311,6 @@ class SkeletalAnimator(InxComponent):
         self._timeline_base = None
         self._last_native_take_name = ""
         self._last_native_pose_key = None
-        self._last_native_submission_error = ""
         self._parameters = {}
         self._clear_blend_state()
 
@@ -447,13 +379,12 @@ class SkeletalAnimator(InxComponent):
         tl = None
         path = _resolve_timeline_path(state)
         if path:
-            try:
-                from Infernux.core.animation_timeline import AnimationTimeline
-                tl = AnimationTimeline.load(path)
-            except Exception as exc:
-                Debug.log_suppressed("SkeletalAnimator._resolve_timeline", exc)
+            from Infernux.core.animation_timeline import AnimationTimeline
+            tl = AnimationTimeline.load(path)
             if tl is None:
-                Debug.log_warning(f"[SkeletalAnimator] Failed to load timeline for state '{state.name}': {path}")
+                raise RuntimeError(
+                    f"SkeletalAnimator could not load timeline for state {state.name!r}: {path}"
+                )
         self._timeline_cache[key] = tl
         return tl
 
@@ -488,19 +419,15 @@ class SkeletalAnimator(InxComponent):
 
     def _capture_timeline_base(self):
         """Snapshot the owner's local transform as the additive base for a timeline."""
-        tr = getattr(self.game_object, "transform", None)
-        if tr is None:
-            self._timeline_base = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
-            return
-        try:
-            p, r, s = tr.local_position, tr.local_euler_angles, tr.local_scale
-            self._timeline_base = (
-                [float(p.x), float(p.y), float(p.z)],
-                [float(r.x), float(r.y), float(r.z)],
-                [float(s.x), float(s.y), float(s.z)],
-            )
-        except Exception:
-            self._timeline_base = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0])
+        transform = self.game_object.transform
+        position = transform.local_position
+        rotation = transform.local_euler_angles
+        scale = transform.local_scale
+        self._timeline_base = (
+            [float(position.x), float(position.y), float(position.z)],
+            [float(rotation.x), float(rotation.y), float(rotation.z)],
+            [float(scale.x), float(scale.y), float(scale.z)],
+        )
 
     def _apply_timeline(self, tl, t: float):
         """Sample *tl* at time *t* and write the local transform of the owner."""
@@ -513,36 +440,19 @@ class SkeletalAnimator(InxComponent):
             pos = [bp[0] + pos[0], bp[1] + pos[1], bp[2] + pos[2]]
             rot = [br[0] + rot[0], br[1] + rot[1], br[2] + rot[2]]
             scl = [bs[0] * scl[0], bs[1] * scl[1], bs[2] * scl[2]]
-        tr = getattr(self.game_object, "transform", None)
-        if tr is None:
-            return
+        transform = self.game_object.transform
         pose = tuple(float(value) for value in (*pos, *rot, *scl))
         if pose == getattr(self, "_last_timeline_pose", None):
             return
-        try:
-            trs = getattr(tr, "set_local_trs", None)
-            if trs is not None:
-                # Single boundary crossing + one subtree invalidate (no Vector3 allocs).
-                trs(*pose)
-                self._last_timeline_pose = pose
-                return
-            from Infernux.lib import Vector3
-            tr.local_position = Vector3(*pose[0:3])
-            tr.local_euler_angles = Vector3(*pose[3:6])
-            tr.local_scale = Vector3(*pose[6:9])
-            self._last_timeline_pose = pose
-        except Exception as exc:
-            Debug.log_suppressed("SkeletalAnimator._apply_timeline", exc)
+        transform.set_local_trs(*pose)
+        self._last_timeline_pose = pose
 
     def _blend_state_lerp(self, state: AnimState) -> float:
         """Per-node Lerp (authored ``blend_value``), overridable via param ``<state>/Lerp``."""
         lerp = float(getattr(state, "blend_value", 0.5) or 0.0)
         pkey = f"{state.name}/Lerp"
         if pkey in self._parameters:
-            try:
-                lerp = float(self._parameters[pkey])
-            except (TypeError, ValueError):
-                pass
+            lerp = float(self._parameters[pkey])
         return max(0.0, min(1.0, lerp))
 
     def _submit_blend_state(self, native_renderers, state: AnimState) -> bool:
@@ -560,59 +470,46 @@ class SkeletalAnimator(InxComponent):
         t = float(self._elapsed)
         normalized = float(self.normalized_time)
 
-        # Preferred: a 2-layer pose stack (correct per-bone N-way blend, needs the
-        # native pose-stack API); otherwise fall back to the 2-clip crossfade slot.
         native_renderers = [cpp for cpp in native_renderers if cpp is not None]
         if not native_renderers:
             return False
-        if take_a and take_b and all(callable(getattr(cpp, "submit_pose_stack", None)) for cpp in native_renderers):
+        if take_a and take_b:
             pose_key = ("stack", self._playing, take_a, source_a, take_b, source_b, t, lerp, loop)
             if pose_key == self._last_native_pose_key:
                 return True
-            try:
-                layers = [
-                    {"take_name": take_a, "source_model_guid": source_a,
-                     "time": t, "weight": 1.0 - lerp, "loop": loop},
-                    {"take_name": take_b, "source_model_guid": source_b,
-                     "time": t, "weight": lerp, "loop": loop},
-                ]
-                for cpp in native_renderers:
-                    cpp.submit_pose_stack(layers)
-                self._last_native_submission_error = ""
-                self._last_native_take_name = take_a
-                self._last_native_pose_key = pose_key
-                return True
-            except Exception as exc:
-                self._report_native_submission_error(exc)
-
-        if all(callable(getattr(cpp, "submit_animation_pose", None)) for cpp in native_renderers):
-            pose_key = (
-                "blend", self._playing, take_a or take_b, t, normalized,
-                take_b if take_a else "", lerp if take_a else 0.0, loop, source_a, source_b,
-            )
-            if pose_key == self._last_native_pose_key:
-                return True
-            try:
-                for cpp in native_renderers:
-                    cpp.submit_animation_pose(
-                        take_a or take_b,
-                        t,
-                        normalized,
-                        take_b if take_a else "",
-                        t,
-                        lerp if take_a else 0.0,
-                        loop,
-                        source_a if take_a else source_b,
-                        source_b if take_a else "",
-                    )
-                self._last_native_submission_error = ""
-            except Exception as exc:
-                self._report_native_submission_error(exc)
-                return True
-            self._last_native_take_name = take_a or take_b
+            layers = [
+                {"take_name": take_a, "source_model_guid": source_a,
+                 "time": t, "weight": 1.0 - lerp, "loop": loop},
+                {"take_name": take_b, "source_model_guid": source_b,
+                 "time": t, "weight": lerp, "loop": loop},
+            ]
+            for cpp in native_renderers:
+                cpp.submit_pose_stack(layers)
+            self._last_native_take_name = take_a
             self._last_native_pose_key = pose_key
             return True
-        return False
+
+        pose_key = (
+            "blend", self._playing, take_a or take_b, t, normalized,
+            "", 0.0, 0.0, loop, source_a if take_a else source_b, "",
+        )
+        if pose_key == self._last_native_pose_key:
+            return True
+        for cpp in native_renderers:
+            cpp.submit_animation_pose(
+                take_a or take_b,
+                t,
+                normalized,
+                "",
+                0.0,
+                0.0,
+                loop,
+                source_a if take_a else source_b,
+                "",
+            )
+        self._last_native_take_name = take_a or take_b
+        self._last_native_pose_key = pose_key
+        return True
 
     def _enter_state(
         self,
@@ -694,15 +591,9 @@ class SkeletalAnimator(InxComponent):
         cache_key = (source_guid, take_name)
         if cache_key in self._duration_cache:
             return self._duration_cache[cache_key]
-        try:
-            get_duration = getattr(cpp, "get_animation_duration_seconds", None)
-            if callable(get_duration):
-                duration = max(float(get_duration(take_name, source_guid) or 0.0), 0.0)
-                self._duration_cache[cache_key] = duration
-                return duration
-        except Exception:
-            return 0.0
-        return 0.0
+        duration = max(float(cpp.get_animation_duration_seconds(take_name, source_guid)), 0.0)
+        self._duration_cache[cache_key] = duration
+        return duration
 
     def _start_blend_if_needed(
         self,
@@ -817,12 +708,6 @@ class SkeletalAnimator(InxComponent):
         # _sync_native_runtime_playback call performs the complete update.
         return
 
-    def _report_native_submission_error(self, exc: Exception) -> None:
-        message = f"[SkeletalAnimator] Animation retarget failed: {exc}"
-        if message != self._last_native_submission_error:
-            Debug.log_warning(message)
-            self._last_native_submission_error = message
-
     def _sync_native_runtime_playback(self) -> None:
         renderers = self._resolve_skinned_renderers()
         if not renderers:
@@ -866,23 +751,18 @@ class SkeletalAnimator(InxComponent):
         )
         if pose_key == self._last_native_pose_key:
             return
-        try:
-            for cpp in native_renderers:
-                cpp.submit_animation_pose(
-                    take_name,
-                    float(self._elapsed) if take_name else 0.0,
-                    normalized,
-                    blend_take,
-                    blend_time,
-                    blend_weight,
-                    loop,
-                    source_guid,
-                    blend_source_guid,
-                )
-            self._last_native_submission_error = ""
-        except Exception as exc:
-            self._report_native_submission_error(exc)
-            return
+        for cpp in native_renderers:
+            cpp.submit_animation_pose(
+                take_name,
+                float(self._elapsed) if take_name else 0.0,
+                normalized,
+                blend_take,
+                blend_time,
+                blend_weight,
+                loop,
+                source_guid,
+                blend_source_guid,
+            )
         self._last_native_take_name = take_name
         self._last_native_pose_key = pose_key
 

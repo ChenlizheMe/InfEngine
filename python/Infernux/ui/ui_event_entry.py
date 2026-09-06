@@ -16,7 +16,6 @@ from typing import Any, get_args, get_origin, get_type_hints
 from Infernux.components import SerializableObject, serialized_field, GameObjectRef
 from Infernux.components.ref_wrappers import ComponentRef
 from Infernux.components.fields import FieldType
-from Infernux.debug import Debug
 from Infernux.engine.runtime_dispatch import ReloadableCallbackRegistry
 
 
@@ -77,20 +76,13 @@ UIEventEntry._serialized_fields_["arguments"].element_class = UIEventArgument
 
 
 def _get_serializable_raw_field(obj, field_name: str, default=None):
-    try:
-        data = object.__getattribute__(obj, "__dict__")
-    except Exception:
-        return default
+    data = object.__getattribute__(obj, "__dict__")
     if field_name in data:
         return data[field_name]
-    try:
-        cls = object.__getattribute__(obj, "__class__")
-        meta = getattr(cls, "_serialized_fields_", {}).get(field_name)
-        if meta is not None:
-            return meta.default
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
+    cls = object.__getattribute__(obj, "__class__")
+    meta = getattr(cls, "_serialized_fields_", {}).get(field_name)
+    if meta is not None:
+        return meta.default
     return default
 
 
@@ -143,18 +135,14 @@ def _infer_argument_kind(annotation, default_value=inspect._empty) -> tuple[str,
     if type_name == "ComponentRef":
         return "component", ""
 
-    try:
-        from Infernux.components.component import InxComponent
-        from Infernux.components.builtin_component import BuiltinComponent
+    from Infernux.components.component import InxComponent
+    from Infernux.components.builtin_component import BuiltinComponent
 
-        if isinstance(annotation, type):
-            if issubclass(annotation, BuiltinComponent):
-                return "component", getattr(annotation, "_cpp_type_name", "") or annotation.__name__
-            if issubclass(annotation, InxComponent) and annotation is not InxComponent:
-                return "component", annotation.__name__
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
+    if isinstance(annotation, type):
+        if issubclass(annotation, BuiltinComponent):
+            return "component", getattr(annotation, "_cpp_type_name", "") or annotation.__name__
+        if issubclass(annotation, InxComponent) and annotation is not InxComponent:
+            return "component", annotation.__name__
 
     if default_value is not inspect._empty:
         if isinstance(default_value, bool):
@@ -182,16 +170,10 @@ def get_method_parameter_specs(component, method_name: str) -> list[UIEventMetho
     if not callable(fn):
         return []
 
-    try:
-        sig = inspect.signature(fn)
-    except (TypeError, ValueError):
-        return []
+    sig = inspect.signature(fn)
 
     func_obj = getattr(fn, "__func__", fn)
-    try:
-        type_hints = get_type_hints(func_obj, getattr(func_obj, "__globals__", {}), None)
-    except Exception:
-        type_hints = {}
+    type_hints = get_type_hints(func_obj, getattr(func_obj, "__globals__", {}), None)
 
     specs: list[UIEventMethodParameter] = []
     for param in sig.parameters.values():

@@ -50,14 +50,12 @@ class ParticleGpuDrawRegistry
     [[nodiscard]] bool Remove(uint64_t id);
     void Clear();
 
-    // SnapshotShared keeps the immutable result alive without copying the
-    // entry array. Snapshot remains as a compatibility wrapper for callers
-    // that need an owning vector value.
+    // The shared handle keeps the immutable result alive without copying the
+    // entry array.
     using SnapshotEntries = std::vector<GpuParticleDrawEntry>;
     using SnapshotHandle = std::shared_ptr<const SnapshotEntries>;
 
     [[nodiscard]] SnapshotHandle SnapshotShared(int32_t queueMin, int32_t queueMax) const;
-    [[nodiscard]] std::vector<GpuParticleDrawEntry> Snapshot(int32_t queueMin, int32_t queueMax) const;
     [[nodiscard]] uint64_t Revision() const;
     [[nodiscard]] size_t Size() const;
 

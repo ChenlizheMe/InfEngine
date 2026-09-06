@@ -76,6 +76,38 @@ def test_render_effect_feature_is_allowed_only_as_a_declaration_decorator():
     assert len(eager.runtime_guard_required) == 1
 
 
+def test_lowercase_public_namespace_supports_declaration_only_component_scripts():
+    report = _report(
+        """
+        import infernux as inx
+
+        @inx.require_component(inx.Rigidbody)
+        @inx.disallow_multiple()
+        class Player(inx.InxComponent):
+            direction = inx.serialized_field(
+                default=inx.Vector3(0.0, 0.0, 1.0)
+            )
+        """
+    )
+
+    assert report.blocked == ()
+    assert report.runtime_guard_required == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import infernux as inx\n@inx.njit()\ndef kernel(value):\n    return value\n",
+        "import infernux as inx\n@inx.renderstack.render_effect_feature('tests.post.effect')\nclass Effect:\n    pass\n",
+    ),
+)
+def test_lowercase_public_namespace_supports_controlled_declaration_decorators(source):
+    report = _report(source)
+
+    assert report.blocked == ()
+    assert report.runtime_guard_required == ()
+
+
 @pytest.mark.parametrize(
     ("source", "code", "operation"),
     (

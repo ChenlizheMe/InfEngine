@@ -101,41 +101,34 @@ class PanelViewStateField:
 
 @dataclass(frozen=True, slots=True)
 class PanelViewStateSchema:
-    """Versioned, allow-listed presentation state for an editor panel."""
+    """Allow-listed current presentation state for an editor panel."""
 
     schema_id: str
     fields: tuple[PanelViewStateField, ...] = ()
-    version: int = 1
 
     def __post_init__(self) -> None:
         schema_id = str(self.schema_id or "").strip()
         fields = tuple(self.fields)
         if not schema_id:
             raise ValueError("panel view-state schema requires an id")
-        if int(self.version) <= 0:
-            raise ValueError("panel view-state schema version must be positive")
         if len({field.key for field in fields}) != len(fields):
             raise ValueError("panel view-state schema keys must be unique")
         if len({field.attribute for field in fields}) != len(fields):
             raise ValueError("panel view-state schema attributes must be unique")
         object.__setattr__(self, "schema_id", schema_id)
         object.__setattr__(self, "fields", fields)
-        object.__setattr__(self, "version", int(self.version))
 
     def capture(self, panel: object) -> dict[str, Any]:
         return {
             "schema": self.schema_id,
-            "version": self.version,
             "values": {field.key: field.capture(panel) for field in self.fields},
         }
 
     def restore(self, panel: object, data: dict[str, Any]) -> None:
-        if not isinstance(data, dict) or set(data) != {"schema", "version", "values"}:
+        if not isinstance(data, dict) or set(data) != {"schema", "values"}:
             raise ValueError("panel view state does not match the declared schema envelope")
-        if data["schema"] != self.schema_id or data["version"] != self.version:
-            raise ValueError(
-                f"panel view state requires {self.schema_id} v{self.version}"
-            )
+        if data["schema"] != self.schema_id:
+            raise ValueError(f"panel view state requires {self.schema_id}")
         values = data["values"]
         if not isinstance(values, dict):
             raise TypeError("panel view-state values must be an object")

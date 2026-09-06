@@ -18,10 +18,9 @@ struct CollisionInfo;
 /**
  * @brief C++ proxy component that holds a reference to a Python InxComponent.
  *
- * This class bridges Python-defined components with the C++ update loop.
- * When the C++ Scene calls Update/LateUpdate, this proxy forwards those
- * calls to the corresponding Python methods.
- *
+ * This class owns Python component identity, non-frame lifecycle, and physics
+ * callbacks. Per-frame Python execution
+ * is owned by RuntimeExecutionScheduler.
  * Ownership: The PyComponentProxy owns a reference to the Python object.
  * GameObject invokes on_destroy for actual component destruction; replacing a
  * proxy during script reload
@@ -75,12 +74,6 @@ class PyComponentProxy : public Component
     void Awake() override;
     void OnEnable() override;
     void Start() override;
-    void Update(float deltaTime) override;
-    void FixedUpdate(float fixedDeltaTime) override;
-    void LateUpdate(float deltaTime) override;
-    void TickWhileDisabledUpdate(float deltaTime) override;
-    void TickWhileDisabledFixedUpdate(float fixedDeltaTime) override;
-    void TickWhileDisabledLateUpdate(float deltaTime) override;
     void OnDisable() override;
     void OnGameObjectDeactivated() override;
     void OnDestroy() override;
@@ -196,39 +189,6 @@ class PyComponentProxy : public Component
         return m_qualifiedName;
     }
 
-    [[nodiscard]] bool OverridesUpdate() const
-    {
-        return m_overridesUpdate;
-    }
-
-    [[nodiscard]] bool HasCoroutineScheduler() const
-    {
-        return m_hasCoroutineScheduler;
-    }
-
-    /// Read the live coroutine count from the scheduler contract. The
-    /// scheduler object remains allocated after completion, so presence alone
-    /// must not enable per-frame coroutine dispatch.
-    [[nodiscard]] static std::size_t ReadCoroutineSchedulerCount(const py::handle &scheduler);
-
-    /// Update the cached coroutine dispatch bit after a Python-side scheduler
-    /// transition. This is event-driven; phase dispatch must not reflect on
-    /// the Python object every frame.
-    void SetCoroutineSchedulerActive(bool active) noexcept
-    {
-        m_hasCoroutineScheduler = active;
-    }
-
-    [[nodiscard]] uint64_t GetUpdateDispatchCount() const
-    {
-        return m_updateDispatchCount;
-    }
-
-    [[nodiscard]] uint64_t GetUpdateForwardCount() const
-    {
-        return m_updateForwardCount;
-    }
-
     /// Bind a newly published Python mirror and copy the preserved native
     /// lifecycle state into it without invoking user lifecycle methods.
     void RebindPythonMirror();
@@ -270,7 +230,6 @@ class PyComponentProxy : public Component
     void SyncPythonMirror() const;
     void RefreshPythonLifecycleDispatchPlan();
     void RefreshPythonLifecycleOverrideMask();
-    void RefreshCoroutineSchedulerFlag();
     void RefreshConstraintTypeId();
 
     py::object m_pyComponent;
@@ -279,12 +238,6 @@ class PyComponentProxy : public Component
     // calls RefreshPythonLifecycleDispatchPlan() on the new binding.
     py::object m_callAwake;
     py::object m_callStart;
-    py::object m_callUpdate;
-    py::object m_callFixedUpdate;
-    py::object m_callLateUpdate;
-    py::object m_callDisabledUpdate;
-    py::object m_callDisabledFixedUpdate;
-    py::object m_callDisabledLateUpdate;
     py::object m_callOnEnable;
     py::object m_callOnDisable;
     py::object m_callOnDestroy;
@@ -298,18 +251,12 @@ class PyComponentProxy : public Component
     std::string m_constraintTypeId;
     ComponentTypeConstraints m_typeConstraints;
     bool m_executeInEditMode = false;
-    bool m_overridesUpdate = true;
-    bool m_overridesFixedUpdate = true;
-    bool m_overridesLateUpdate = true;
     bool m_overridesCollisionEnter = true;
     bool m_overridesCollisionStay = true;
     bool m_overridesCollisionExit = true;
     bool m_overridesTriggerEnter = true;
     bool m_overridesTriggerStay = true;
     bool m_overridesTriggerExit = true;
-    bool m_hasCoroutineScheduler = false;
-    uint64_t m_updateDispatchCount = 0;
-    uint64_t m_updateForwardCount = 0;
 };
 
 } // namespace infernux

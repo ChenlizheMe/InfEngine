@@ -1,5 +1,7 @@
 #include "TextureProcessor.h"
 
+#include <cstring>
+
 #define STB_DXT_IMPLEMENTATION
 #include <stb_dxt.h>
 
@@ -8,7 +10,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <utility>

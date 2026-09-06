@@ -7,7 +7,8 @@ Replaces :class:`EditorBootstrap` with a stripped-down path that:
   3. Creates the dedicated PlayerRuntimeSession
   4. Enables the game camera
   5. Registers the fullscreen PlayerGUI (with optional splash sequence)
-  6. Loads the first scene from BuildSettings.json (or a Supervisor-approved Debug validation scene)
+  6. Loads the first BuildManifest scene (or a Supervisor-approved Debug
+     validation scene)
   7. Leaves the scene loaded but not playing. The native window stays hidden
      during engine loading; Play starts after an optional project splash
 
@@ -16,7 +17,6 @@ No undo, no selection, no hierarchy, no inspector, no docking layout.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sys
@@ -29,6 +29,7 @@ from Infernux.engine.path_utils import (
     is_path_within,
     resolved_path,
 )
+from Infernux.engine.player_log import write_player_log as _plog
 from Infernux.debug import Debug
 
 if TYPE_CHECKING:
@@ -39,25 +40,6 @@ if TYPE_CHECKING:
         RuntimeProductManifest,
     )
 
-
-def _plog(msg):
-    """Write to player.log (only available in packaged builds)."""
-    path = os.environ.get("_INFERNUX_PLAYER_LOG")
-    if not path:
-        # Fallback: write into Data/Logs/ next to the executable
-        import sys as _sys
-        _exe = getattr(_sys, 'executable', '') or ''
-        _d = os.path.dirname(resolved_path(_exe))
-        _logs_dir = os.path.join(_d, "Data", "Logs")
-        os.makedirs(_logs_dir, exist_ok=True)
-        path = os.path.join(_logs_dir, "player.log")
-    try:
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(str(msg) + "\n")
-    except OSError as exc:
-        Debug.log_suppressed("player_bootstrap.write_player_log", exc)
-
-
 class PlayerBootstrap:
     """Orchestrates the standalone player startup sequence."""
 
@@ -66,6 +48,7 @@ class PlayerBootstrap:
         project_path: str,
         engine_log_level=LogLevel.Info,
         *,
+        scenes: List[str],
         display_mode: str = "fullscreen_borderless",
         window_width: int = 1920,
         window_height: int = 1080,
@@ -76,6 +59,7 @@ class PlayerBootstrap:
     ):
         self.project_path = project_path
         self.engine_log_level = engine_log_level
+        self.scenes = list(scenes)
         self.display_mode = display_mode
         self.window_width = window_width
         self.window_height = window_height
@@ -108,11 +92,12 @@ class PlayerBootstrap:
         phase("force player mode", self._force_player_mode)
         phase("load runtime contract", self._load_runtime_contract)
         phase("initialize engine", self._init_engine)
-        phase("preload project plugins", self._load_plugins)
-        self._pump_startup_events()
         phase("load runtime asset catalog", self._load_runtime_asset_catalog)
         self._pump_startup_events()
         phase("create runtime managers", self._create_managers)
+        self._pump_startup_events()
+        # Preloads may resolve cooked assets before any scene is loaded.
+        phase("preload project plugins", self._load_plugins)
         self._pump_startup_events()
         phase("setup game camera", self._setup_game_camera)
         phase("register player GUI", self._register_player_gui)
@@ -161,10 +146,7 @@ class PlayerBootstrap:
             "Player.inxmanifest",
         )
         if not os.path.isfile(manifest_path):
-            raise RuntimeError(
-                "Player.inxmanifest is missing; legacy Player runtime manifests "
-                "are not supported"
-            )
+            raise RuntimeError("Player.inxmanifest is required")
         try:
             with open(manifest_path, "r", encoding="utf-8") as stream:
                 manifest = json.load(stream)
@@ -177,9 +159,23 @@ class PlayerBootstrap:
         product = manifest.get("product", {})
         if product.get("single_entry_point") is not True:
             raise RuntimeError("Player package must have exactly one executable entry point")
+        layout = str(product.get("layout", ""))
+        required_artifacts = {
+            "direct_native_runtime": ("Runtime",),
+            "single_executable_native_packages": (
+                "Runtime",
+                "Content.inxpkg",
+                "AssetCatalog.inxcat",
+            ),
+            "platform_native_packages": ("Content.inxpkg", "AssetCatalog.inxcat"),
+        }.get(layout)
+        if required_artifacts is None:
+            raise RuntimeError(f"Player package layout is unsupported: {layout or '<missing>'}")
         required_root = data_root or os.path.dirname(manifest_path)
-        for artifact in ("Runtime.inxrt", "Content.inxpkg"):
-            if not os.path.isfile(os.path.join(required_root, artifact)):
+        for artifact in required_artifacts:
+            path = os.path.join(required_root, artifact)
+            exists = os.path.isdir(path) if artifact == "Runtime" else os.path.isfile(path)
+            if not exists:
                 raise RuntimeError(f"Player package artifact is missing: {artifact}")
 
         self._runtime_manifest = runtime_manifest
@@ -189,77 +185,48 @@ class PlayerBootstrap:
     def _load_runtime_asset_catalog(self) -> None:
         """Load the immutable asset catalog before revealing the game window."""
         from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
-        from Infernux.engine.runtime_artifact_catalog import (
-            CATALOG_SCHEMA,
-            CATALOG_VERSION,
-            runtime_artifact_id,
-        )
+        from Infernux.engine.runtime_artifact_catalog import CATALOG_SCHEMA
 
         runtime_manifest = self._runtime_manifest
         if runtime_manifest is None:
             raise RuntimeError("Player runtime manifest is unavailable")
         required_root = self._runtime_package_root or self.project_path
 
-        catalog_path = os.path.join(required_root, "Library", "RuntimeAssetCatalog.json")
-        try:
-            with open(catalog_path, "r", encoding="utf-8") as stream:
-                catalog = json.load(stream)
-        except (OSError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"Runtime asset catalog is unreadable: {catalog_path}") from exc
-        if catalog.get("$schema") != CATALOG_SCHEMA:
+        from Infernux.engine.platform_player_bootstrap import read_player_asset_catalog
+
+        catalog = read_player_asset_catalog(required_root)
+        if (
+            not isinstance(catalog, dict)
+            or catalog.get("$schema") != CATALOG_SCHEMA
+            or set(catalog) != {"$schema", "player_host", "packages", "artifacts"}
+        ):
             raise RuntimeError("Unsupported runtime asset catalog schema")
-        if catalog.get("catalog_version") != CATALOG_VERSION:
-            raise RuntimeError("Unsupported runtime asset catalog version")
 
         packages = catalog.get("packages")
-        artifacts = catalog.get("artifacts")
-        if not isinstance(packages, list) or not isinstance(artifacts, list):
-            raise RuntimeError("Runtime asset catalog is missing packages or artifacts")
+        if not isinstance(packages, list):
+            raise RuntimeError("Runtime asset catalog is missing packages")
         for package in packages:
             if not isinstance(package, dict):
                 raise RuntimeError("Runtime asset catalog contains an invalid package entry")
+            if set(package) != {
+                "path", "archive_bytes", "file_count", "raw_bytes", "stored_bytes", "codec"
+            }:
+                raise RuntimeError("Runtime asset catalog package uses an unsupported schema")
             package_path = self._catalog_path(required_root, package.get("path"))
             if not package_path or not os.path.isfile(package_path):
                 raise RuntimeError("Runtime asset catalog references a missing package")
-            validated = self._validated_archive_summary(str(package.get("path", "")))
-            if validated is None:
+            validated_bytes = self._boot_validated_archive_bytes(
+                str(package.get("path", ""))
+            )
+            if validated_bytes is None:
                 raise RuntimeError(
                     "Runtime asset catalog package has no boot-validated native manifest: "
                     + str(package.get("path", ""))
                 )
-            validated_hash, validated_bytes = validated
             if int(package.get("archive_bytes", -1)) != validated_bytes:
                 raise RuntimeError("Runtime asset catalog package size disagrees with native manifest")
-            if str(package.get("archive_sha256", "")).casefold() != validated_hash:
-                raise RuntimeError("Runtime asset catalog package checksum disagrees with native manifest")
             if validated_bytes != os.path.getsize(package_path):
                 raise RuntimeError("Runtime asset catalog package size mismatch")
-
-        artifact_ids = set()
-        for artifact in artifacts:
-            if not isinstance(artifact, dict):
-                raise RuntimeError("Runtime asset catalog contains an invalid artifact entry")
-            artifact_id = artifact.get("runtime_artifact_id")
-            package = artifact.get("package")
-            runtime_path = artifact.get("runtime_path")
-            if not all(isinstance(value, str) and value for value in (artifact_id, package, runtime_path)):
-                raise RuntimeError("Runtime asset catalog artifact identity is incomplete")
-            if artifact_id != runtime_artifact_id(package, runtime_path):
-                raise RuntimeError("Runtime asset catalog contains an unstable artifact ID")
-            if artifact_id in artifact_ids:
-                raise RuntimeError("Runtime asset catalog contains duplicate artifact IDs")
-            artifact_ids.add(artifact_id)
-            asset_guid = artifact.get("asset_guid")
-            if asset_guid is not None:
-                if not isinstance(asset_guid, str) or not asset_guid:
-                    raise RuntimeError("Runtime asset catalog contains an invalid asset GUID")
-            digest = str(artifact.get("content_sha256", ""))
-            if len(digest) != 64 or any(char not in "0123456789abcdefABCDEF" for char in digest):
-                raise RuntimeError("Runtime asset catalog contains an invalid artifact checksum")
-        for artifact in artifacts:
-            for dependency in artifact.get("dependencies", []):
-                if dependency not in artifact_ids:
-                    raise RuntimeError("Runtime asset catalog contains an unknown dependency")
 
         records_path = os.path.join(
             self.project_path, "Library", "RuntimeAssetRecords.json"
@@ -272,7 +239,7 @@ class PlayerBootstrap:
         if (
             not isinstance(asset_records, dict)
             or asset_records.get("$schema") != "infernux.runtime_asset_records"
-            or asset_records.get("records_version") != 2
+            or set(asset_records) != {"$schema", "entries"}
             or not isinstance(asset_records.get("entries"), list)
         ):
             raise RuntimeError("Player runtime asset records use an unsupported schema")
@@ -329,13 +296,21 @@ class PlayerBootstrap:
             raise RuntimeError("Player splash configuration disagrees with the service graph")
 
         data_root = os.environ.get("_INFERNUX_PLAYER_DATA_ROOT", "").strip()
-        parallel_module = os.path.join(
+        parallel_archive = os.path.join(
             data_root or self.project_path,
             "Modules",
             "Parallel.inxmod",
         )
-        if os.path.isfile(parallel_module) != manifest.features.parallel:
-            raise RuntimeError("Parallel.inxmod presence disagrees with RuntimeManifest")
+        parallel_runtime = os.path.join(
+            data_root or self.project_path,
+            "Modules",
+            "Parallel",
+        )
+        parallel_present = os.path.isfile(parallel_archive) or os.path.isdir(
+            parallel_runtime
+        )
+        if parallel_present != manifest.features.parallel:
+            raise RuntimeError("Parallel runtime presence disagrees with RuntimeManifest")
 
         self.engine_log_level = (
             LogLevel.Debug
@@ -344,31 +319,20 @@ class PlayerBootstrap:
         )
 
     @staticmethod
-    def _sha256_file(path: str) -> str:
-        digest = hashlib.sha256()
-        with open(path, "rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-
-    @staticmethod
-    def _validated_archive_summary(package_path: str) -> Optional[tuple[str, int]]:
-        """Read the summary produced by the boot-time native manifest pass."""
+    def _boot_validated_archive_bytes(package_path: str) -> Optional[int]:
+        """Read the package size produced by the boot-time native manifest pass."""
 
         from Infernux.engine.runtime_artifact_catalog import package_kind
 
         kind = package_kind(package_path).upper()
-        digest = os.environ.get(f"_INFERNUX_PLAYER_{kind}_ARCHIVE_SHA256", "").casefold()
         raw_bytes = os.environ.get(f"_INFERNUX_PLAYER_{kind}_ARCHIVE_BYTES", "")
         try:
             archive_bytes = int(raw_bytes)
         except (TypeError, ValueError):
             return None
-        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-            return None
         if archive_bytes < 0:
             return None
-        return digest, archive_bytes
+        return archive_bytes
 
     @staticmethod
     def _catalog_path(data_root: str, value: object) -> Optional[str]:
@@ -530,23 +494,7 @@ class PlayerBootstrap:
         if self._runtime_manifest is None:
             raise RuntimeError("Player runtime manifest is not loaded")
         self._runtime_manifest.require_service("player_scene_service")
-        import json as _json
-        bs_path = os.path.join(
-            self.project_path, "ProjectSettings", "BuildSettings.json"
-        )
-        data = {}
-        if os.path.isfile(bs_path):
-            try:
-                with open(bs_path, "r", encoding="utf-8", errors="replace") as _f:
-                    data = _json.load(_f)
-            except Exception as exc:
-                Debug.log_suppressed("player_bootstrap.load_build_manifest", exc)
-        scenes = data.get("scenes", [])
-        if not scenes:
-            Debug.log_warning("No scenes in BuildSettings.json — starting with empty scene")
-            return
-
-        first_scene = scenes[0]
+        first_scene = self.scenes[0]
         requested_scene = os.environ.get("_INFERNUX_PLAYER_START_SCENE", "").strip()
         if requested_scene:
             # A packaged Player contains cooked scene artifacts rather than the
@@ -555,12 +503,11 @@ class PlayerBootstrap:
             # RuntimeAssetCatalog is the final authority inside the Player.
             if self._resolve_runtime_scene(requested_scene) is not None:
                 first_scene = requested_scene
-                Debug.log_internal(
-                    "Loaded Supervisor validation scene: "
-                    f"{os.path.basename(requested_scene)}"
-                )
             else:
-                Debug.log_warning("Ignored invalid Supervisor Player start-scene override")
+                raise RuntimeError(
+                    "Supervisor Player start scene is not present in the runtime "
+                    f"asset catalog: {requested_scene}"
+                )
         # Resolve relative paths against project root (packaged builds
         # store scene paths relative to the game folder)
         catalog_scene = self._resolve_runtime_scene(first_scene)
@@ -594,21 +541,4 @@ class PlayerBootstrap:
         if self.runtime_session is None:
             Debug.log_error("No PlayerRuntimeSession available")
             return
-        activated = self.runtime_session.activate()
-        scene_service = getattr(self.runtime_session, "scene_service", None)
-        active_scene = str(getattr(scene_service, "active_scene_path", "") or "")
-        scheduler = getattr(self.runtime_session, "execution_scheduler", None)
-        if scheduler is not None:
-            try:
-                plans = {
-                    phase: len(scheduler.phase_plan(phase))
-                    for phase in ("fixed_update", "update", "late_update")
-                }
-                _plog(
-                    "[Startup] Play activation: "
-                    f"active={bool(activated)}, scene={active_scene!r}, "
-                    f"lifecycle_plans={plans}"
-                )
-            except Exception as exc:
-                _plog(f"[Startup] lifecycle plan diagnostics failed: {exc}")
-        return activated
+        return self.runtime_session.activate()

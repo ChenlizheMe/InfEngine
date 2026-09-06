@@ -114,7 +114,11 @@ ReadbackFormatInfo GetReadbackFormatInfo(VkFormat format)
 void WaitForFencePumpingEvents(VkDevice device, VkFence fence)
 {
     constexpr uint64_t kPollTimeoutNs = 50'000'000; // 50 ms
-    while (true) {
+    // A healthy submission signals in milliseconds. A fence that stays
+    // unsignaled for this long means the device is lost or the driver is
+    // wedged; waiting forever turns that into an unkillable shutdown hang.
+    constexpr int kMaxPolls = 200; // 10 s total
+    for (int poll = 0; poll < kMaxPolls; ++poll) {
         VkResult result = vkWaitForFences(device, 1, &fence, VK_TRUE, kPollTimeoutNs);
         if (result == VK_SUCCESS) {
             return;
@@ -125,6 +129,7 @@ void WaitForFencePumpingEvents(VkDevice device, VkFence fence)
         }
         SDL_PumpEvents();
     }
+    INXLOG_ERROR("Fence wait abandoned after 10 s (device lost or driver hang); continuing without GPU completion");
 }
 
 } // namespace

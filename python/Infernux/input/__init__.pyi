@@ -1,7 +1,40 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Tuple, Union
 from .ime import ImeInputState
+from .actions import InputAction, InputActionMap, InputActionPhase, InputActionType
+
+
+class TouchPhase(str, Enum):
+    BEGAN: TouchPhase
+    MOVED: TouchPhase
+    STATIONARY: TouchPhase
+    ENDED: TouchPhase
+    CANCELED: TouchPhase
+
+
+class Touch:
+    touch_id: int
+    finger_id: int
+    timestamp_ns: int
+    window_id: int
+    position: Tuple[float, float]
+    raw_position: Tuple[float, float]
+    delta_position: Tuple[float, float]
+    normalized_position: Tuple[float, float]
+    normalized_delta_position: Tuple[float, float]
+    delta_time: float
+    pressure: float
+    contact_size: Tuple[float, float]
+    is_primary: bool
+    cancel_reason: str
+    phase: TouchPhase
+
+
+class AccelerationEvent:
+    acceleration: Tuple[float, float, float]
+    delta_time: float
 
 
 class KeyCode:
@@ -12,6 +45,7 @@ class KeyCode:
     TAB: int
     RETURN: int
     ESCAPE: int
+    AC_BACK: int
     SPACE: int
     DELETE: int
 
@@ -86,6 +120,8 @@ class Input:
     """Interface for reading input from keyboard, mouse, and touch."""
 
     # Class-level properties (via _InputMeta metaclass)
+    frame_index: int
+    """Monotonic identity of the current native input frame."""
     mouse_position: Tuple[float, float]
     """The current mouse position in screen coordinates."""
     game_mouse_position: Tuple[float, float]
@@ -99,7 +135,21 @@ class Input:
     any_key_down: bool
     """Returns True during the frame any key or mouse button is first pressed."""
     touch_count: int
-    """Number of active touch contacts."""
+    """Number of touch contacts in the current frame snapshot."""
+    touches: Tuple[Touch, ...]
+    """All touch contacts in stable first-contact order."""
+    accelerometer_supported: bool
+    """Whether the current device exposes an accelerometer."""
+    gyroscope_supported: bool
+    """Whether the current device exposes a gyroscope."""
+    acceleration: Tuple[float, float, float]
+    """Latest linear acceleration in g-force units."""
+    gyroscope_rotation_rate: Tuple[float, float, float]
+    """Latest angular velocity in radians per second."""
+    acceleration_event_count: int
+    """Number of accelerometer samples captured during this input frame."""
+    acceleration_events: Tuple[AccelerationEvent, ...]
+    """Accelerometer samples captured during this input frame."""
     mouse_sensitivity: float
     """Mouse sensitivity multiplier (default 0.1)."""
 
@@ -143,6 +193,24 @@ class Input:
         ...
 
     @staticmethod
+    def get_touch(index: int) -> Touch:
+        """Return one touch from the current frame snapshot."""
+        ...
+
+    @staticmethod
+    def begin_text_input(initial_value: str = ..., input_type: str = ...) -> bool:
+        """Begin platform text input and show a software keyboard when available."""
+        ...
+    @staticmethod
+    def end_text_input() -> None:
+        """End platform text input and dismiss its software keyboard."""
+        ...
+    @staticmethod
+    def is_text_input_active() -> bool:
+        """Return whether gameplay requested platform text input."""
+        ...
+
+    @staticmethod
     def get_mouse_frame_state(button: int = ...) -> Tuple[float, float, float, float, bool, bool, bool]:
         """Get comprehensive mouse state for the current frame."""
         ...
@@ -174,4 +242,14 @@ class Input:
         ...
 
 
-__all__ = ["KeyCode", "Input"]
+__all__ = [
+    "AccelerationEvent",
+    "Input",
+    "InputAction",
+    "InputActionMap",
+    "InputActionPhase",
+    "InputActionType",
+    "KeyCode",
+    "Touch",
+    "TouchPhase",
+]

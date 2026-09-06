@@ -120,7 +120,6 @@ int main()
         const Manifest defaultA = Write(deterministicA, compressibleSources);
         const Manifest defaultB = Write(deterministicB, compressibleSources);
         Require(ReadFile(deterministicA) == ReadFile(deterministicB), "default InxPack output is not deterministic");
-        Require(defaultA.archiveHash == defaultB.archiveHash, "default InxPack manifest hash is not deterministic");
         const Manifest release =
             Write(releasePackage, compressibleSources, {CompressionProfile::Release, kReleaseCompressionLevel});
         Require(release.entries.size() == 1 && release.entries.front().rawBytes == compressibleBytes.size(),

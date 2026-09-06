@@ -4,7 +4,6 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from os import PathLike
 from typing import Any
 
-RUNTIME_BASELINE_SCHEMA_VERSION: int
 RUNTIME_BASELINE_SCHEMA_ID: str
 RUNTIME_BASELINE_REPORT_SCHEMA_ID: str
 RUNTIME_BASELINE_COMPONENT_COUNTS: tuple[int, ...]

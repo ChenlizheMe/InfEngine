@@ -19,16 +19,12 @@ from Infernux.engine.ui.project_file_ops import (
 class TestProjectPanelCreation:
 
     def test_script_template_imports_component_surface(self):
-        assert "from Infernux import *" in SCRIPT_TEMPLATE
-        assert "from Infernux.components import *" in SCRIPT_TEMPLATE
+        assert "import infernux as inx" in SCRIPT_TEMPLATE
+        assert "class {class_name}(inx.InxComponent):" in SCRIPT_TEMPLATE
 
         namespace = {}
-        exec(
-            "from Infernux import *\n"
-            "from Infernux.components import *\n",
-            namespace,
-        )
-        assert callable(namespace["serialized_field"])
+        exec(SCRIPT_TEMPLATE.format(class_name="ExampleComponent"), namespace)
+        assert issubclass(namespace["ExampleComponent"], namespace["inx"].InxComponent)
 
     def test_creation(self):
         pp = ProjectPanel()
@@ -444,7 +440,16 @@ class TestProjectPanelCallbacks:
             lambda old, new, _database=None: moved.append((Path(old), Path(new))),
         )
 
-        destination = project_file_ops.do_rename(str(source), "RenamedFolder")
+        class _Database:
+            project_root = str(tmp_path)
+
+            @staticmethod
+            def get_guid_from_path(_path):
+                return ""
+
+        destination = project_file_ops.do_rename(
+            str(source), "RenamedFolder", _Database()
+        )
 
         expected = tmp_path / "RenamedFolder"
         assert Path(destination) == expected.resolve()

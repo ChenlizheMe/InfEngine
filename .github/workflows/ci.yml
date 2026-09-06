@@ -1,4 +1,4 @@
-name: Preset Build And Headless Tests
+name: Desktop Release And Tests
 
 on:
   pull_request:
@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  windows-headless:
+  windows-desktop:
     runs-on: windows-2022
     timeout-minutes: 120
     env:
@@ -29,7 +29,7 @@ jobs:
       - uses: conda-incubator/setup-miniconda@v3
         with:
           activate-environment: infernux
-          python-version: "3.12"
+          python-version: "3.13"
           auto-activate-base: false
 
       - name: Cache Vulkan SDK
@@ -38,6 +38,13 @@ jobs:
         with:
           path: C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}
           key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}-windows
+
+      - name: Cache pinned Windows software Vulkan driver
+        id: cache-windows-swiftshader
+        uses: actions/cache@v4
+        with:
+          path: out\toolchains\windows-swiftshader
+          key: windows-swiftshader-694585a05946e1ed49b6bd577ca6537cbb57f025-runtime-only-v1
 
       - name: Install Vulkan SDK
         if: steps.cache-vulkan.outputs.cache-hit != 'true'
@@ -49,51 +56,197 @@ jobs:
           Start-Process -Wait -FilePath .\vulkan_sdk.exe -ArgumentList `
             "--accept-licenses","--default-answer","--confirm-command","install"
 
+      - name: Install Vulkan Runtime
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkan-runtime.exe'
+          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/VulkanRT-$env:VULKAN_SDK_VERSION-Installer.exe" -OutFile $installer
+          $process = Start-Process -Wait -PassThru -WindowStyle Hidden -FilePath $installer -ArgumentList '/auto'
+          if ($process.ExitCode -ne 0) { throw "Vulkan Runtime installation failed: $($process.ExitCode)" }
+
       - name: Install build and test dependencies
         shell: pwsh
         run: |
           conda activate infernux
           python -m pip install --disable-pip-version-check -r requirements.txt
 
-      - name: Configure native test preset
+      - name: Build pinned Windows software Vulkan driver
+        if: steps.cache-windows-swiftshader.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          conda activate infernux
+          scripts\setup\build_windows_swiftshader.ps1 out\toolchains\windows-swiftshader
+
+      - name: Configure Windows release preset
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --preset native-tests
+          cmake --preset windows-msvc-release "-DCMAKE_PROJECT_Infernux_INCLUDE=$PWD/scripts/acceptance/windows_software_vulkan.cmake"
 
-      - name: Build native test preset
+      - name: Provide pinned software Vulkan for build and tests
         shell: pwsh
         run: |
           conda activate infernux
-          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --build --preset native-tests
-
-      - name: Provide Vulkan loader for headless tests
-        shell: pwsh
-        run: |
-          $archive = Join-Path $env:RUNNER_TEMP "vulkan-runtime-components.zip"
-          $runtimeRoot = Join-Path $env:RUNNER_TEMP "vulkan-runtime"
-          $url = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkan-runtime-components.zip"
-          Invoke-WebRequest -Uri $url -OutFile $archive
-          Expand-Archive -LiteralPath $archive -DestinationPath $runtimeRoot -Force
-          $runtimeBin = Join-Path $runtimeRoot "VulkanRT-$env:VULKAN_SDK_VERSION-Components\x64"
-          if (-not (Test-Path (Join-Path $runtimeBin "vulkan-1.dll"))) {
-            throw "Vulkan runtime archive does not contain the expected x64 loader."
-          }
-          $loader = Join-Path $runtimeBin "vulkan-1.dll"
-          $destinations = @("python\Infernux\lib\vulkan-1.dll")
-          Get-ChildItem "out\build\native-tests" -Recurse -Filter "InfernuxRuntime.dll" |
-            ForEach-Object { $destinations += Join-Path $_.Directory.FullName "vulkan-1.dll" }
-          foreach ($destination in ($destinations | Select-Object -Unique)) {
+          $softwareVulkan = Resolve-Path "out\toolchains\windows-swiftshader\runtime\vk_swiftshader.dll"
+          $destinations = @(
+            "python\Infernux\lib\vulkan-1.dll",
+            "out\build\windows-msvc-release\Release\vulkan-1.dll"
+          )
+          foreach ($destination in $destinations) {
             $parent = Split-Path -Parent $destination
             New-Item -ItemType Directory -Path $parent -Force | Out-Null
-            Copy-Item -LiteralPath $loader -Destination $destination -Force
+            Copy-Item -LiteralPath $softwareVulkan -Destination $destination -Force
           }
+          $swiftShaderManifest = Resolve-Path "out\toolchains\windows-swiftshader\runtime\vk_swiftshader_icd.json"
+          if (-not (Test-Path $swiftShaderManifest)) {
+            throw "The pinned Windows SwiftShader Vulkan ICD is missing."
+          }
+          "VK_DRIVER_FILES=$swiftShaderManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VK_ICD_FILENAMES=$swiftShaderManifest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build Windows editor and native tests
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          cmake --build --preset windows-msvc-release
+          cmake --build --preset windows-msvc-player
 
       - name: Run preset tests
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          ctest --preset native-tests -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure
+          New-Item -ItemType Directory -Path out\test-results -Force | Out-Null
+          ctest --preset windows-msvc-release -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out\test-results\ctest-windows.xml
+
+      - name: Run Python and platform contract tests
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          python -m pytest python\test -q --junitxml out\test-results\pytest-windows.xml
+
+      - name: Run Hub tests
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:PYTHONPATH = 'packaging'
+          python -m pytest packaging\tests -q --junitxml out\test-results\pytest-hub-windows.xml
+
+      - name: Build Windows editor wheel and Hub distribution
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          # The software driver belongs to test payloads, never shipped wheels.
+          cmake --preset windows-msvc-release -U CMAKE_PROJECT_Infernux_INCLUDE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset windows-msvc-wheel
+          cmake --build --preset windows-hub-installer
+
+      - name: Upload Windows desktop distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop-distribution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/releases/*/*-win_amd64.whl
+            dist/releases/*/InfernuxHubInstaller-*-windows-x64.exe
+            dist/releases/*/InfernuxHub-*-windows-x64-full.zip
+            dist/releases/*/InfernuxHub-windows-x64-manifest.json
+          if-no-files-found: error
+
+      - name: Upload Windows test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/test-results/*.xml
+          if-no-files-found: warn
+
+  linux-desktop:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      SDL_AUDIODRIVER: dummy
+      QT_QPA_PLATFORM: offscreen
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: infernux
+          python-version: "3.13"
+          auto-activate-base: false
+
+      - name: Install Linux Vulkan build dependencies
+        run: scripts/setup/install_linux_dependencies.sh
+
+      - name: Install Python build and test dependencies
+        run: |
+          conda activate infernux
+          conda install --yes --channel conda-forge "libpython-static=3.13.15"
+          python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run Hub tests
+        run: |
+          conda activate infernux
+          mkdir -p out/test-results
+          xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb QT_DEBUG_PLUGINS=1 PYTHONPATH=packaging python -m pytest packaging/tests -q -s --junitxml out/test-results/pytest-hub-linux.xml
+
+      - name: Configure Linux release preset
+        run: |
+          conda activate infernux
+          cmake --preset linux-clang-release
+
+      - name: Build Linux editor and native tests
+        run: |
+          conda activate infernux
+          cmake --build --preset linux-clang-release
+          cmake --build --preset linux-clang-player
+
+      - name: Run Linux preset tests
+        run: |
+          conda activate infernux
+          mkdir -p out/test-results
+          ctest --preset linux-clang-release -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out/test-results/ctest-linux.xml
+
+      - name: Run Python and platform contract tests
+        run: |
+          conda activate infernux
+          xvfb-run --auto-servernum python -m pytest python/test -q --junitxml out/test-results/pytest-linux.xml
+
+      - name: Build Linux editor wheel and Hub distribution
+        run: |
+          conda activate infernux
+          cmake --build --preset linux-clang-wheel
+          cmake --build --preset linux-hub-installer
+
+      - name: Upload Linux desktop distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-desktop-distribution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/releases/*/*-manylinux*.whl
+            dist/releases/*/*-linux_x86_64.whl
+            dist/releases/*/InfernuxHubInstaller-*-linux-x64
+            dist/releases/*/InfernuxHub-*-linux-x64-full.zip
+            dist/releases/*/InfernuxHub-linux-x64-manifest.json
+          if-no-files-found: error
+
+      - name: Upload Linux test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/test-results/*.xml
+          if-no-files-found: warn

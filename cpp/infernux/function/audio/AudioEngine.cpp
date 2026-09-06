@@ -63,7 +63,11 @@ bool AudioEngine::Initialize()
 
     m_deviceId = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &requestedSpec);
     if (m_deviceId == 0) {
-        INXLOG_ERROR("Failed to open audio device: ", SDL_GetError());
+        // A Player can legitimately run on a machine without an output device
+        // (CI, a server, Remote Desktop, or a temporarily disconnected headset).
+        // Keep the runtime silent and retryable instead of classifying this
+        // device-compatibility boundary as a fatal engine error.
+        INXLOG_WARN("No audio output device is available; continuing silently: ", SDL_GetError());
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
         return false;
     }
@@ -72,8 +76,6 @@ bool AudioEngine::Initialize()
     int sampleFrames = 0;
     if (SDL_GetAudioDeviceFormat(m_deviceId, &actualSpec, &sampleFrames)) {
         m_deviceSpec = actualSpec;
-        INXLOG_INFO("Audio device opened: ", m_deviceSpec.freq, " Hz, ", m_deviceSpec.channels,
-                    " ch, format=", static_cast<int>(m_deviceSpec.format));
     } else {
         m_deviceSpec = requestedSpec;
         INXLOG_WARN("Could not query device format, using requested spec");
@@ -88,7 +90,24 @@ bool AudioEngine::Initialize()
     }
 
     m_initialized = true;
-    INXLOG_INFO("AudioEngine initialized successfully");
+
+    // Browser audio devices cannot be opened until a trusted user gesture.
+    // Sources may therefore have completed Start() before the device exists.
+    // Replay only the play-on-awake request that could not create a voice;
+    // already-playing sources and inactive components remain untouched.
+    std::vector<AudioSource *> deferredSources;
+    {
+        std::lock_guard<std::mutex> lock(m_sourcesMutex);
+        deferredSources.assign(m_registeredSources.begin(), m_registeredSources.end());
+    }
+    for (AudioSource *source : deferredSources) {
+        if (!source || !source->GetPlayOnAwake() || source->IsPlaying() || !source->IsEnabled())
+            continue;
+        GameObject *owner = source->GetGameObject();
+        if (owner && owner->IsActiveInHierarchy())
+            source->Play(0);
+    }
+
     return true;
 }
 
@@ -98,7 +117,6 @@ void AudioEngine::Shutdown()
         return;
     }
 
-    INXLOG_DEBUG("AudioEngine shutting down...");
     StopPreview();
 
     std::vector<AudioSource *> sources;
@@ -147,7 +165,6 @@ void AudioEngine::Shutdown()
     m_activeListener = nullptr;
     m_globalPaused = false;
     m_initialized = false;
-    INXLOG_INFO("AudioEngine shut down");
 }
 
 float AudioEngine::ComputeAttenuation(float distance, float minDist, float maxDist)
@@ -619,6 +636,12 @@ void AudioEngine::ResumeAll()
         SDL_ResumeAudioDevice(m_deviceId);
         m_globalPaused = false;
     }
+}
+
+size_t AudioEngine::GetActiveVoiceCount() const
+{
+    std::lock_guard<std::mutex> lock(m_streamsMutex);
+    return m_activeStreams.size();
 }
 
 } // namespace infernux

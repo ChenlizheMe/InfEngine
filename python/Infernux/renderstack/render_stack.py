@@ -30,7 +30,6 @@ Usage::
 from __future__ import annotations
 
 import json as _json
-import warnings
 from typing import Dict, Optional, TYPE_CHECKING
 
 from Infernux.components.component import InxComponent
@@ -559,42 +558,20 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             ensure_standard_post_process_points(g)
             ensure_standard_screen_ui_tail(g)
         except Exception as exc:
-            diagnostic = (
-                f"Pipeline topology is invalid: {type(exc).__name__}: {exc}. "
-                "The last valid Inspector topology remains active."
-            )
+            has_last_valid_probe = self._last_valid_topology_probe is not None
+            diagnostic = f"Pipeline topology is invalid: {type(exc).__name__}: {exc}."
+            if has_last_valid_probe:
+                diagnostic += " The last valid Inspector topology remains active."
+            else:
+                diagnostic += " No valid Inspector topology has been published."
             if diagnostic != self._topology_probe_error:
                 from Infernux.debug import Debug
 
                 Debug.log_error(f"[RenderStack] {diagnostic}")
             self._topology_probe_error = diagnostic
-            if self._last_valid_topology_probe is not None:
+            if has_last_valid_probe:
                 return self._last_valid_topology_probe
-
-            # A newly-created broken custom pipeline has no previous topology.
-            # Show the standard mount points so the Inspector remains usable;
-            # never let a pipeline authoring error escape into ImGui's stack.
-            from Infernux.renderstack.default_forward_pipeline import (
-                DefaultForwardPipeline,
-            )
-
-            try:
-                g = RenderGraph("_SafeTopologyProbe")
-                fallback = DefaultForwardPipeline()
-                fallback._defining_graph = g
-                try:
-                    fallback.define_topology(g)
-                finally:
-                    fallback._defining_graph = None
-                ensure_standard_post_process_points(g)
-                ensure_standard_screen_ui_tail(g)
-                return g
-            except Exception as fallback_exc:
-                Debug.log_error(
-                    "[RenderStack] Safe Inspector topology also failed: "
-                    f"{type(fallback_exc).__name__}: {fallback_exc}"
-                )
-                return RenderGraph("_EmptyTopologyProbe")
+            raise
 
         self._topology_probe_error = ""
         self._topology_probe_cache = g
@@ -755,7 +732,20 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             # will have already set _output inside define_topology().
             graph.set_output(COLOR_TEXTURE)
 
-        return graph.build()
+        description = graph.build()
+        from Infernux.debug import Debug
+
+        screen_ui_passes = tuple(
+            render_pass.name
+            for render_pass in description.passes
+            if "ScreenUI" in render_pass.name
+        )
+        Debug.log(
+            "INFERNUX_RENDER_GRAPH_READY "
+            f"pipeline={self.pipeline.name!r} passes={len(description.passes)} "
+            f"screen_ui={','.join(screen_ui_passes) or 'none'}"
+        )
+        return description
 
     def render(self, context, camera) -> None:
         """Per-frame render entry point invoked by RenderStackPipeline.
@@ -816,42 +806,30 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                     self._graph_desc = previous_graph
                     self._build_failed = True
                 else:
-                    self._graph_desc = self._fallback_on_build_failure(exc)
-
-            if self._graph_desc is None:
-                # Build failed and fallback also failed; skip rendering
-                # until hot-reload fixes it.
-                self._build_failed = True
-                context.submit_culling(culling)
-                return
+                    self._build_failed = True
+                    raise RuntimeError(
+                        "RenderStack could not build its selected pipeline graph"
+                    ) from exc
 
             try:
                 context.apply_graph(self._graph_desc)
                 self._last_valid_graph_desc = self._graph_desc
             except Exception as exc:
-                from Infernux.debug import Debug
-                Debug.log_error(
-                    f"[RenderStack] apply_graph failed: {exc}. "
-                    f"Attempting fallback pipeline."
-                )
-                self._graph_desc = self._fallback_on_build_failure(exc)
-                if self._graph_desc is None:
-                    self._build_failed = True
-                    context.submit_culling(culling)
-                    return
-                try:
-                    context.apply_graph(self._graph_desc)
-                    self._last_valid_graph_desc = self._graph_desc
-                except Exception as exc2:
-                    from Infernux.debug import Debug
-                    Debug.log_error(
-                        f"[RenderStack] Fallback apply_graph also failed: "
-                        f"{exc2}. Rendering disabled until hot-reload."
-                    )
+                self._build_failed = True
+                if previous_graph is None or previous_graph is self._graph_desc:
                     self._graph_desc = None
-                    self._build_failed = True
-                    context.submit_culling(culling)
-                    return
+                    raise RuntimeError(
+                        "RenderStack could not apply its selected pipeline graph"
+                    ) from exc
+
+                from Infernux.debug import Debug
+
+                Debug.log_error(
+                    f"[RenderStack] Pipeline graph publication rejected: {exc}. "
+                    "Keeping the last valid graph until parameters change."
+                )
+                self._graph_desc = previous_graph
+                context.apply_graph(previous_graph)
 
             context.submit_culling(culling)
         elif self._graph_desc is not None:
@@ -909,66 +887,14 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     # Private helpers
     # ==================================================================
 
-    def _fallback_on_build_failure(self, exc: Exception):
-        """Log the error and attempt to fall back to DefaultForwardPipeline.
-
-        Returns:
-            A ``RenderGraphDescription`` built from the default pipeline,
-            or ``None`` if the fallback also fails.
-        """
-        from Infernux.debug import Debug
-        pipeline_name = getattr(self._pipeline, 'name', '?')
-
-        # A packaged Player must execute the pipeline serialized by the
-        # scene. Substituting Default Forward here makes missing scripts,
-        # effects or shader providers look like a mysterious visual change
-        # after export. Keep the failure visible and deterministic instead.
-        import os
-        if os.environ.get("_INFERNUX_PLAYER_MODE") == "1":
-            Debug.log_error(
-                f"[RenderStack] Player pipeline '{pipeline_name}' failed: "
-                f"{exc}. The Player refused to replace it with Default "
-                "Forward; verify the packaged custom pipeline, Effect and "
-                "shader products."
-            )
-            return None
-
-        Debug.log_error(
-            f"[RenderStack] Pipeline '{pipeline_name}' build failed: {exc}. "
-            f"Falling back to DefaultForwardPipeline."
-        )
-
-        # If already on the default pipeline, nothing left to try.
-        from Infernux.renderstack.default_forward_pipeline import (
-            DefaultForwardPipeline,
-        )
-        if isinstance(self._pipeline, DefaultForwardPipeline):
-            Debug.log_error(
-                "[RenderStack] DefaultForwardPipeline itself failed — "
-                "cannot recover."
-            )
-            return None
-
-        # Switch to default pipeline and retry once.
-        self._pipeline = DefaultForwardPipeline()
-        self._pipeline._render_stack = self
-        self._cached_ips = None
-        try:
-            return self.build_graph()
-        except Exception as fallback_exc:
-            Debug.log_error(
-                f"[RenderStack] Fallback pipeline also failed: {fallback_exc}"
-            )
-            return None
-
     def _create_pipeline(self):  # -> RenderPipeline
         """Instantiate the pipeline selected by ``pipeline_class_name``.
 
-        The explicit default name and unknown names resolve to
-        ``DefaultForwardPipeline``. The pipeline source file is also
-        registered for hot-reload callbacks.
+        The explicit default name resolves to ``DefaultForwardPipeline``.
+        Unknown names are rejected so authored selection is never rewritten.
+        The pipeline source file is also registered for hot-reload callbacks.
         """
-        import inspect, os
+        import inspect
         from Infernux.renderstack.default_forward_pipeline import (
             DefaultForwardPipeline,
         )
@@ -980,31 +906,17 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         pipelines = self.discover_pipelines()
         cls = pipelines.get(self.pipeline_class_name)
         if cls is None:
-            if os.environ.get("_INFERNUX_PLAYER_MODE") == "1":
-                from Infernux.renderstack.discovery import (
-                    discovery_import_failures,
-                )
+            from Infernux.renderstack.discovery import discovery_import_failures
 
-                failures = discovery_import_failures()
-                details = "; ".join(
-                    f"{path}: {message}"
-                    for path, message in sorted(failures.items())[:8]
-                )
-                suffix = f" Import failures: {details}" if details else ""
-                raise RuntimeError(
-                    f"Packaged RenderStack pipeline "
-                    f"'{self.pipeline_class_name}' is unavailable. Available: "
-                    f"{sorted(pipelines)}.{suffix}"
-                )
-            warnings.warn(
-                f"[RenderStack] Pipeline '{self.pipeline_class_name}' "
-                f"not found. Available: {list(pipelines.keys())}. "
-                f"Falling back to DefaultForwardPipeline.",
-                stacklevel=2,
+            failures = discovery_import_failures()
+            details = "; ".join(
+                f"{path}: {message}" for path, message in sorted(failures.items())[:8]
             )
-            self.pipeline_class_name = self.DEFAULT_PIPELINE_NAME
-            self._unregister_pipeline_reload()
-            return DefaultForwardPipeline()
+            suffix = f" Import failures: {details}" if details else ""
+            raise RuntimeError(
+                f"RenderStack pipeline '{self.pipeline_class_name}' is unavailable. "
+                f"Available: {sorted(pipelines)}.{suffix}"
+            )
 
         pipeline = cls()
         # Register watchdog callback for hot-reload

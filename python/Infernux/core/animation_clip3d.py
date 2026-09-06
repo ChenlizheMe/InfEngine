@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -25,43 +24,20 @@ from Infernux.engine.path_utils import resolved_path
 
 
 def is_asset_guid_string(s: str) -> bool:
-    """True for dashed UUIDs or 32 hex chars (no hyphens) as used in the asset database."""
-    t = (s or "").strip()
-    if not t:
-        return False
-    if len(t) == 32 and all(c in "0123456789abcdefABCDEF" for c in t):
-        return True
-    try:
-        uuid.UUID(t)
-        return True
-    except (ValueError, TypeError, AttributeError):
-        return False
-
-
-def _iter_guid_lookups(s: str):
-    s = s.strip()
-    if not s:
-        return
-    yield s
-    h = s.replace("-", "").lower()
-    if len(h) == 32 and all(c in "0123456789abcdef" for c in h):
-        dashed = f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
-        if dashed != s:
-            yield dashed
+    """Return whether *s* is a current 32-character lowercase asset GUID."""
+    return (
+        isinstance(s, str)
+        and len(s) == 32
+        and all(character in "0123456789abcdef" for character in s)
+    )
 
 
 def resolve_disk_path_for_guid_string(adb, guid: str) -> Optional[str]:
-    """Resolve an asset file path, accepting compact 32-hex and dashed UUIDs."""
-    if not adb or not (guid or "").strip():
+    """Resolve a current asset GUID to a readable source path."""
+    if not adb or not is_asset_guid_string(guid):
         return None
-    try:
-        for g in _iter_guid_lookups(guid):
-            p = adb.get_path_from_guid(g)
-            if p and os.path.isfile(p):
-                return resolved_path(p)
-    except Exception:
-        pass
-    return None
+    path = adb.get_path_from_guid(guid)
+    return resolved_path(path) if path and os.path.isfile(path) else None
 
 
 def resolve_model_disk_path_from_virtual_base(base: str) -> Optional[str]:
@@ -158,6 +134,9 @@ class AnimationClip3D:
         string_fields = ("name", "source_model_guid", "source_model_path", "take_name")
         if any(type(d[name]) is not str for name in string_fields):
             raise TypeError("animation clip 3D identity fields must be strings")
+        source_model_guid = d["source_model_guid"]
+        if source_model_guid and not is_asset_guid_string(source_model_guid):
+            raise ValueError("source_model_guid must be a 32-character lowercase asset GUID")
         bones = d["bind_pose_bone_names"]
         if type(bones) is not list or any(type(value) is not str for value in bones):
             raise TypeError("bind_pose_bone_names must be an array of strings")
@@ -170,7 +149,7 @@ class AnimationClip3D:
             raise TypeError("events must be an array")
         return cls(
             name=d["name"],
-            source_model_guid=d["source_model_guid"],
+            source_model_guid=source_model_guid,
             source_model_path=d["source_model_path"],
             take_name=d["take_name"],
             bind_pose_bone_names=list(bones),
@@ -196,6 +175,7 @@ class AnimationClip3D:
         target = path or self.file_path
         if not target:
             return False
+        type(self).from_dict(self.to_dict())
         try:
             from Infernux.core.document_store import write_document_text
             write_document_text(target, json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n")

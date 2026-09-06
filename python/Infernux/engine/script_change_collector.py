@@ -597,35 +597,6 @@ class ScriptChangeCollector:
             self._completed = retained
             return tuple(selected)
 
-    def claim_ready(
-        self,
-        path: str | os.PathLike[str] | Iterable[str] | None = None,
-        *,
-        transaction_id: str | None = None,
-    ) -> tuple[ScriptChangeResult, ...]:
-        if path is not None and not isinstance(path, (str, bytes, os.PathLike)):
-            if transaction_id is None:
-                raise ValueError("transaction_id is required for batch claim")
-            return self.claim_ready_batch(path, transaction_id=transaction_id)
-        if transaction_id is not None:
-            if path is None:
-                raise ValueError("path is required for batch claim")
-            return self.claim_ready_batch((path,), transaction_id=transaction_id)
-        with self._lock:
-            journal_results = self._journal.claim_ready(path)
-            ready: list[ScriptChangeResult] = []
-            for journal_result in journal_results:
-                key = (journal_result.request.revision.identity_key, journal_result.request.generation)
-                result = self._results.get(key)
-                if result is not None and result.status != "completed":
-                    result = None
-                if result is None:
-                    continue
-                claimed = replace(result, status="ready")
-                self._claimed[key] = claimed
-                ready.append(claimed)
-            return tuple(ready)
-
     @staticmethod
     def _batch_paths(paths: Iterable[str]) -> tuple[str, ...]:
         values = tuple(paths)

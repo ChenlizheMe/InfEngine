@@ -5,6 +5,12 @@ function(infernux_copy_file_stable source destination)
         message(FATAL_ERROR "Cannot stage missing build artifact: ${source}")
     endif()
 
+    file(TO_CMAKE_PATH "${source}" _source_normalized)
+    file(TO_CMAKE_PATH "${destination}" _destination_normalized)
+    if(_source_normalized STREQUAL _destination_normalized)
+        return()
+    endif()
+
     get_filename_component(_destination_dir "${destination}" DIRECTORY)
     file(MAKE_DIRECTORY "${_destination_dir}")
 

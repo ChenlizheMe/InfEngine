@@ -52,7 +52,6 @@ def test_declared_panel_view_state_round_trips_only_allow_listed_fields() -> Non
 
     assert state == {
         "schema": "test.declared",
-        "version": 1,
         "values": {"zoom": 2.5, "show_grid": False, "pan_x": 0.0},
     }
     panel.zoom = 9.0
@@ -69,11 +68,9 @@ def test_declared_panel_view_state_round_trips_only_allow_listed_fields() -> Non
 @pytest.mark.parametrize(
     "state",
     [
-        {"schema": "test.declared", "version": 0, "values": {"zoom": 1.0, "show_grid": True, "pan_x": 0.0}},
         {"schema": "test.declared", "version": 1, "values": {"zoom": 1.0}},
         {
             "schema": "test.declared",
-            "version": 1,
             "values": {"zoom": 1.0, "show_grid": True, "dirty": True},
         },
     ],
@@ -233,3 +230,30 @@ def test_editor_bootstrap_owns_document_session_and_disk_flush(monkeypatch, tmp_
     assert panel_state.get("document_session") == session
     assert panel_state.get("panel:declared") == panel.save_state()
     assert save_calls == [True]
+
+
+def test_panel_state_rejects_invalid_persisted_document(tmp_path):
+    from Infernux.engine.ui import panel_state
+
+    layout = tmp_path / "layout"
+    layout.mkdir()
+    (layout / "panel_state.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must contain a JSON object"):
+        panel_state.init(str(layout))
+
+
+def test_panel_state_save_exposes_document_store_failure(tmp_path, monkeypatch):
+    from Infernux.core import document_store
+    from Infernux.engine.ui import panel_state
+
+    panel_state.init(str(tmp_path / "layout"))
+    panel_state.put("panel:console", {"filter": "error"})
+
+    def reject_write(*_args, **_kwargs):
+        raise RuntimeError("document store unavailable")
+
+    monkeypatch.setattr(document_store, "write_document_text", reject_write)
+
+    with pytest.raises(RuntimeError, match="document store unavailable"):
+        panel_state.save()

@@ -54,18 +54,17 @@ In both hosts, return from `define_topology()` after recording declarations; the
 Save this class under `Assets`, select **Base Color Present** on the scene RenderStack, and use an active Camera with an opaque MeshRenderer. It performs a depth prepass, lazily materializes a custom base-color Provider, publishes that texture through a `PassResult`, copies it to the camera target, runs the canonical UI/display tail, and presents the result.
 
 ```python
-from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import RenderPipeline, geometry_buffer
+import infernux as inx
 
 
-class BaseColorPresentPipeline(RenderPipeline):
+class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
     name = "Base Color Present"
 
-    @geometry_buffer("preview_color", dependencies={"depth"})
+    @inx.renderstack.geometry_buffer("preview_color", dependencies={"depth"})
     def provide_preview_color(self, context):
         target = context.graph.create_texture(
             f"{context.source}_preview_color",
-            format=Format.RGBA16_SFLOAT,
+            format=inx.rendergraph.Format.RGBA16_SFLOAT,
         )
         with context.graph.add_pass(
             f"{context.source}_preview_color"
@@ -82,7 +81,9 @@ class BaseColorPresentPipeline(RenderPipeline):
 
     def define_topology(self, graph):
         graph.set_msaa_samples(1)
-        depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+        depth = graph.create_texture(
+            "depth", format=inx.rendergraph.Format.D32_SFLOAT
+        )
 
         with graph.add_pass("DepthPrepass") as render_pass:
             render_pass.write_depth(depth)
@@ -137,18 +138,17 @@ The standard tail expects the logical `color` resource. A specialized RenderStac
 Geometry-buffer providers are methods registered on a pipeline class with `@geometry_buffer`. The registration key is `(semantic, phase)`; the default phase is `opaque`. Dependencies are semantic names, and the compiler orders providers topologically.
 
 ```python
-from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import RenderPipeline, geometry_buffer
+import infernux as inx
 
 
-class ObjectIndexPipeline(RenderPipeline):
+class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
     name = "Object Index"
 
-    @geometry_buffer("object_index", dependencies={"depth"})
+    @inx.renderstack.geometry_buffer("object_index", dependencies={"depth"})
     def provide_object_index(self, context):
         target = context.graph.create_texture(
             f"{context.source}_object_index",
-            format=Format.RG32_UINT,
+            format=inx.rendergraph.Format.RG32_UINT,
         )
         with context.graph.add_pass(
             f"{context.source}_object_index"
@@ -194,7 +194,7 @@ before = self.publish_result(
 
 copied = graph.create_texture(
     "post_color",
-    format=Format.RGBA16_SFLOAT,
+    format=inx.rendergraph.Format.RGBA16_SFLOAT,
 )
 with graph.add_pass("CopyColor") as render_pass:
     render_pass.set_texture("_SourceTex", before.sample("color"))
@@ -254,15 +254,15 @@ Use `write_resolve()` when a multisampled color result must become a single-samp
 graph.set_msaa_samples(4)
 msaa_color = graph.create_texture(
     "route_msaa",
-    format=Format.RGBA16_SFLOAT,
+    format=inx.rendergraph.Format.RGBA16_SFLOAT,
     samples=4,
 )
 resolved = graph.create_texture(
     "route_color",
-    format=Format.RGBA16_SFLOAT,
+    format=inx.rendergraph.Format.RGBA16_SFLOAT,
     samples=1,
 )
-depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+depth = graph.create_texture("depth", format=inx.rendergraph.Format.D32_SFLOAT)
 
 with graph.add_pass("Route") as render_pass:
     render_pass.write_color(msaa_color)
@@ -366,18 +366,17 @@ Before shipping a low-level pipeline, check these points:
 把这个类保存到 `Assets` 下，在场景 RenderStack 中选择 **Base Color Present**，并准备一台活动 Camera 和一个不透明 MeshRenderer。样例先执行 Depth Prepass，再惰性生成自定义 Base-color Provider，通过 `PassResult` 发布纹理，把结果复制到 Camera Target，执行标准 UI/显示帧尾，最后 Present。
 
 ```python
-from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import RenderPipeline, geometry_buffer
+import infernux as inx
 
 
-class BaseColorPresentPipeline(RenderPipeline):
+class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
     name = "Base Color Present"
 
-    @geometry_buffer("preview_color", dependencies={"depth"})
+    @inx.renderstack.geometry_buffer("preview_color", dependencies={"depth"})
     def provide_preview_color(self, context):
         target = context.graph.create_texture(
             f"{context.source}_preview_color",
-            format=Format.RGBA16_SFLOAT,
+            format=inx.rendergraph.Format.RGBA16_SFLOAT,
         )
         with context.graph.add_pass(
             f"{context.source}_preview_color"
@@ -394,7 +393,9 @@ class BaseColorPresentPipeline(RenderPipeline):
 
     def define_topology(self, graph):
         graph.set_msaa_samples(1)
-        depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+        depth = graph.create_texture(
+            "depth", format=inx.rendergraph.Format.D32_SFLOAT
+        )
 
         with graph.add_pass("DepthPrepass") as render_pass:
             render_pass.write_depth(depth)
@@ -449,18 +450,17 @@ class BaseColorPresentPipeline(RenderPipeline):
 Geometry Buffer Provider 是使用 `@geometry_buffer` 注册在管线类上的方法。注册键为 `(semantic, phase)`，默认 Phase 是 `opaque`。依赖项使用语义名，编译器按拓扑顺序安排 Provider。
 
 ```python
-from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import RenderPipeline, geometry_buffer
+import infernux as inx
 
 
-class ObjectIndexPipeline(RenderPipeline):
+class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
     name = "Object Index"
 
-    @geometry_buffer("object_index", dependencies={"depth"})
+    @inx.renderstack.geometry_buffer("object_index", dependencies={"depth"})
     def provide_object_index(self, context):
         target = context.graph.create_texture(
             f"{context.source}_object_index",
-            format=Format.RG32_UINT,
+            format=inx.rendergraph.Format.RG32_UINT,
         )
         with context.graph.add_pass(
             f"{context.source}_object_index"
@@ -506,7 +506,7 @@ before = self.publish_result(
 
 copied = graph.create_texture(
     "post_color",
-    format=Format.RGBA16_SFLOAT,
+    format=inx.rendergraph.Format.RGBA16_SFLOAT,
 )
 with graph.add_pass("CopyColor") as render_pass:
     render_pass.set_texture("_SourceTex", before.sample("color"))
@@ -566,15 +566,15 @@ MSAA 由 `graph.set_msaa_samples(1|2|4|8)` 设置帧策略，`set_msaa_samples(0
 graph.set_msaa_samples(4)
 msaa_color = graph.create_texture(
     "route_msaa",
-    format=Format.RGBA16_SFLOAT,
+    format=inx.rendergraph.Format.RGBA16_SFLOAT,
     samples=4,
 )
 resolved = graph.create_texture(
     "route_color",
-    format=Format.RGBA16_SFLOAT,
+    format=inx.rendergraph.Format.RGBA16_SFLOAT,
     samples=1,
 )
-depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+depth = graph.create_texture("depth", format=inx.rendergraph.Format.D32_SFLOAT)
 
 with graph.add_pass("Route") as render_pass:
     render_pass.write_color(msaa_color)

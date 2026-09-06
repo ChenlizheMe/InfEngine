@@ -49,14 +49,11 @@ class HierarchyCreationService:
             and manager is not None
             and manager.is_user_action_active
         )
-        try:
-            navigation.reveal(
-                SelectionTarget.scene_object(int(object_id)),
-                record_history=record_reveal,
-                activate_panel=False,
-            )
-        except Exception as exc:
-            Debug.log_suppressed("hierarchy.create.reveal", exc)
+        navigation.reveal(
+            SelectionTarget.scene_object(int(object_id)),
+            record_history=record_reveal,
+            activate_panel=False,
+        )
 
     @classmethod
     def register_create_kind(
@@ -616,11 +613,7 @@ class HierarchyCreationService:
         return "Create GameObject"
 
     def _serialize_created(self, obj, kind: str, *, selected: bool) -> dict[str, Any]:
-        parent = None
-        try:
-            parent = obj.get_parent()
-        except Exception as exc:
-            Debug.log_suppressed("HierarchyCreationService.serialize.parent", exc)
+        parent = obj.get_parent()
         return {
             "id": int(obj.id),
             "name": str(obj.name),
@@ -646,16 +639,10 @@ def _component_names(obj) -> list[str]:
         seen.add(key)
         names.append(str(getattr(comp, "type_name", type(comp).__name__)))
 
-    try:
-        for comp in obj.get_components() or []:
-            _append(comp)
-    except Exception as exc:
-        Debug.log_suppressed("HierarchyCreationService.components.native", exc)
-    try:
-        for comp in obj.get_py_components() or []:
-            _append(comp)
-    except Exception as exc:
-        Debug.log_suppressed("HierarchyCreationService.components.py", exc)
+    for comp in obj.get_components() or []:
+        _append(comp)
+    for comp in obj.get_py_components() or []:
+        _append(comp)
     return names
 
 
@@ -663,14 +650,10 @@ def _unique_scene_object_name(scene, base_name: str, *, exclude_id: int = 0) -> 
     """Return a Unity-style default name that does not collide in the scene."""
     base = str(base_name or "GameObject")
     existing: set[str] = set()
-    try:
-        for obj in scene.get_all_objects() or []:
-            if int(getattr(obj, "id", 0) or 0) == int(exclude_id or 0):
-                continue
-            existing.add(str(getattr(obj, "name", "")))
-    except Exception as exc:
-        Debug.log_suppressed("HierarchyCreationService.unique_name", exc)
-        return base
+    for obj in scene.get_all_objects() or []:
+        if int(getattr(obj, "id", 0) or 0) == int(exclude_id or 0):
+            continue
+        existing.add(str(getattr(obj, "name", "")))
 
     if base not in existing:
         return base
@@ -684,11 +667,7 @@ def _unique_scene_object_name(scene, base_name: str, *, exclude_id: int = 0) -> 
 def _get_py_components_safe(obj) -> list[Any]:
     if obj is None or not hasattr(obj, "get_py_components"):
         return []
-    try:
-        return list(obj.get_py_components() or [])
-    except Exception as exc:
-        Debug.log_suppressed("HierarchyCreationService.get_py_components", exc)
-        return []
+    return list(obj.get_py_components() or [])
 
 
 def _ancestor_parent_ids(obj) -> list[int]:
@@ -740,14 +719,11 @@ def _average_world_position(objects: list[Any]) -> tuple[float, float, float] | 
         transform = getattr(obj, "transform", None)
         if transform is None:
             continue
-        try:
-            pos = transform.position
-            sx += float(pos.x)
-            sy += float(pos.y)
-            sz += float(pos.z)
-            count += 1
-        except Exception as exc:
-            Debug.log_suppressed("HierarchyCreationService.avg_position", exc)
+        pos = transform.position
+        sx += float(pos.x)
+        sy += float(pos.y)
+        sz += float(pos.z)
+        count += 1
     if count <= 0:
         return None
     return (sx / count, sy / count, sz / count)

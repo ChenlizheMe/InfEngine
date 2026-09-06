@@ -51,9 +51,12 @@ void StatusBarPanel::OnRender(InxGUIContext *ctx)
     // Style overrides (before Begin)
     ImGui::PushStyleColor(ImGuiCol_WindowBg, EditorTheme::STATUS_BAR_BG);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, EditorTheme::STATUS_BAR_WIN_PAD);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::STATUS_BAR_ITEM_SPC);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::STATUS_BAR_FRAME_PAD);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                        ImVec2(EditorTheme::STATUS_BAR_WIN_PAD.x * dpi, EditorTheme::STATUS_BAR_WIN_PAD.y * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                        ImVec2(EditorTheme::STATUS_BAR_ITEM_SPC.x * dpi, EditorTheme::STATUS_BAR_ITEM_SPC.y * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(EditorTheme::STATUS_BAR_FRAME_PAD.x * dpi, EditorTheme::STATUS_BAR_FRAME_PAD.y * dpi));
 
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
@@ -76,12 +79,12 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
 {
     const bool statusActive = !m_statusText.empty();
     const float dpi = ctx->GetDpiScale();
-    const float barHeight = EditorTheme::STATUS_BAR_BASE_HEIGHT * dpi - 8.0f;
+    const float barHeight = (EditorTheme::STATUS_BAR_BASE_HEIGHT - 8.0f) * dpi;
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const float availableWidth = (std::max)(0.0f, ImGui::GetContentRegionAvail().x);
-    const float preferredStatusWidth = (std::min)((std::max)(210.0f, availableWidth * 0.36f), 430.0f);
+    const float preferredStatusWidth = (std::min)((std::max)(210.0f * dpi, availableWidth * 0.36f), 430.0f * dpi);
     const float statusWidth =
-        statusActive ? (std::min)(preferredStatusWidth, (std::max)(0.0f, availableWidth - 80.0f)) : 0.0f;
+        statusActive ? (std::min)(preferredStatusWidth, (std::max)(0.0f, availableWidth - 80.0f * dpi)) : 0.0f;
     const float consoleWidth = availableWidth - statusWidth;
 
     if (m_console) {
@@ -105,7 +108,7 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
     const float right = origin.x + availableWidth;
     const float consoleRight = origin.x + consoleWidth;
     const float textY = origin.y + (barHeight - ImGui::GetTextLineHeight()) * 0.5f;
-    draw->AddLine(ImVec2(origin.x, origin.y - 4.0f), ImVec2(right, origin.y - 4.0f),
+    draw->AddLine(ImVec2(origin.x, origin.y - 4.0f * dpi), ImVec2(right, origin.y - 4.0f * dpi),
                   ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_BAR_BORDER));
     if (consoleHovered)
         draw->AddRectFilled(origin, ImVec2(consoleRight, origin.y + barHeight),
@@ -117,23 +120,23 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
     snprintf(infoText, sizeof(infoText), "Log %d", m_infoCount);
     snprintf(warningText, sizeof(warningText), "Warn %d", m_warningCount);
     snprintf(errorText, sizeof(errorText), "Error %d", m_errorCount);
-    const float countGap = 13.0f;
+    const float countGap = 13.0f * dpi;
     const float infoWidth = ImGui::CalcTextSize(infoText).x;
     const float warningWidth = ImGui::CalcTextSize(warningText).x;
     const float errorWidth = ImGui::CalcTextSize(errorText).x;
     const float countsWidth = infoWidth + warningWidth + errorWidth + countGap * 2.0f;
-    const float countX = (std::max)(origin.x + 48.0f, consoleRight - countsWidth - 9.0f);
+    const float countX = (std::max)(origin.x + 48.0f * dpi, consoleRight - countsWidth - 9.0f * dpi);
 
-    float messageX = origin.x + 9.0f;
+    float messageX = origin.x + 9.0f * dpi;
     const ImVec4 &messageColor = LevelColorForString(m_latestLevel);
     if (m_latestLevel == "warning" || m_latestLevel == "error") {
         const char *marker = m_latestLevel == "error" ? "!" : "!";
         draw->AddText(ImVec2(messageX, textY), ImGui::ColorConvertFloat4ToU32(messageColor), marker);
-        messageX += 13.0f;
+        messageX += 13.0f * dpi;
     }
     const std::string &summary = m_latestMessage.empty() ? std::string("Console") : m_latestMessage;
-    draw->PushClipRect(ImVec2(messageX, origin.y), ImVec2((std::max)(messageX, countX - 9.0f), origin.y + barHeight),
-                       true);
+    draw->PushClipRect(ImVec2(messageX, origin.y),
+                       ImVec2((std::max)(messageX, countX - 9.0f * dpi), origin.y + barHeight), true);
     draw->AddText(ImVec2(messageX, textY), ImGui::ColorConvertFloat4ToU32(messageColor), summary.c_str());
     draw->PopClipRect();
 
@@ -151,7 +154,7 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
                   errorText);
 
     if (statusActive)
-        RenderEngineStatus(consoleRight, origin.y, statusWidth, barHeight, m_statusText, m_statusProgress,
+        RenderEngineStatus(consoleRight, origin.y, statusWidth, barHeight, dpi, m_statusText, m_statusProgress,
                            m_statusKind);
 
     ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + barHeight));
@@ -160,7 +163,7 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
-void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float height, const std::string &text,
+void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float height, float dpi, const std::string &text,
                                         float progress, const std::string &kind)
 {
     const bool determinate = kind == "progress" && progress >= 0.0f && progress < 1.0f;
@@ -183,14 +186,14 @@ void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float hei
 
     ImDrawList *draw = ImGui::GetWindowDrawList();
     draw->AddLine(ImVec2(x, y), ImVec2(x, y + height), ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_BAR_BORDER));
-    draw->AddRectFilled(ImVec2(x + 1.0f, y), ImVec2(x + width, y + height),
+    draw->AddRectFilled(ImVec2(x + 1.0f * dpi, y), ImVec2(x + width, y + height),
                         ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_ACTIVITY_BG));
 
     const float textY = y + (height - ImGui::GetTextLineHeight()) * 0.5f;
-    float textX = x + 11.0f;
+    float textX = x + 11.0f * dpi;
     if (*statusIcon != '\0') {
         draw->AddText(ImVec2(textX, textY), ImGui::ColorConvertFloat4ToU32(statusColor), statusIcon);
-        textX += ImGui::CalcTextSize(statusIcon).x + 7.0f;
+        textX += ImGui::CalcTextSize(statusIcon).x + 7.0f * dpi;
     }
 
     char percentage[16] = {};
@@ -199,28 +202,30 @@ void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float hei
         snprintf(percentage, sizeof(percentage), "%d%%",
                  static_cast<int>(std::round((std::min)((std::max)(progress, 0.0f), 1.0f) * 100.0f)));
         percentageWidth = ImGui::CalcTextSize(percentage).x;
-        draw->AddText(ImVec2(x + width - percentageWidth - 10.0f, textY),
+        draw->AddText(ImVec2(x + width - percentageWidth - 10.0f * dpi, textY),
                       ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_PROGRESS_LABEL_CLR), percentage);
     }
 
-    const float labelRight = x + width - (determinate ? percentageWidth + 20.0f : 9.0f);
+    const float labelRight = x + width - (determinate ? percentageWidth + 20.0f * dpi : 9.0f * dpi);
     draw->PushClipRect(ImVec2(textX, y), ImVec2((std::max)(textX, labelRight), y + height), true);
     draw->AddText(ImVec2(textX, textY), ImGui::ColorConvertFloat4ToU32(statusColor), text.c_str());
     draw->PopClipRect();
 
-    const float lineHeight = 2.0f;
+    const float lineHeight = 2.0f * dpi;
     const float lineY = y + height - lineHeight;
     if (determinate) {
         const float clamped = (std::min)((std::max)(progress, 0.0f), 1.0f);
-        draw->AddRectFilled(ImVec2(x + 1.0f, lineY), ImVec2(x + width, y + height),
+        draw->AddRectFilled(ImVec2(x + 1.0f * dpi, lineY), ImVec2(x + width, y + height),
                             ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_PROGRESS_BG));
-        draw->AddRectFilled(ImVec2(x + 1.0f, lineY), ImVec2(x + 1.0f + (width - 1.0f) * clamped, y + height),
+        draw->AddRectFilled(ImVec2(x + 1.0f * dpi, lineY),
+                            ImVec2(x + 1.0f * dpi + (width - 1.0f * dpi) * clamped, y + height),
                             ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_PROGRESS_CLR));
     } else if (kind == "activity") {
-        const float trackWidth = (std::max)(40.0f, width * 0.28f);
-        const float travel = (std::max)(1.0f, width - trackWidth - 2.0f);
-        const float phase = static_cast<float>(std::fmod(ImGui::GetTime() * 92.0, static_cast<double>(travel)));
-        draw->AddRectFilled(ImVec2(x + 1.0f + phase, lineY), ImVec2(x + 1.0f + phase + trackWidth, y + height),
+        const float trackWidth = (std::max)(40.0f * dpi, width * 0.28f);
+        const float travel = (std::max)(1.0f * dpi, width - trackWidth - 2.0f * dpi);
+        const float phase = static_cast<float>(std::fmod(ImGui::GetTime() * 92.0 * dpi, static_cast<double>(travel)));
+        draw->AddRectFilled(ImVec2(x + 1.0f * dpi + phase, lineY),
+                            ImVec2(x + 1.0f * dpi + phase + trackWidth, y + height),
                             ImGui::ColorConvertFloat4ToU32(statusColor));
     }
 }

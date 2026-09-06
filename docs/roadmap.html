@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
-    <meta name="description" content="How Infernux gets from 0.3.7 to 0.5.2: Android and Web Players, Torch workflows, Linux and windowless execution, authoritative schemas, replayable worlds, the tensor data plane, and tools an agent can safely build.">
+    <meta name="description" content="How Infernux gets from 0.4.0 to 0.5.2: Android and Web Players, Torch workflows, Linux and windowless execution, authoritative schemas, replayable worlds, the tensor data plane, and tools an agent can safely build.">
     <meta name="theme-color" content="#0a0c11">
     <meta name="color-scheme" content="dark light">
     <link rel="canonical" href="https://infernux-engine.com/roadmap.html">
     <meta property="og:type" content="website">
     <meta property="og:site_name" content="Infernux · 熔炉">
-    <meta property="og:title" content="Infernux roadmap — 0.3.7 to 0.5.2">
+    <meta property="og:title" content="Infernux roadmap — 0.4.0 to 0.5.2">
     <meta property="og:description" content="From a complete engine on Windows to cross-platform shipping, models running through the data plane, and agents that can build tools safely.">
     <meta property="og:url" content="https://infernux-engine.com/roadmap.html">
     <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
@@ -20,7 +20,7 @@
     <meta property="og:image:height" content="630">
     <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor and forge emblem">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Infernux roadmap — 0.3.7 to 0.5.2">
+    <meta name="twitter:title" content="Infernux roadmap — 0.4.0 to 0.5.2">
     <meta name="twitter:description" content="Cross-platform Players, Torch workflows, replayable worlds, and tools an agent can safely build.">
     <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
     <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor and forge emblem">
@@ -40,7 +40,7 @@
     <header class="site-header" role="banner">
         <div class="mission-ribbon" aria-label="Engine identity strip">
             <div class="mission-ribbon-inner">
-                <span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.7</span>
+                <span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.0</span>
                 <span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span>
                 <span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span>
             </div>
@@ -81,7 +81,7 @@
         <div class="container">
             <section class="subpage-hero roadmap-hero">
                 <div class="hero-codename">
-                    <span class="badge" data-i18n="roadmap.hero.badge">CURRENT CYCLE · 0.3.7 → 0.5.2</span>
+                    <span class="badge" data-i18n="roadmap.hero.badge">CURRENT CYCLE · 0.4.0 → 0.5.2</span>
                     <span data-i18n="roadmap.hero.kicker">Roadmap</span>
                 </div>
                 <h1 data-i18n="roadmap.hero.title">Infernux roadmap</h1>
@@ -94,21 +94,21 @@
 
             <section class="release-grid">
                 <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.current.tag">RUNNING</div>
-                    <strong>v0.3.7</strong>
-                    <h3 data-i18n="roadmap.release.current.title">Plugin foundations and reliable skeletal animation</h3>
+                    <div class="mini-tag" data-i18n="roadmap.release.current.tag">0.4.0 · PLUGINS AND ASSETS</div>
+                    <strong>v0.4.0</strong>
+                    <h3 data-i18n="roadmap.release.current.title">Packaged assets and live plugin authoring</h3>
                     <ul>
-                        <li data-i18n="roadmap.release.current.item1">InxPackage plugins install from files, folders, Git and the official registry; MCP now ships as the removable default plugin.</li>
-                        <li data-i18n="roadmap.release.current.item2">Separate FBX animation files map by exact joint identity, accept importer pivot helpers and reject incompatible rigs explicitly.</li>
+                        <li data-i18n="roadmap.release.current.item1">Repository packages use a package/ payload root and a standalone packer. Local authors work directly in their selected folder; scripts and assets under Packages refresh alongside project content.</li>
+                        <li data-i18n="roadmap.release.current.item2">Player content stays packed in Content.inxpkg. Authored asset paths resolve through cooked GUID identities, with real file access for payloads that require it.</li>
                     </ul>
                 </article>
                 <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.next.tag">0.3.7–0.4.0 · LEAVING WINDOWS</div>
-                    <strong>v0.3.7–0.4.0</strong>
-                    <h3 data-i18n="roadmap.release.next.title">Android, Web, Torch</h3>
+                    <div class="mini-tag" data-i18n="roadmap.release.next.tag">0.4.0 · MULTIPLATFORM</div>
+                    <strong>v0.4.0</strong>
+                    <h3 data-i18n="roadmap.release.next.title">Four targets, one build workflow</h3>
                     <ul>
-                        <li data-i18n="roadmap.release.next.item1">0.3.7 has to install a first APK on real hardware. 0.3.8 hardens Android inference and packaging. 0.4.0 requires one project to ship on Android and Web at the same time.</li>
-                        <li data-i18n="roadmap.release.next.item2">Torch runs through all three: train and export with native PyTorch in the editor, then swap in whatever inference runtime the target platform can actually carry. Nobody should install a CUDA Toolkit to play a game.</li>
+                        <li data-i18n="roadmap.release.next.item1">0.4.0 adds Windows and Linux Editors and Player exports for Windows, Linux, Android, and Web. The shared MultiPlatform040 project exercises gameplay, input, UI, and packaged asset reads.</li>
+                        <li data-i18n="roadmap.release.next.item2">Platform plugins carry their reusable build payloads. Hub manages Python and shared Android toolchains, while GUID-backed runtime content stays packed instead of exposing the project directory tree.</li>
                     </ul>
                 </article>
                 <article class="release-card">

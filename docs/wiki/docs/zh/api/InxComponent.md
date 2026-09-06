@@ -9,7 +9,7 @@
 用户脚本组件的基类，类似于 Unity 的 MonoBehaviour。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.3.7
+**状态：** Preview · **验证版本：** 0.4.0
 
 项目玩法组件应继承此基类。不要只阅读生命周期表；请先完成第一个组件。
 <!-- USER CONTENT END -->
@@ -109,14 +109,14 @@
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import InxComponent, Vector3, serialized_field
+import infernux as inx
 
 
-class Patrol(InxComponent):
-    speed: float = serialized_field(default=2.0, range=(0.0, 10.0))
+class Patrol(inx.InxComponent):
+    speed: float = inx.serialized_field(default=2.0, range=(0.0, 10.0))
 
     def update(self, delta_time: float) -> None:
-        self.transform.translate(Vector3(self.speed * delta_time, 0.0, 0.0))
+        self.transform.translate(inx.Vector3(self.speed * delta_time, 0.0, 0.0))
 ```
 <!-- USER CONTENT END -->
 

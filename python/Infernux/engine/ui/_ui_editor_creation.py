@@ -70,18 +70,6 @@ class UIEditorCreationMixin:
                 activate_panel=False,
             )
 
-    def _delete_selected_element(self):
-        """Compatibility entry point routed through the global command core."""
-        from Infernux.engine.interaction import CommandSource, EditorCommandRegistry
-
-        registry = EditorCommandRegistry.instance()
-        if registry is None:
-            return False
-        return registry.execute(
-            "edit.delete",
-            source=CommandSource.API,
-        ).accepted
-
     def _create_canvas(self):
         """Create a Canvas through the global editor command."""
         return self._submit_ui_creation("ui.canvas", 0)

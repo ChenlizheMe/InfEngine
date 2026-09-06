@@ -11,7 +11,7 @@
 刚体组件。让物体受物理引擎控制——牛顿看了都点头。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.3.7
+**状态：** Preview · **验证版本：** 0.4.0
 
 动态刚体应使用力或速度，不要每帧写 Transform。运动学刚体使用移动操作，仿真命令从固定更新发出。
 <!-- USER CONTENT END -->
@@ -72,16 +72,16 @@
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import InxComponent, Rigidbody, Vector3
+import infernux as inx
 
 
-class Thruster(InxComponent):
+class Thruster(inx.InxComponent):
     def start(self) -> None:
-        self.body = self.game_object.get_component(Rigidbody)
+        self.body = self.game_object.get_component(inx.Rigidbody)
 
     def fixed_update(self, fixed_delta_time: float) -> None:
         if self.body is not None:
-            self.body.add_force(Vector3(0.0, 12.0, 0.0))
+            self.body.add_force(inx.Vector3(0.0, 12.0, 0.0))
 ```
 <!-- USER CONTENT END -->
 

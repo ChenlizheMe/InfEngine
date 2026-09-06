@@ -69,8 +69,8 @@ class _Registry:
     def remove_asset(self, guid):
         self.order.append("registry-remove")
 
-    def update_loaded_asset_path(self, old_path, new_path):
-        self.order.append("registry-move")
+    def update_loaded_asset_path(self, guid, new_path):
+        self.order.append(("registry-move", guid, new_path))
 
 
 class _Metadata:
@@ -195,7 +195,7 @@ def test_move_commits_mapping_before_patching_loaded_path(monkeypatch):
 
     result = AssetManager.move_asset("old.txt", "new.txt", database=database)
     assert result and result.previous_path == "old.txt"
-    assert order == ["db-move", "registry-move", "py-evict"]
+    assert order == ["db-move", ("registry-move", "guid", "new.txt"), "py-evict"]
 
 
 def test_programmatic_script_move_explicitly_hot_reloads_after_guid_move(monkeypatch):
@@ -222,7 +222,7 @@ def test_programmatic_script_move_explicitly_hot_reloads_after_guid_move(monkeyp
     assert result and result.guid == "guid"
     assert order == [
         "db-move",
-        "registry-move",
+        ("registry-move", "guid", "new.py"),
         "py-evict",
         ("script-reload", "old.py", "new.py"),
     ]

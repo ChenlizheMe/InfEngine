@@ -1,11 +1,49 @@
 from __future__ import annotations
 
+import time
+from types import SimpleNamespace
+
+import pytest
+
 from Infernux.engine.interaction import EditorInteractionCore
 from Infernux.engine.interaction.modals import ModalService
 from Infernux.engine.ui.plugin_install_confirmation import (
     PluginInstallConfirmationCoordinator,
 )
 from Infernux.engine.ui.plugin_install_progress import PluginInstallProgressService
+from Infernux.engine.ui.plugin_panel import PluginPanel
+
+
+@pytest.mark.parametrize("kind", ["source", "pip"])
+def test_plugin_panel_completion_uses_the_installing_manager(monkeypatch, kind):
+    calls = []
+    pending = []
+    modals = ModalService()
+    monkeypatch.setattr(EditorInteractionCore, "_instance", SimpleNamespace(modals=modals))
+
+    def begin(**kwargs):
+        pending.append(kwargs)
+        return True
+
+    monkeypatch.setattr(PluginInstallProgressService, "_instance", SimpleNamespace(begin=begin))
+    monkeypatch.setattr(PluginInstallConfirmationCoordinator, "_instance", SimpleNamespace(
+        _modals=modals,
+        request=lambda _kind, _syntax, callback: (callback(), True)[-1],
+    ))
+    manager = SimpleNamespace(
+        install_source=lambda syntax, progress: SimpleNamespace(reference="vendor/live"),
+        install_pip=lambda syntax, progress: {"ok": True},
+        finalize_background_install=lambda reference: (calls.append(reference), SimpleNamespace(reference=reference))[-1],
+    )
+    panel = PluginPanel()
+    panel._request_install(manager, kind, "fixture")
+    assert len(pending) == 1
+    operation = pending[0]
+    operation["complete"](True, operation["work"](lambda *_args: None), "")
+    assert calls == (["vendor/live"] if kind == "source" else [])
+    assert "NameError" not in panel._message
+    if kind == "source":
+        assert panel._selected_reference == "vendor/live"
 
 
 def test_plugin_install_progress_presents_before_running_full_task():
@@ -32,8 +70,8 @@ def test_plugin_install_progress_presents_before_running_full_task():
         assert calls == []
         service._transaction.presented_phase = "opening"
         service.post_present_tick()
-        assert calls == []
         assert service._transaction.phase == "running"
+        assert service._transaction.worker_done.wait(1.0)
 
         service._transaction.presented_phase = "running"
         service.post_present_tick()
@@ -47,6 +85,40 @@ def test_plugin_install_progress_presents_before_running_full_task():
         service.post_present_tick()
         assert completed == [(True, "installed", "")]
     finally:
+        EditorInteractionCore._instance = previous_core
+        PluginInstallProgressService._instance = previous_progress
+
+
+def test_plugin_install_worker_keeps_editor_ticks_non_blocking_and_reports_detail():
+    previous_core = EditorInteractionCore._instance
+    previous_progress = PluginInstallProgressService._instance
+    EditorInteractionCore._instance = type("_Core", (), {"modals": ModalService()})()
+    PluginInstallProgressService._instance = None
+    release = None
+    try:
+        service = PluginInstallProgressService.instance()
+
+        def work(report):
+            nonlocal release
+            while release is None:
+                time.sleep(0.005)
+            report("download_package", 0.5, "8.0 MiB / 16.0 MiB")
+            return "installed"
+
+        assert service.begin(label="package", work=work, complete=lambda *_args: None)
+        service._transaction.presented_phase = "opening"
+        started = time.monotonic()
+        service.post_present_tick()
+        assert time.monotonic() - started < 0.1
+        assert service._transaction.phase == "running"
+
+        release = True
+        assert service._transaction.worker_done.wait(1.0)
+        service._transaction.presented_phase = "running"
+        service.post_present_tick()
+        assert service._transaction.phase == "complete"
+    finally:
+        release = True
         EditorInteractionCore._instance = previous_core
         PluginInstallProgressService._instance = previous_progress
 

@@ -50,7 +50,9 @@ from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline as Re
 from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline as DefaultForwardPipeline
 from Infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline as DefaultForwardPlusPipeline
 from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline as DefaultDeferredPipeline
-from Infernux.renderstack.discovery import discover_pipelines as discover_pipelines, discover_passes as discover_passes
+from Infernux.renderstack.discovery import discover_passes as discover_passes
+from Infernux.renderstack.discovery import discover_pipelines as discover_pipelines
+from Infernux.renderstack.discovery import discovery_import_failures as discovery_import_failures
 
 __all__ = [
     "RenderStack",
@@ -111,4 +113,5 @@ __all__ = [
     "SharpenEffect",
     "discover_pipelines",
     "discover_passes",
+    "discovery_import_failures",
 ]

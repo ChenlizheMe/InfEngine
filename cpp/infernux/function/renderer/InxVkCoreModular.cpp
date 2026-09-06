@@ -22,6 +22,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <SDL3/SDL_vulkan.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -92,6 +94,15 @@ InxVkCoreModular::InxVkCoreModular(int maxFrameInFlight) : m_maxFramesInFlight(s
 
 InxVkCoreModular::~InxVkCoreModular()
 {
+    // Renderer construction precedes SDL/Vulkan startup.  If window creation
+    // fails, this object is still destroyed even though no Vulkan instance or
+    // device ever existed.  The normal teardown below assumes initialized
+    // renderer subsystems, so leave the default-constructed RAII members to
+    // perform their null-handle cleanup in that partial-startup state.
+    if (m_backend.Device().GetInstance() == VK_NULL_HANDLE && !m_backend.Device().IsValid()) {
+        return;
+    }
+
     if (m_backend.Device().IsValid() && !m_shuttingDown) {
         m_backend.Device().WaitIdle();
     }
@@ -219,8 +230,6 @@ InxVkCoreModular::~InxVkCoreModular()
 bool InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererMetaData, uint32_t vkWindowExtCount,
                             const char **vkWindowExts)
 {
-    INXLOG_INFO("Initializing InxVkCoreModular...");
-
     // Configure device (store for use in PrepareSurface)
     m_deviceConfig.appName = appMetaData.appName ? appMetaData.appName : "Infernux App";
     m_deviceConfig.engineName = rendererMetaData.appName ? rendererMetaData.appName : "Infernux";
@@ -238,7 +247,6 @@ bool InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererM
     // Store instance for InxRenderer access
     m_instance = m_backend.Device().GetInstance();
 
-    INXLOG_INFO("InxVkCoreModular instance initialized successfully");
     return true;
 }
 
@@ -322,38 +330,38 @@ bool InxVkCoreModular::PrepareSurface()
     // Initialize the async-transfer context. On GPUs without a dedicated
     // transfer queue this aliases to the graphics queue and behaves like
     // a pooled-fence fast path; on GPUs with one (most discrete cards) it
-    // unlocks truly parallel asset uploads. Failures are non-fatal — the
-    // engine simply keeps using the synchronous VkResourceManager path.
+    // unlocks truly parallel asset uploads. Both cases use this one upload
+    // service; failing to create it is a renderer initialization failure.
     const auto &queueIndices = m_backend.Device().GetQueueIndices();
     const uint32_t graphicsFamily = queueIndices.graphicsFamily.value_or(0);
     const uint32_t transferFamily = queueIndices.transferFamily.value_or(graphicsFamily);
     if (m_asyncTransferContext.Initialize(
-            m_backend.Device().GetDevice(), transferFamily, m_backend.Device().GetTransferQueue(),
-            m_backend.Device().HasDedicatedTransferQueue(), m_backend.Device().IsTimelineSemaphoreEnabled(),
-            &m_backend.Queues(),
+            m_backend.Device().GetDevice(), transferFamily, m_backend.Device().HasDedicatedTransferQueue(),
+            m_backend.Device().IsTimelineSemaphoreEnabled(), m_backend.Queues(),
             m_backend.Device().HasDedicatedTransferQueue() ? rhi::QueueRole::Transfer : rhi::QueueRole::Graphics)) {
         // Plug the async context into the resource manager so non-mipmap
         // texture uploads route through the dedicated DMA queue. Mipmap
-        // generation still falls back to the graphics queue because
+        // generation still uses the graphics queue because
         // vkCmdBlitImage is not legal on transfer-only queues.
         m_resourceManager.SetAsyncTransferContext(&m_asyncTransferContext, graphicsFamily);
     } else {
-        INXLOG_WARN("Async transfer context unavailable; uploads will use the graphics queue.");
+        INXLOG_ERROR("Required GPU upload context initialization failed");
+        return false;
     }
 
-    if (m_asyncReadbackContext.Initialize(m_backend.Device().GetDevice(), graphicsFamily,
-                                          m_backend.Device().GetGraphicsQueue(), false, false, &m_backend.Queues(),
-                                          rhi::QueueRole::Graphics)) {
+    if (m_asyncReadbackContext.Initialize(m_backend.Device().GetDevice(), graphicsFamily, false, false,
+                                          m_backend.Queues(), rhi::QueueRole::Graphics)) {
         m_resourceManager.SetAsyncReadbackContext(&m_asyncReadbackContext);
     } else {
-        INXLOG_WARN("Async graphics readback context unavailable.");
+        INXLOG_ERROR("Required GPU readback context initialization failed");
+        return false;
     }
 
     // Initialize pipeline manager
     m_pipelineManager.Initialize(m_backend.Device().GetDevice());
 
     // Initialize render graph
-    m_renderGraph.Initialize(&m_backend.Device(), &m_pipelineManager, nullptr, &m_backend.Queues());
+    m_renderGraph.Initialize(&m_backend.Device(), nullptr, &m_backend.Queues());
 #if INFERNUX_FRAME_PROFILE
     if (!m_gpuTimestampQueries.Initialize(m_backend.Device(), m_maxFramesInFlight)) {
         INXLOG_WARN("GPU timestamp queries are unavailable on this device");
@@ -399,7 +407,59 @@ bool InxVkCoreModular::PrepareSurface()
     // Create uniform buffers
     CreateUniformBuffers();
 
-    INXLOG_INFO("Surface prepared successfully");
+    return true;
+}
+
+bool InxVkCoreModular::RecreatePresentationSurface(const std::function<bool(VkInstance, VkSurfaceKHR *)> &createSurface)
+{
+    if (!createSurface || !m_backend.Device().IsValid() || m_instance == VK_NULL_HANDLE)
+        return false;
+
+    // Mobile surface replacement is rare and is a hard presentation boundary.
+    // A full drain is intentional: no command may retain an image from the
+    // Android SurfaceView that was destroyed while the app was backgrounded.
+    m_backend.Device().WaitIdle();
+    ReleaseMaterialPassResolutionCache();
+    DestroyGuiRenderGraphs();
+    m_depthImage.reset();
+    m_backend.Presentation().Destroy();
+
+    m_backend.Device().SetExternalSurface(VK_NULL_HANDLE);
+    if (m_surface != VK_NULL_HANDLE) {
+        SDL_Vulkan_DestroySurface(m_instance, m_surface, nullptr);
+        m_surface = VK_NULL_HANDLE;
+    }
+
+    VkSurfaceKHR replacement = VK_NULL_HANDLE;
+    if (!createSurface(m_instance, &replacement) || replacement == VK_NULL_HANDLE) {
+        INXLOG_WARN("Platform presentation surface is not ready; recreation will be retried");
+        return false;
+    }
+    m_surface = replacement;
+    m_backend.Device().SetExternalSurface(replacement);
+
+    const auto support = m_backend.Device().QuerySwapchainSupport();
+    uint32_t width = support.capabilities.currentExtent.width;
+    uint32_t height = support.capabilities.currentExtent.height;
+    if (width == std::numeric_limits<uint32_t>::max() || height == std::numeric_limits<uint32_t>::max() || width == 0 ||
+        height == 0) {
+        width = m_windowWidth;
+        height = m_windowHeight;
+    }
+    if (width == 0 || height == 0 || !m_backend.Presentation().Create(m_backend.Device(), width, height)) {
+        INXLOG_WARN("Replacement presentation surface has no usable swapchain yet; recreation will be retried");
+        return false;
+    }
+
+    m_renderGraph.Initialize(&m_backend.Device(), nullptr, &m_backend.Queues());
+    const VkExtent2D extent = m_backend.Presentation().GetExtent();
+    m_presentationView.width = extent.width;
+    m_presentationView.height = extent.height;
+    m_presentationView.colorFormat = rhi::FromVkFormat(m_backend.Presentation().GetImageFormat());
+    ++m_presentationView.revision;
+    m_renderGraph.SetRenderView(m_presentationView);
+    CreateDepthResources();
+    INXLOG_INFO("Platform presentation surface recreated: ", extent.width, "x", extent.height);
     return true;
 }
 
@@ -407,7 +467,6 @@ void InxVkCoreModular::PreparePipeline()
 {
     // Create default flat normal texture (0.5, 0.5, 1.0 = tangent-space (0,0,1))
     m_textureCache.CreateSolidColorTexture("_default_normal", 128, 128, 255, 255, m_resourceManager);
-    INXLOG_INFO("Created default flat normal texture: _default_normal");
 
     // Register the canonical per-view ABI before any ShaderProgram creates a
     // pipeline layout. Descriptor sets are allocated later, after the default
@@ -423,8 +482,6 @@ void InxVkCoreModular::PreparePipeline()
     if (m_shadowDepthSampler == VK_NULL_HANDLE) {
         CreateShadowDepthSampler();
     }
-
-    INXLOG_INFO("Pipeline prepared successfully");
 }
 
 // ============================================================================
@@ -495,7 +552,6 @@ bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact 
         }
     }
 
-    INXLOG_INFO("Published shader program artifact '", artifact.key.ToString(), "'");
     return true;
 }
 
@@ -530,12 +586,10 @@ bool InxVkCoreModular::HasShader(const std::string &name, const std::string &typ
     return m_shaderCache.HasShader(name, type);
 }
 
-void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
+void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId, const std::string &shaderType)
 {
     if (shaderId.empty())
         throw std::invalid_argument("Shader cache invalidation requires a non-empty shader identifier");
-    INXLOG_INFO("Invalidating shader cache for: ", shaderId);
-
     // Clear every CPU-visible raw ShaderProgram/pipeline handle before moving
     // the owning Vulkan objects into the frame-safe retirement queue.
     if (m_materialPipelineManagerInitialized) {
@@ -573,9 +627,7 @@ void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId)
 
     // Shader modules are only consumed during pipeline creation, so their
     // standalone cache entry can be destroyed immediately on the owner thread.
-    m_shaderCache.UnloadShader(shaderId.c_str(), m_pipelineManager);
-
-    INXLOG_INFO("Shader cache invalidated for: ", shaderId);
+    m_shaderCache.UnloadShader(shaderId.c_str(), m_pipelineManager, shaderType);
 }
 
 void InxVkCoreModular::InvalidateTextureCache(const std::string &textureGuid)
@@ -637,7 +689,6 @@ void InxVkCoreModular::RemoveMaterialPipeline(const std::string &materialName)
 {
     if (m_materialPipelineManagerInitialized) {
         m_materialPipelineManager.RemoveRenderData(materialName);
-        INXLOG_INFO("Removed material pipeline render data for: ", materialName);
     }
 }
 
@@ -722,7 +773,7 @@ void InxVkCoreModular::RecreateSwapchain()
     }
 
     // Presentation first builds a complete unpublished generation. Only at
-    // its commit point do we release framebuffers and aliases that reference
+    // its commit point do we release aliases that reference
     // the old image views; creation failure therefore leaves the active GUI
     // and swapchain generation untouched.
     const bool recreated =
@@ -738,7 +789,7 @@ void InxVkCoreModular::RecreateSwapchain()
         return;
     }
 
-    m_renderGraph.Initialize(&m_backend.Device(), &m_pipelineManager, nullptr, &m_backend.Queues());
+    m_renderGraph.Initialize(&m_backend.Device(), nullptr, &m_backend.Queues());
     const VkExtent2D extent = m_backend.Presentation().GetExtent();
     m_presentationView.width = extent.width;
     m_presentationView.height = extent.height;
@@ -782,7 +833,7 @@ vk::RenderGraph &InxVkCoreModular::GetGuiRenderGraph(uint32_t imageIndex)
     auto &graph = m_additionalGuiRenderGraphs[additionalIndex];
     if (!graph) {
         graph = std::make_unique<vk::RenderGraph>();
-        graph->Initialize(&m_backend.Device(), &m_pipelineManager, nullptr, &m_backend.Queues());
+        graph->Initialize(&m_backend.Device(), nullptr, &m_backend.Queues());
         graph->SetRenderView(m_presentationView);
     }
     return *graph;
@@ -812,8 +863,6 @@ bool InxVkCoreModular::EnsureGuiRenderGraph(uint32_t imageIndex)
         backbuffer = builder.WriteColor(backbuffer, 0);
         builder.SetRenderArea(extent.width, extent.height);
         builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        builder.UseDynamicRendering();
-
         return [this, extent](vk::RenderContext &ctx) {
             VkViewport viewport{};
             viewport.width = static_cast<float>(extent.width);
@@ -928,9 +977,9 @@ bool InxVkCoreModular::RecordFrameCommands(VkCommandBuffer cmdBuf, uint32_t imag
 
     // ========================================================================
     // Swapchain GUI Pass via RenderGraph. Each swapchain image owns one
-    // persistent compiled graph because its VkImageView/framebuffer is stable
+    // persistent compiled graph because its VkImageView is stable
     // until swapchain recreation. Rebuilding this one-pass graph every frame
-    // used to repeat RHI registration, graph compilation and framebuffer
+    // used to repeat RHI registration and graph compilation
     // lookup on the hottest render path.
     // ========================================================================
     vk::RenderGraph &guiGraph = GetGuiRenderGraph(imageIndex);

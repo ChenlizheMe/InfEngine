@@ -1,14 +1,12 @@
 """
-NuitkaBuilder — compiles a Python entry script into a standalone native EXE
-using Nuitka (Python → C → native binary).
+NuitkaBuilder compiles a Python entry script into a standalone native EXE
+using Nuitka (Python → C → native binary). The output is a self-contained
+directory containing the EXE, all required native libraries and the embedded
+Python runtime.
 
-This replaces the old RuntimeBuilder cache-copy approach with true native
-compilation.  The output is a self-contained directory containing the EXE,
-all required DLLs, and the embedded Python runtime.
-
-On Windows, Infernux requires an MSVC toolchain for game builds.
-All intermediate compilation is done in an ASCII-safe staging directory and
-moved to the final destination afterwards.
+Compiler tooling belongs to runtime publication. Consumer Player builds use
+precompiled distributions and never compile a replacement when one is absent.
+Release-engineering compilation retains its own build cache.
 """
 
 from __future__ import annotations
@@ -30,26 +28,31 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, List, Optional
 
 from Infernux.debug import Debug
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.i18n import t
-from Infernux.engine.path_utils import path_key, resolved_path
+from Infernux.engine.path_utils import path_key, relative_path, resolved_path
 from Infernux.engine.player_package_native import extract_pack, read_manifest, write_pack
 from Infernux.engine.player_service_graph import forbidden_player_service_modules
+from Infernux.engine.python_abi import (
+    BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
+    BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
+    LINUX_PYTHON_SHARED_PREFIX,
+    PYTHON_RUNTIME_DIRECTORY,
+    PYTHON_VERSION,
+    WINDOWS_LIBFFI_DLL_PATTERNS,
+    WINDOWS_PYTHON_DLL,
+    player_native_library_filenames,
+    stdlib_extension_module_sources,
+)
 
-# ASCII-safe root for Nuitka staging and temporary build artifacts.
-_STAGING_ROOT = "C:\\_InxBuild"
-
-# Persistent Nuitka compilation cache — lives outside the per-build staging
-# directory so it survives across builds, dramatically speeding up rebuilds.
-_NUITKA_CACHE_DIR = os.path.join(_STAGING_ROOT, "_nuitka_cache")
-_RUNTIME_PACK_DIR = os.path.join(_STAGING_ROOT, "_runtime_packs")
-_REQUIREMENTS_STATE_DIR = os.path.join(_STAGING_ROOT, "_requirements_state")
 _MAX_RUNTIME_PACKS = 4
 _RUNTIME_HASH_STATE_FILENAME = "content-hashes.json"
+_RUNTIME_HASH_CACHE_MIN_BYTES = 1024 * 1024
 _RUNTIME_ARCHIVE_FILENAME = "Runtime.inxrt"
 _RUNTIME_PACK_MANIFEST_FILENAME = "Player.inxmanifest"
 _PACKAGED_RUNTIME_DIRNAME = "_runtime_packs"
@@ -149,6 +152,44 @@ _AUTO_INSTALLABLE_PACKAGES = {
 
 
 _BuildCancelled = BuildCancelled
+
+
+def _windows_ascii_build_alias(build_cache_root: str) -> str:
+    """Create an ASCII-only junction to one project-owned build cache."""
+
+    if sys.platform != "win32" or build_cache_root.isascii():
+        return ""
+
+    os.makedirs(build_cache_root, exist_ok=True)
+    program_data = os.environ.get("PROGRAMDATA", r"C:\ProgramData")
+    alias_parent = os.path.join(program_data, "Infernux", "BuildLinks")
+    os.makedirs(alias_parent, exist_ok=True)
+    alias = os.path.join(
+        alias_parent,
+        f"{os.getpid()}-{threading.get_ident()}-{uuid.uuid4().hex}",
+    )
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", alias, build_cache_root],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode != 0 or not os.path.isdir(alias):
+        raise RuntimeError(
+            "Windows game builds require an ASCII compiler path, but the "
+            f"build-cache junction could not be created: {result.stdout.strip()}"
+        )
+    return alias
+
+
+def _remove_windows_build_alias(alias: str) -> None:
+    if alias and os.path.lexists(alias):
+        os.rmdir(alias)
 
 
 def _terminate_process_tree(proc: subprocess.Popen, *, timeout: float = 1.0) -> None:
@@ -814,7 +855,7 @@ def _is_valid_builder_python(python_exe: str) -> bool:
     return bool(
         python_exe
         and os.path.isfile(python_exe)
-        and _python_version(python_exe) == "3.12"
+        and _python_version(python_exe) == PYTHON_VERSION
         and not _is_embeddable_python_exe(python_exe)
     )
 
@@ -838,9 +879,11 @@ def _resolve_builder_python() -> str:
         return sys.executable
 
     raise RuntimeError(
-        "Nuitka builds must run from a non-embeddable Python 3.12 environment.\n"
+        f"Nuitka builds must run from a non-embeddable Python {PYTHON_VERSION} "
+        "environment.\n"
         "In the packaged Hub workflow, each project owns a full Python copy "
-        "under .runtime/python312/ — open the project through its runtime and build from there."
+        f"under .runtime/{PYTHON_RUNTIME_DIRECTORY}/ — open the project through "
+        "its runtime and build from there."
     )
 
 
@@ -895,10 +938,14 @@ def _ensure_python_packages(python_exe: str, *module_names: str) -> None:
     )
 
 
-def _install_requirements_files(python_exe: str, requirement_files: List[str]) -> None:
-    os.makedirs(_REQUIREMENTS_STATE_DIR, exist_ok=True)
+def _install_requirements_files(
+    python_exe: str,
+    requirement_files: List[str],
+    state_dir: str,
+) -> None:
+    os.makedirs(state_dir, exist_ok=True)
     interpreter_key = hashlib.sha256(path_key(python_exe).encode("utf-8")).hexdigest()[:24]
-    state_path = os.path.join(_REQUIREMENTS_STATE_DIR, f"{interpreter_key}.json")
+    state_path = os.path.join(state_dir, f"{interpreter_key}.json")
     try:
         with open(state_path, "r", encoding="utf-8") as state_file:
             state = json.load(state_file)
@@ -945,6 +992,8 @@ def _install_requirements_files(python_exe: str, requirement_files: List[str]) -
 class NuitkaBuilder:
     """Wraps Nuitka compilation for Infernux standalone builds."""
 
+    _RUNTIME_PACK_LAYOUT = "engine-native-short-name"
+
     # Packages that are excluded from Nuitka compilation and injected as raw
     # site-packages. NumPy and packaging are engine runtime dependencies;
     # Numba/llvmlite additionally require Python bytecode for LLVM JIT.
@@ -970,19 +1019,11 @@ class NuitkaBuilder:
     _ENGINE_MANAGED_RUNTIME_PACKAGES = frozenset(
         {"infernux", "numba", "llvmlite", "numpy", "packaging"}
     )
-    # glslang and SPIRV-Tools are linked into InfernuxShaderCompiler, while the
-    # former monolithic InfernuxRuntime DLL is now a private static archive.
-    # Historical copies may survive an older wheel and must never enter a new
-    # Player pack or its cache fingerprint.
-    _FORBIDDEN_LEGACY_NATIVE_DLLS = frozenset(
-        {
-            "infernuxruntime.dll",
-            "spirv.dll",
-            "spvremapper.dll",
-            "glslang-default-resource-limits.dll",
-            "glslang.dll",
-        }
-    )
+    _PLAYER_NATIVE_CONTRACT_FILENAME = "PlayerNativeContract.json"
+    _PLAYER_NATIVE_CONTRACT = {
+        "contract": "infernux.player-native",
+        "runtime_linkage": "static",
+    }
     _GAME_BUILD_NOFOLLOW_MODULES = frozenset()
     # Keep the Player import graph explicit. PlayerGUI legitimately uses the
     # small viewport utility module, but none of the authoring panels,
@@ -1081,6 +1122,7 @@ class NuitkaBuilder:
         entry_script: str,
         output_dir: str,
         *,
+        build_cache_root: str,
         output_filename: str = "Game.exe",
         product_name: str = "Infernux Game",
         file_version: str = "1.0.0.0",
@@ -1098,6 +1140,19 @@ class NuitkaBuilder:
     ):
         self.entry_script = resolved_path(entry_script)
         self.output_dir = resolved_path(output_dir)
+        configured_cache_root = os.environ.get("INFERNUX_NUITKA_ROOT", "").strip()
+        self._build_cache_root = resolved_path(
+            os.path.expanduser(configured_cache_root)
+            if configured_cache_root
+            else build_cache_root
+        )
+        self._staging_root = os.path.join(self._build_cache_root, "Staging")
+        self._nuitka_cache_dir = os.path.join(self._build_cache_root, "Nuitka")
+        self._runtime_pack_dir = os.path.join(self._build_cache_root, "RuntimePacks")
+        self._requirements_state_dir = os.path.join(
+            self._build_cache_root,
+            "Requirements",
+        )
         # Platform-normalized executable name: the Windows-style ".exe"
         # default is stripped on Linux/macOS so callers don't need to care.
         if sys.platform != "win32" and output_filename.lower().endswith(".exe"):
@@ -1129,7 +1184,7 @@ class NuitkaBuilder:
 
         # Staging directory — unique per build to allow parallel builds
         tag = hashlib.md5(self.output_dir.encode()).hexdigest()[:8]
-        self._staging_dir = os.path.join(_STAGING_ROOT, tag)
+        self._staging_dir = os.path.join(self._staging_root, tag)
         self._builder_python = _resolve_builder_python()
 
     @classmethod
@@ -1167,9 +1222,6 @@ class NuitkaBuilder:
                 f"nuitka total {now - _build_t0:.1f}s)"
             )
 
-        _p(t("build.step.checking_nuitka"), 0.0)
-        self._check_nuitka()
-
         _p(t("build.step.preparing_staging"), 0.03)
         self._prepare_staging()
 
@@ -1188,6 +1240,17 @@ class NuitkaBuilder:
                 compatibility_key=compatibility_key if self.packaged_runtime_lookup else "",
             )
         if dist_dir is None:
+            if self.player_module and self.packaged_runtime_lookup:
+                raise RuntimeError(
+                    "The selected platform has no compatible precompiled Player runtime. "
+                    "Install the matching complete platform package; game export does "
+                    "not compile the engine."
+                )
+            self._check_nuitka()
+            if runtime_pack_key:
+                # Requirements can change the environment used for compilation.
+                runtime_pack_key = self._runtime_pack_fingerprint(cmd)
+                self.last_runtime_pack_key = runtime_pack_key
             _p(t("build.step.running_nuitka"), 0.10)
             dist_dir = self._run_nuitka(cmd, on_progress, cancel_event)
 
@@ -1230,6 +1293,7 @@ class NuitkaBuilder:
         """Fingerprint every input that can change a reusable Player runtime."""
         digest = hashlib.sha256()
         digest.update(b"runtime-pack\0")
+        digest.update(self._RUNTIME_PACK_LAYOUT.encode("ascii"))
         normalized_command = []
         for index, argument in enumerate(cmd):
             value = str(argument)
@@ -1291,11 +1355,12 @@ class NuitkaBuilder:
             )
 
         payload = {
-            "contract": 2,
+            "contract": "infernux-runtime-pack",
+            "layout": self._RUNTIME_PACK_LAYOUT,
             "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
             "platform": sys.platform,
             "machine": platform.machine().lower(),
-            "console_mode": self.console_mode,
+            "console_mode": "module" if self.player_module else self.console_mode,
             "lto": bool(self.lto),
             "player_module": bool(getattr(self, "player_module", False)),
             "archive_format": "infernux-native-inxpack",
@@ -1305,6 +1370,7 @@ class NuitkaBuilder:
             "custom_raw_packages": custom_packages(self.raw_copy_packages),
             "custom_requirements": sorted(requirements),
             "engine_fingerprint": self._player_compile_input_fingerprint(),
+            "entry_fingerprint": self._hash_file(Path(self.entry_script)),
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
@@ -1343,7 +1409,6 @@ class NuitkaBuilder:
                 or path.suffix.lower()
                 in {".pyc", ".pdb", ".lib", ".exp", ".meta", ".bak"}
                 or relative.endswith(".pyi")
-                or path.name.casefold() in self._FORBIDDEN_LEGACY_NATIVE_DLLS
             ):
                 continue
             digest.update(relative.encode("utf-8"))
@@ -1358,7 +1423,10 @@ class NuitkaBuilder:
         native_payload_dir = self._native_payload_dir()
         package_lib_dir = package_root / "lib"
         if path_key(native_payload_dir) != path_key(package_lib_dir):
-            for path in self._native_payload_files(native_payload_dir):
+            for path in sorted(
+                self._native_payload_files(native_payload_dir),
+                key=lambda item: item.name.casefold(),
+            ):
                 digest.update(f"native/{path.name}".encode("utf-8"))
                 content_hash, state_key = self._cached_file_hash(path, hash_state)
                 live_hash_keys.add(state_key)
@@ -1368,11 +1436,6 @@ class NuitkaBuilder:
         )
         self._engine_fingerprint_cache = digest.hexdigest()
         return self._engine_fingerprint_cache
-
-    def _engine_content_fingerprint(self) -> str:
-        """Compatibility alias for the Player compile-input fingerprint."""
-
-        return self._player_compile_input_fingerprint()
 
     def _builder_environment_fingerprint(self) -> bytes:
         package_names = sorted({
@@ -1413,9 +1476,8 @@ print(json.dumps({{
             f"{self._builder_python}\0{sys.version}\0{sys.platform}"
         ).encode("utf-8")
 
-    @staticmethod
-    def _runtime_hash_state_path() -> str:
-        return os.path.join(_RUNTIME_PACK_DIR, _RUNTIME_HASH_STATE_FILENAME)
+    def _runtime_hash_state_path(self) -> str:
+        return os.path.join(self._runtime_pack_dir, _RUNTIME_HASH_STATE_FILENAME)
 
     def _load_runtime_hash_state(self) -> dict[str, dict]:
         try:
@@ -1431,8 +1493,10 @@ print(json.dumps({{
         key = path_key(path)
         cached = state.get(key, {})
         if (
-            cached.get("size") == stat.st_size
+            stat.st_size >= _RUNTIME_HASH_CACHE_MIN_BYTES
+            and cached.get("size") == stat.st_size
             and cached.get("mtime_ns") == stat.st_mtime_ns
+            and cached.get("ctime_ns") == stat.st_ctime_ns
             and isinstance(cached.get("sha256"), str)
         ):
             return cached["sha256"], key
@@ -1445,12 +1509,13 @@ print(json.dumps({{
         state[key] = {
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
+            "ctime_ns": stat.st_ctime_ns,
             "sha256": value,
         }
         return value, key
 
     def _store_runtime_hash_state(self, state: dict[str, dict]) -> None:
-        os.makedirs(_RUNTIME_PACK_DIR, exist_ok=True)
+        os.makedirs(self._runtime_pack_dir, exist_ok=True)
         state_path = self._runtime_hash_state_path()
         temporary = state_path + f".{os.getpid()}.tmp"
         try:
@@ -1464,7 +1529,7 @@ print(json.dumps({{
                 pass
 
     def _runtime_pack_path(self, runtime_pack_key: str) -> str:
-        return os.path.join(_RUNTIME_PACK_DIR, runtime_pack_key)
+        return os.path.join(self._runtime_pack_dir, runtime_pack_key)
 
     def _restore_runtime_pack(
         self,
@@ -1583,7 +1648,7 @@ print(json.dumps({{
     ) -> None:
         """Cache the compiled runtime through the native InxPack writer."""
 
-        os.makedirs(_RUNTIME_PACK_DIR, exist_ok=True)
+        os.makedirs(self._runtime_pack_dir, exist_ok=True)
         pack_root = self._runtime_pack_path(runtime_pack_key)
         metadata = {
             "kind": "runtime-cache",
@@ -1629,6 +1694,8 @@ print(json.dumps({{
                 if source_path.suffix.lower() in _RUNTIME_PACK_FORBIDDEN_SUFFIXES:
                     continue
                 relative = source_path.relative_to(dist_dir).as_posix()
+                if self._is_redundant_engine_native_alias(source_path, Path(dist_dir)):
+                    continue
                 source_files.append((relative, str(source_path)))
             if not source_files:
                 raise RuntimeError("Native Runtime.inxrt would be empty")
@@ -1651,11 +1718,7 @@ print(json.dumps({{
             ) as manifest_file:
                 json.dump(metadata, manifest_file, indent=2, sort_keys=True)
                 manifest_file.write("\n")
-            try:
-                os.replace(temporary, pack_root)
-            except OSError:
-                if not os.path.isdir(pack_root):
-                    raise
+            _publish_runtime_directory(Path(temporary), Path(pack_root))
             self._prune_runtime_packs()
             ratio = native_manifest["archive_bytes"] / max(1, native_manifest["raw_bytes"])
             Debug.log_internal(
@@ -1664,6 +1727,18 @@ print(json.dumps({{
             )
         finally:
             shutil.rmtree(temporary, ignore_errors=True)
+
+    @staticmethod
+    def _is_redundant_engine_native_alias(source_path: Path, dist_root: Path) -> bool:
+        """Exclude the ABI alias when Nuitka already emitted its runtime short name."""
+        if source_path.parent != dist_root / "Infernux" / "lib":
+            return False
+        name = source_path.name
+        if name.startswith("_Infernux.cp") and name.endswith(".pyd"):
+            return (source_path.parent / "_Infernux.pyd").is_file()
+        if name.startswith("_Infernux.cpython-") and name.endswith(".so"):
+            return (source_path.parent / "_Infernux.so").is_file()
+        return False
 
     def export_runtime_pack(self, destination_root: str) -> str:
         """Copy the most recently built pack into a wheel package-data root."""
@@ -1904,11 +1979,10 @@ print(json.dumps({{
         self._inject_jit_packages(dist_dir, packages=selected_packages)
         return all((Path(dist_dir) / package).is_dir() for package in selected_packages)
 
-    @staticmethod
-    def _prune_runtime_packs() -> None:
+    def _prune_runtime_packs(self) -> None:
         try:
             packs = [
-                path for path in Path(_RUNTIME_PACK_DIR).iterdir()
+                path for path in Path(self._runtime_pack_dir).iterdir()
                 if path.is_dir() and not path.name.endswith(".tmp")
             ]
         except OSError:
@@ -1941,6 +2015,7 @@ print(json.dumps({{
             _install_requirements_files(
                 self._builder_python,
                 self.extra_requirements_files,
+                self._requirements_state_dir,
             )
             Debug.log_internal(
                 f"  _install_requirements_files in {_time.perf_counter() - _t1:.2f}s"
@@ -2019,22 +2094,10 @@ print(json.dumps({{
         if sys.platform == "win32":
             if not player_module:
                 cmd.append(f"--windows-console-mode={self.console_mode}")
-            if not _has_msvc_toolchain():
-                raise RuntimeError(
-                    "Windows game builds require Microsoft Visual C++ Build Tools (MSVC).\n"
-                    "MinGW fallback has been disabled.\n"
-                    "Install Visual Studio 2022 Build Tools or Visual Studio with the Desktop development with C++ workload, then try again."
-                )
             # Do not pass --msvc=latest here.  _run_nuitka initializes a full
             # cl/link/rc/mt + Windows SDK environment before spawning Nuitka;
             # forcing "latest" makes SCons run its own VS/SDK discovery again,
             # which is exactly what fails on some machines with a valid SDK.
-        elif sys.platform.startswith("linux"):
-            if shutil.which("gcc") is None and shutil.which("clang") is None:
-                raise RuntimeError(
-                    "Linux game builds require a C compiler for Nuitka.\n"
-                    "Install one with: sudo apt-get install build-essential"
-                )
 
         # Link-time optimization for smaller and faster binaries
         if self.lto:
@@ -2223,16 +2286,53 @@ print(json.dumps({{
         if cancel_event is not None and cancel_event.is_set():
             raise BuildCancelled()
 
+        if sys.platform == "win32" and not _has_msvc_toolchain():
+            raise RuntimeError("Compiling a Player runtime requires Microsoft Visual C++ Build Tools (MSVC).")
+        if sys.platform.startswith("linux") and shutil.which("gcc") is None and shutil.which("clang") is None:
+            raise RuntimeError("Compiling a Player runtime requires a C compiler (gcc or clang).")
+
+        alias = _windows_ascii_build_alias(self._build_cache_root)
+        process_build_root = alias or self._build_cache_root
+        try:
+            return self._run_nuitka_process(
+                cmd,
+                on_progress,
+                cancel_event,
+                process_build_root=process_build_root,
+            )
+        finally:
+            _remove_windows_build_alias(alias)
+
+    def _run_nuitka_process(
+        self,
+        cmd: List[str],
+        on_progress: Optional[Callable[[str, float], None]],
+        cancel_event: Optional[threading.Event],
+        *,
+        process_build_root: str,
+    ) -> str:
+        """Execute Nuitka through the compiler-visible build-cache path."""
+
+        process_staging_dir = os.path.join(
+            process_build_root,
+            *relative_path(self._staging_dir, self._build_cache_root).split("/"),
+        )
+        process_nuitka_cache_dir = os.path.join(process_build_root, "Nuitka")
+        process_cmd = [
+            str(argument).replace(self._build_cache_root, process_build_root)
+            for argument in cmd
+        ]
+
         env = os.environ.copy()
 
         # Redirect TEMP / TMP to an ASCII-safe location so MinGW's
         # std::filesystem never encounters non-ASCII characters.
-        safe_tmp = os.path.join(self._staging_dir, "_tmp")
+        safe_tmp = os.path.join(process_staging_dir, "_tmp")
         os.makedirs(safe_tmp, exist_ok=True)
         env["TEMP"] = safe_tmp
         env["TMP"] = safe_tmp
 
-        safe_profile = os.path.join(self._staging_dir, "_profile")
+        safe_profile = os.path.join(process_staging_dir, "_profile")
         safe_local_appdata = os.path.join(safe_profile, "AppData", "Local")
         safe_roaming_appdata = os.path.join(safe_profile, "AppData", "Roaming")
         for path in (safe_profile, safe_local_appdata, safe_roaming_appdata):
@@ -2249,8 +2349,8 @@ print(json.dumps({{
 
         # Use a persistent cache directory so Nuitka can reuse compiled C
         # code across builds — this is the single biggest speed win.
-        os.makedirs(_NUITKA_CACHE_DIR, exist_ok=True)
-        env["NUITKA_CACHE_DIR"] = _NUITKA_CACHE_DIR
+        os.makedirs(process_nuitka_cache_dir, exist_ok=True)
+        env["NUITKA_CACHE_DIR"] = process_nuitka_cache_dir
 
         # If we switch away from the current interpreter to a reusable build
         # venv, preserve the current import roots so Nuitka can still resolve
@@ -2281,14 +2381,14 @@ print(json.dumps({{
             else {"start_new_session": True}
         )
         proc = subprocess.Popen(
-            cmd,
+            process_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             env=env,
-            cwd=self._staging_dir,
+            cwd=process_staging_dir,
             **process_group_args,
         )
 
@@ -2423,8 +2523,6 @@ print(json.dumps({{
         for path in lib_dir.iterdir():
             if not path.is_file() or path in {module_file, bootstrap_module}:
                 continue
-            if path.name.casefold() in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
-                continue
             # Never mix a stale short-name extension with the selected
             # ABI-tagged module. Nuitka creates the short name itself.
             if path.name.startswith("_Infernux"):
@@ -2437,6 +2535,68 @@ print(json.dumps({{
                 files.append(path)
         return sorted(files, key=lambda path: path.name.lower())
 
+    @classmethod
+    def _player_native_payload_is_compatible(cls, lib_dir: Path) -> bool:
+        """Return whether *lib_dir* contains a self-contained Player bridge."""
+
+        try:
+            cls._native_payload_files(lib_dir)
+            contract = json.loads(
+                (lib_dir / cls._PLAYER_NATIVE_CONTRACT_FILENAME).read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        present = {
+            path.name.casefold() for path in cls._native_payload_files(lib_dir)
+        }
+        required = {
+            name.casefold() for name in player_native_library_filenames()
+        }
+        return contract == cls._PLAYER_NATIVE_CONTRACT and required <= present
+
+    @classmethod
+    def _source_build_player_native_dirs(cls, loaded_dir: Path) -> list[Path]:
+        """Find shipping-native siblings of an Editor development payload."""
+
+        build_roots: list[Path] = []
+        for parent in (loaded_dir, *loaded_dir.parents):
+            if (
+                parent.name.casefold() == "build"
+                and parent.parent.name.casefold() == "out"
+            ):
+                build_roots.append(parent)
+                break
+        try:
+            import Infernux
+
+            package_root = Path(resolved_path(Infernux.__file__)).parent
+            repository_root = package_root.parents[1]
+            build_roots.append(repository_root / "out" / "build")
+        except (ImportError, OSError, IndexError, TypeError):
+            pass
+
+        candidates: list[Path] = []
+        seen: set[str] = set()
+        for build_root in build_roots:
+            for pattern in ("*/python-sync", "*/Release", "*/RelWithDebInfo"):
+                for candidate in build_root.glob(pattern):
+                    key = path_key(candidate)
+                    if key in seen or path_key(candidate) == path_key(loaded_dir):
+                        continue
+                    seen.add(key)
+                    if cls._player_native_payload_is_compatible(candidate):
+                        candidates.append(candidate)
+
+        def module_timestamp(candidate: Path) -> int:
+            try:
+                return cls._native_module_file(candidate).stat().st_mtime_ns
+            except OSError:
+                return -1
+
+        return sorted(candidates, key=module_timestamp, reverse=True)
+
     @staticmethod
     def _native_payload_dir() -> Path:
         """Resolve the atomic native payload used by this builder process."""
@@ -2448,6 +2608,11 @@ print(json.dumps({{
                     f"INFERNUX_NATIVE_MODULE_DIR is not a directory: {candidate}"
                 )
             NuitkaBuilder._native_payload_files(candidate)
+            if not NuitkaBuilder._player_native_payload_is_compatible(candidate):
+                raise RuntimeError(
+                    "INFERNUX_NATIVE_MODULE_DIR points to an Editor development "
+                    "runtime. Build and select a static Release Player runtime."
+                )
             return candidate
 
         native_module = importlib.import_module("Infernux.lib._Infernux")
@@ -2456,7 +2621,22 @@ print(json.dumps({{
             raise RuntimeError("Loaded Infernux native module has no filesystem path")
         candidate = Path(resolved_path(module_file)).parent
         NuitkaBuilder._native_payload_files(candidate)
-        return candidate
+        if NuitkaBuilder._player_native_payload_is_compatible(candidate):
+            return candidate
+
+        alternatives = NuitkaBuilder._source_build_player_native_dirs(candidate)
+        if alternatives:
+            selected = alternatives[0]
+            Debug.log_internal(
+                "Selected static Player native payload instead of the active "
+                f"Editor development runtime: {selected}"
+            )
+            return selected
+        raise RuntimeError(
+            "The active Infernux native module is an Editor development runtime "
+            "and cannot be packaged into a Player. Build the platform Release "
+            "preset first (for example: cmake --build --preset windows-msvc-release)."
+        )
 
     def _inject_native_libs(self, dist_dir: str):
         """Stage the bootstrap root and complete package-qualified native runtime.
@@ -2479,24 +2659,18 @@ print(json.dumps({{
 
         dist_root = Path(dist_dir)
 
-        # Remove stale copies left by older installed wheels or Nuitka output
-        # before injecting the current native closure.
-        for legacy_name in self._FORBIDDEN_LEGACY_NATIVE_DLLS:
-            for stale_path in (dist_root / legacy_name, target_dir / legacy_name):
-                try:
-                    stale_path.unlink()
-                except FileNotFoundError:
-                    pass
-
         native_files = self._native_payload_files(lib_dir)
         native_module = self._native_module_file(lib_dir)
         bootstrap_module = self._bootstrap_module_file(lib_dir)
 
         for src in native_files:
-            # python312.dll is owned exclusively by the pre-extraction
+            # The CPython DLL is owned exclusively by the pre-extraction
             # CPython bootstrap. Nuitka normally emits it at the dist root;
             # refresh that copy and never duplicate it inside Runtime.inxrt.
-            if sys.platform == "win32" and src.name.casefold() == "python312.dll":
+            if (
+                sys.platform == "win32"
+                and src.name.casefold() == WINDOWS_PYTHON_DLL.casefold()
+            ):
                 shutil.copy2(src, dist_root / src.name)
                 try:
                     (target_dir / src.name).unlink()
@@ -2525,7 +2699,10 @@ print(json.dumps({{
 
             # Foundation is the bootstrap module's sole Infernux dependency
             # and must remain available before Runtime.inxrt is extracted.
-            if src.name.casefold() == "infernuxfoundation.dll":
+            if src.name.casefold() in {
+                "infernuxfoundation.dll",
+                "libinfernuxfoundation.so",
+            }:
                 dst_root = dist_root / src.name
                 shutil.copy2(src, dst_root)
                 Debug.log_internal(f"  Injected (bootstrap dependency): {src.name}")
@@ -2565,13 +2742,48 @@ print(json.dumps({{
         if encodings_spec is None or not encodings_spec.submodule_search_locations:
             raise RuntimeError("Builder Python has no encodings package")
 
-        ctypes_path = Path(resolved_path(ctypes_spec.origin))
-        search_roots = (
-            python_root,
-            python_root / "DLLs",
-            python_root / "Library" / "bin",
-            ctypes_path.parent,
+        # Standalone CPython can link _ctypes into libpython itself.
+        ctypes_path = (
+            None if ctypes_spec.origin == "built-in"
+            else Path(resolved_path(ctypes_spec.origin))
         )
+        environment_root = python_root.parent
+        environment_roots: list[Path] = []
+        environment_root_keys: set[str] = set()
+        environment_candidates = [environment_root]
+        if path_key(self._builder_python) == path_key(sys.executable):
+            # A project venv usually contains only a launcher and site-packages.
+            # Its CPython shared library remains in the managed base runtime.
+            # Follow that base only for the interpreter running this builder;
+            # an explicitly supplied foreign interpreter must stay isolated.
+            environment_candidates.extend(
+                (
+                    Path(resolved_path(sys.prefix)),
+                    Path(resolved_path(sys.exec_prefix)),
+                    Path(resolved_path(sys.base_prefix)),
+                    Path(resolved_path(sys.base_exec_prefix)),
+                )
+            )
+        for candidate in environment_candidates:
+            key = path_key(candidate)
+            if key in environment_root_keys:
+                continue
+            environment_root_keys.add(key)
+            environment_roots.append(candidate)
+
+        search_roots_list = [python_root]
+        if ctypes_path is not None:
+            search_roots_list.append(ctypes_path.parent)
+        for root in environment_roots:
+            search_roots_list.extend(
+                (
+                    root,
+                    root / "DLLs",
+                    root / "Library" / "bin",
+                    root / "lib",
+                )
+            )
+        search_roots = tuple(dict.fromkeys(search_roots_list))
 
         def find_runtime_file(filename: str, *, required: bool) -> Optional[Path]:
             for root in search_roots:
@@ -2584,46 +2796,108 @@ print(json.dumps({{
                 )
             return None
 
-        sources: dict[str, Path] = {
-            "python312.dll": find_runtime_file("python312.dll", required=True),
-            "_ctypes.pyd": ctypes_path,
-            "ffi.dll": find_runtime_file("ffi.dll", required=True),
-        }
-        for optional_name in (
-            "python3.dll",
-            "zlib.dll",
-            "vcruntime140.dll",
-            "vcruntime140_1.dll",
-        ):
-            source = find_runtime_file(optional_name, required=False)
-            if source is not None:
-                sources[optional_name] = source
-
-        # Module-mode no longer embeds stdlib extensions. Stage the physical
-        # CPython ABI modules so GameBuilder can move them into Runtime.inxrt.
-        extension_suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES)
-        for module_name in sorted(sys.stdlib_module_names):
-            try:
-                spec = importlib.util.find_spec(module_name)
-            except (ImportError, AttributeError, ValueError):
-                continue
-            origin = getattr(spec, "origin", None) if spec is not None else None
-            if not origin or not str(origin).endswith(extension_suffixes):
-                continue
-            source = Path(resolved_path(origin))
-            if source.is_file():
+        if sys.platform == "win32":
+            if ctypes_path is None:
+                raise RuntimeError("Windows PlayerHost requires an external _ctypes module")
+            sources: dict[str, Path] = {
+                WINDOWS_PYTHON_DLL: find_runtime_file(
+                    WINDOWS_PYTHON_DLL, required=True
+                ),
+                "_ctypes.pyd": ctypes_path,
+            }
+            ffi_sources: dict[str, Path] = {}
+            for root in search_roots:
+                if not root.is_dir():
+                    continue
+                for pattern in WINDOWS_LIBFFI_DLL_PATTERNS:
+                    for source in sorted(root.glob(pattern)):
+                        if source.is_file():
+                            ffi_sources.setdefault(source.name.casefold(), source)
+            if not ffi_sources:
+                raise RuntimeError(
+                    "Builder Python bootstrap dependency is missing: Windows libffi DLL"
+                )
+            for source in ffi_sources.values():
+                sources[source.name] = source
+            for optional_name in (
+                "python3.dll",
+                "zlib.dll",
+                "vcruntime140.dll",
+                "vcruntime140_1.dll",
+            ):
+                source = find_runtime_file(optional_name, required=False)
+                if source is not None:
+                    sources[optional_name] = source
+        elif sys.platform.startswith("linux"):
+            python_candidates = sorted(
+                candidate
+                for root in environment_roots
+                for pattern in (
+                    f"{LINUX_PYTHON_SHARED_PREFIX}.1.0",
+                    LINUX_PYTHON_SHARED_PREFIX,
+                )
+                for candidate in (root / "lib").glob(pattern)
+                if candidate.is_file()
+            )
+            if not python_candidates:
+                raise RuntimeError(
+                    "Builder Python bootstrap dependency is missing: "
+                    f"{LINUX_PYTHON_SHARED_PREFIX}"
+                )
+            python_library = python_candidates[0]
+            ffi_candidates = sorted(
+                candidate
+                for root in environment_roots
+                for candidate in (root / "lib").glob("libffi.so*")
+                if candidate.is_file()
+            )
+            if ctypes_path is not None and not ffi_candidates:
+                raise RuntimeError(
+                    "Builder Python bootstrap dependency is missing: libffi.so"
+                )
+            sources = {
+                python_library.name: python_library,
+            }
+            if ctypes_path is not None:
+                sources[ctypes_path.name] = ctypes_path
+            for source in ffi_candidates:
                 sources.setdefault(source.name, source)
+        else:
+            raise RuntimeError(
+                f"PlayerHost bootstrap is unsupported on {sys.platform}"
+            )
+
+        # Module-mode no longer embeds stdlib extensions. The complete pure
+        # stdlib is imported before Runtime.inxrt can be mounted, so its native
+        # extension closure belongs to the same Bootstrap.inxrt phase.
+        for name, source in stdlib_extension_module_sources().items():
+            sources.setdefault(name, source)
 
         dependency_patterns = (
-            "bzip2*.dll",
-            "libbz2*.dll",
-            "libcrypto-*.dll",
-            "libexpat*.dll",
-            "libffi*.dll",
-            "liblzma*.dll",
-            "libssl-*.dll",
-            "sqlite3.dll",
-            "zlib*.dll",
+            (
+                "bzip2*.dll",
+                "libbz2*.dll",
+                "libcrypto-*.dll",
+                "libexpat*.dll",
+                "ffi-*.dll",
+                "ffi.dll",
+                "libffi*.dll",
+                "liblzma*.dll",
+                "libssl-*.dll",
+                "sqlite3.dll",
+                "zlib*.dll",
+            )
+            if sys.platform == "win32"
+            else (
+                "libbz2.so*",
+                "libcrypto.so*",
+                "libexpat.so*",
+                "libffi.so*",
+                "liblzma.so*",
+                "libssl.so*",
+                "libsqlite3.so*",
+                "libz.so*",
+            )
         )
         for root in search_roots:
             if not root.is_dir():
@@ -2642,6 +2916,31 @@ print(json.dumps({{
         dist_root = Path(dist_dir)
         for name, source in sources.items():
             shutil.copy2(source, dist_root / name)
+            # This closure has one owner: Bootstrap.inxrt, not Infernux/lib.
+            (dist_root / "Infernux" / "lib" / name).unlink(missing_ok=True)
+        manifest_path = dist_root / BOOTSTRAP_NATIVE_MANIFEST_FILENAME
+        temporary_manifest = manifest_path.with_name(
+            f".{manifest_path.name}.{os.getpid()}.tmp"
+        )
+        try:
+            temporary_manifest.write_text(
+                json.dumps(
+                    {
+                        "$schema": BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
+                        "files": sorted(sources),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            os.replace(temporary_manifest, manifest_path)
+        finally:
+            try:
+                temporary_manifest.unlink()
+            except FileNotFoundError:
+                pass
 
         target_encodings = dist_root / "stdlib" / "encodings"
         target_encodings.mkdir(parents=True, exist_ok=True)
@@ -2870,16 +3169,11 @@ print(json.dumps({{
                 site_packages = cand
                 break
         if not site_packages:
-            # Fallback: pick the last entry (usually Lib/site-packages)
-            for cand in reversed(candidates):
-                if os.path.isdir(cand):
-                    site_packages = cand
-                    break
-        if not site_packages:
-            Debug.log_warning(
-                f"Builder site-packages not found in {candidates}"
+            raise RuntimeError(
+                "Builder environment does not contain every raw runtime package "
+                f"{selected_packages!r} in one site-packages directory; "
+                f"searched {candidates!r}"
             )
-            return
 
         Debug.log_internal(
             f"  site-packages resolved: {site_packages}  "
@@ -2892,10 +3186,10 @@ print(json.dumps({{
         for pkg in selected_packages:
             src = os.path.join(site_packages, pkg)
             if not os.path.isdir(src):
-                Debug.log_warning(
-                    f"JIT package '{pkg}' not found in {site_packages} — skipping"
+                raise RuntimeError(
+                    f"Raw runtime package '{pkg}' disappeared from "
+                    f"'{site_packages}' during Player construction"
                 )
-                continue
 
             _pkg_t0 = _time.perf_counter()
             dst = dist_root / pkg
@@ -2928,13 +3222,10 @@ print(json.dumps({{
                     creationflags=0x08000000,
                 )
                 if rc >= 8:
-                    Debug.log_warning(
-                        f"robocopy failed for '{pkg}' (exit {rc}), "
-                        f"falling back to shutil.copytree"
+                    raise RuntimeError(
+                        f"Unable to copy raw runtime package '{pkg}' with "
+                        f"robocopy (exit {rc})"
                     )
-                    if dst.exists():
-                        shutil.rmtree(dst)
-                    shutil.copytree(src, dst)
             else:
                 shutil.copytree(src, dst)
                 # Strip on non-Windows too
@@ -2945,7 +3236,7 @@ print(json.dumps({{
 
             # Raw JIT packages are runtime dependencies, not authoring
             # sources. Keep the bytecode Python needs for lazy imports, but
-            # never ship the package's plaintext .py files. Legacy adjacent
+            # never ship the package's plaintext .py files. Source-less adjacent
             # .pyc files are intentional: Python can import them without a
             # source file, whereas __pycache__ entries alone cannot be
             # discovered by SourcelessFileLoader.
@@ -2970,7 +3261,7 @@ print(json.dumps({{
                     else:
                         shutil.rmtree(libs_dst)
                 if sys.platform == "win32":
-                    subprocess.call(
+                    rc = subprocess.call(
                         ["robocopy", libs_src, str(libs_dst), "/E",
                          "/MT:16", "/R:1", "/W:1", "/XJ",
                          "/COPY:DAT", "/DCOPY:DAT",
@@ -2979,6 +3270,11 @@ print(json.dumps({{
                         stderr=subprocess.DEVNULL,
                         creationflags=0x08000000,
                     )
+                    if rc >= 8:
+                        raise RuntimeError(
+                            f"Unable to copy raw runtime companion '{libs_name}' "
+                            f"with robocopy (exit {rc})"
+                        )
                 else:
                     shutil.copytree(libs_src, libs_dst)
                 copied.append(f"{libs_name}")
@@ -3040,8 +3336,7 @@ print(json.dumps({{
         b'  <application xmlns="urn:schemas-microsoft-com:asm.v3">\r\n'
         b'    <windowsSettings>\r\n'
         b'      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>\r\n'
-        b'      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>\r\n'
-        b'      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">permonitorv2,permonitor</dpiAwareness>\r\n'
+        b'      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>\r\n'
         b'    </windowsSettings>\r\n'
         b'  </application>\r\n'
         b'</assembly>\r\n'

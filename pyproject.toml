@@ -4,20 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "Infernux"
-version = "0.3.7"
+version = "0.4.0"
 description = "Infernux (熔炉) — open-source game engine with a C++17 / Vulkan runtime and a Python layer for gameplay, tools, and render authoring."
 authors = [{name = "Lizhe Chen", email = "chenlizheme@outlook.com"}]
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13,<3.14"
 license = "MIT"
 keywords = ["game-engine", "vulkan", "python", "rendergraph", "editor"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Operating System :: Microsoft :: Windows",
-    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Games/Entertainment",
 ]
@@ -37,12 +37,16 @@ Documentation = "https://infernux-engine.com/wiki.html"
 Repository = "https://github.com/ChenlizheMe/Infernux"
 Issues = "https://github.com/ChenlizheMe/Infernux/issues"
 
+[project.scripts]
+inx = "Infernux.plugins.cli:main"
+
 [project.optional-dependencies]
 launcher = ["PySide6>=6.5.0"]
 
 [tool.setuptools]
 packages = {find = {where = ["python"], exclude = ["test", "test.*", "*.test", "*.test.*", "*.tests", "*.tests.*", "*.__pycache__", "*.__pycache__.*"]}}
 package-dir = {"" = "python"}
+py-modules = ["infernux"]
 include-package-data = true
 
 [tool.setuptools.package-data]
@@ -54,6 +58,7 @@ Infernux = [
     "*.pyd",
     "*.so",
     "*.dylib",
+    "lib/PlayerNativeContract.json",
     "**/_InfernuxBootstrap*.pyd",
     "**/_InfernuxBootstrap*.so",
     "**/_InfernuxBootstrap*.dylib",
@@ -71,8 +76,8 @@ Infernux = [
     "resources/pictures/*.png",
     "resources/schemas/*.json",
     "resources/project_templates/*.txt",
+    "resources/*.inxpkg",
     "resources/official_packages/*.json",
-    "resources/official_packages/*.inxpkg",
 ]
 
 [tool.setuptools.exclude-package-data]
@@ -82,11 +87,6 @@ Infernux = [
     "**/*.pdb",
     "**/*.lib",
     "**/*.exp",
-    "lib/InfernuxRuntime.dll",
-    "lib/SPIRV.dll",
-    "lib/SPVRemapper.dll",
-    "lib/glslang-default-resource-limits.dll",
-    "lib/glslang.dll",
     "_runtime_packs/**/*.zip",
     "_runtime_packs/**/*.inxpack",
     "_runtime_packs/**/runtime-pack.json",

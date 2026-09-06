@@ -3,16 +3,14 @@ from __future__ import annotations
 import importlib.util
 import importlib.machinery
 import hashlib
-import inspect
 import json
 import os
 from pathlib import Path
+import py_compile
 import shutil
 import sys
 import threading
 import time
-import ctypes
-from ctypes import wintypes
 from types import SimpleNamespace
 
 import pytest
@@ -25,10 +23,13 @@ from Infernux.engine import game_builder as game_builder_module
 from Infernux.engine.game_builder import BuildOutputDirectoryError, GameBuilder
 from Infernux.engine.runtime_artifact_catalog import (
     RuntimeArtifactError,
+    artifact_source_hash,
     build_catalog,
     logical_type_for_path,
+    load_asset_index,
     payload_kind_for,
     runtime_artifact_reason_for,
+    source_fingerprint,
     unix_ns_to_filetime_ticks,
     validate_artifact,
 )
@@ -43,8 +44,44 @@ from Infernux.engine.player_package_native import (
     write_pack,
 )
 from Infernux.engine.player_service_graph import forbidden_player_service_modules
+from Infernux.lifecycle import PreloadContext
 from Infernux.particle.asset import ParticleGraphAsset
+from Infernux.plugins.preload import PreloadManager
 from Infernux.plugins.registry import PluginRegistry
+
+
+@pytest.mark.parametrize(
+    ("suffix", "magic"),
+    (
+        (".inxtex", b"INXTEXTURE"),
+        (".inxmesh", b"INXMESHART"),
+        (".inxskin", b"INXSKINAR"),
+    ),
+)
+def test_current_binary_artifact_headers_use_their_exact_magic_length(
+    tmp_path, suffix, magic
+):
+    source_hash = "0123456789abcdef"
+    artifact = tmp_path / f"fixture{suffix}"
+    artifact.write_bytes(
+        magic
+        + b"\x04\x03\x02\x01"
+        + len(source_hash).to_bytes(4, "little")
+        + source_hash.encode("ascii")
+    )
+
+    assert artifact_source_hash(artifact) == source_hash
+
+
+def _write_player_native_contract(directory: Path) -> None:
+    for filename in nuitka_builder_module.player_native_library_filenames():
+        path = directory / filename
+        if not path.exists():
+            path.write_bytes(filename.encode("utf-8"))
+    (directory / NuitkaBuilder._PLAYER_NATIVE_CONTRACT_FILENAME).write_text(
+        json.dumps(NuitkaBuilder._PLAYER_NATIVE_CONTRACT),
+        encoding="utf-8",
+    )
 
 
 @pytest.mark.parametrize(
@@ -119,7 +156,6 @@ class _FakeNativeInxPack:
         for offset, (logical, source) in enumerate(sorted(sources)):
             logical = str(logical).replace("\\", "/")
             payload = Path(source).read_bytes()
-            digest = hashlib.sha256(payload).hexdigest()
             records.append(
                 {
                     "path": logical,
@@ -127,22 +163,19 @@ class _FakeNativeInxPack:
                     "stored_bytes": len(payload),
                     "raw_bytes": len(payload),
                     "codec": "store",
-                    "sha256": digest,
-                    "stored_sha256": digest,
                 }
             )
             cls.entries[(archive_key, logical)] = payload
             raw_total += len(payload)
         manifest = {
             "format": "infernux-native-inxpack",
-            "revision": 65536,
             "codec": "store",
             "compression_profile": profile,
             "file_count": len(records),
             "raw_bytes": raw_total,
             "stored_bytes": raw_total,
             "payload_bytes": raw_total,
-            "archive_bytes": 256 + len(records) * 128 + raw_total,
+            "archive_bytes": 128 + len(records) * 64 + raw_total,
             "files": records,
         }
         encoded = json.dumps(manifest, sort_keys=True).encode("utf-8")
@@ -254,6 +287,27 @@ def _make_builder(tmp_path, output_dir):
     return GameBuilder(str(project_root), str(output_dir), game_name="TestGame")
 
 
+def _read_runtime_catalog(data_root: Path, builder: GameBuilder) -> dict:
+    return json.loads(
+        read_entry(
+            data_root / builder._ASSET_CATALOG_ARCHIVE_FILENAME,
+            "RuntimeAssetCatalog.json",
+        ).decode("utf-8")
+    )
+
+
+def _player_executable_name(game_name: str = "TestGame") -> str:
+    return f"{game_name}.exe" if sys.platform == "win32" else game_name
+
+
+def _write_player_executable(root: Path, payload: bytes = b"Infernux Player") -> Path:
+    executable = root / _player_executable_name()
+    executable.write_bytes(payload)
+    if sys.platform != "win32":
+        executable.chmod(executable.stat().st_mode | 0o111)
+    return executable
+
+
 def _bind_staged_script_to_asset_index(
     builder: GameBuilder,
     output_dir: Path,
@@ -300,9 +354,14 @@ def _prepare_runtime_catalog_inputs(
             data_root / builder._CONTENT_ARCHIVE_FILENAME,
         )
     if include_executable:
-        (final_dir / f"{builder.project_name}.exe").write_bytes(
-            b"Infernux Player"
-        )
+        executable = final_dir / _player_executable_name(builder.project_name)
+        executable.write_bytes(b"Infernux Player")
+        if sys.platform != "win32":
+            executable.chmod(executable.stat().st_mode | 0o111)
+    (data_root / "BuildManifest.json").write_text(
+        json.dumps({"game_name": builder.project_name, "scenes": ["Assets/Main.scene"]}),
+        encoding="utf-8",
+    )
     return data_root
 
 
@@ -337,14 +396,13 @@ def test_runtime_catalog_rejects_serialized_and_direct_payloads():
         "package": "Content.inxpkg",
         "runtime_path": "Assets/Main.scene",
         "bytes": 2,
-        "sha256": hashlib.sha256(b"{}").hexdigest(),
         "payload": b"{}",
     }
 
     with pytest.raises(RuntimeArtifactError, match="direct or serialized runtime payload"):
         build_catalog(
             [common],
-            player_host={"executable": "Game.exe", "sha256": "a" * 64},
+            player_host={"executable": "Game.exe"},
             package_records=[],
         )
 
@@ -362,7 +420,7 @@ def test_runtime_catalog_rejects_serialized_and_direct_payloads():
                     }
                 }
             ],
-            player_host={"executable": "Game.exe", "sha256": "a" * 64},
+            player_host={"executable": "Game.exe"},
             package_records=[],
         )
 
@@ -434,7 +492,6 @@ def test_all_runtime_document_and_audio_sources_are_library_only(suffix):
                     "package": "Content.inxpkg",
                     "runtime_path": source_path,
                     "bytes": 2,
-                    "sha256": hashlib.sha256(b"{}").hexdigest(),
                     "payload": b"{}",
                     "asset_binding": {
                         "source_guid": f"guid-{suffix[1:]}",
@@ -445,7 +502,7 @@ def test_all_runtime_document_and_audio_sources_are_library_only(suffix):
                     },
                 }
             ],
-            player_host={"executable": "Game.exe", "sha256": "a" * 64},
+            player_host={"executable": "Game.exe"},
             package_records=[],
         )
 
@@ -525,8 +582,11 @@ def _asset_index_entry(
     content_hash: str | None = None,
 ) -> dict:
     stat = source.stat()
+    normalized_path = str(source.resolve()).replace("\\", "/")
+    if sys.platform == "win32":
+        normalized_path = normalized_path.casefold()
     return {
-        "normalized_path": str(source.resolve()).replace("\\", "/").casefold(),
+        "normalized_path": normalized_path,
         "guid": guid,
         "resource_type": 3,
         "source": {
@@ -534,7 +594,7 @@ def _asset_index_entry(
             "modified_ns": unix_ns_to_filetime_ticks(stat.st_mtime_ns),
         },
         "meta": {"size": 0, "modified_ns": 0},
-        "content_hash": content_hash or hashlib.sha256(source.read_bytes()).hexdigest()[:16],
+        "content_hash": content_hash or _fnv1a64(source.read_bytes()),
         "dependencies": [],
         "read_only": False,
         "import_succeeded": True,
@@ -559,15 +619,102 @@ def _write_asset_index(project_root: Path, entries: list[dict]) -> None:
     index_path.write_text(json.dumps(index), encoding="utf-8")
 
 
-def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_path):
+def _fnv1a64(payload: bytes) -> str:
+    value = 14695981039346656037
+    for byte in payload:
+        value ^= byte
+        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
+def test_source_fingerprint_accepts_cross_platform_timestamp_when_content_matches(tmp_path):
+    project = tmp_path / "Project"
+    source = project / "Assets" / "portable.bin"
+    source.parent.mkdir(parents=True)
+    payload = b"portable asset payload\n"
+    source.write_bytes(payload)
+    entry = _asset_index_entry(
+        project,
+        source,
+        "portable-guid",
+        "",
+        "Binary",
+        content_hash=_fnv1a64(payload),
+    )
+    entry["source"]["modified_ns"] = -987654321
+
+    fingerprint = source_fingerprint(project, entry)
+
+    assert fingerprint["size"] == len(payload)
+    assert fingerprint["content_hash"] == _fnv1a64(payload)
+
+
+def test_source_fingerprint_rejects_changed_content_despite_equal_size(tmp_path):
+    project = tmp_path / "Project"
+    source = project / "Assets" / "stale.bin"
+    source.parent.mkdir(parents=True)
+    original = b"before"
+    source.write_bytes(original)
+    entry = _asset_index_entry(
+        project,
+        source,
+        "stale-guid",
+        "",
+        "Binary",
+        content_hash=_fnv1a64(original),
+    )
+    source.write_bytes(b"after!")
+    entry["source"]["modified_ns"] = -987654321
+
+    with pytest.raises(RuntimeArtifactError, match="actual_content_hash"):
+        source_fingerprint(project, entry)
+
+
+def test_source_fingerprint_rejects_size_change_without_hashing(tmp_path):
+    project = tmp_path / "Project"
+    source = project / "Assets" / "resized.bin"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"small")
+    entry = _asset_index_entry(
+        project,
+        source,
+        "resized-guid",
+        "",
+        "Binary",
+        content_hash=_fnv1a64(b"small"),
+    )
+    source.write_bytes(b"larger")
+
+    with pytest.raises(RuntimeArtifactError, match="fingerprint is stale"):
+        source_fingerprint(project, entry)
+
+
+@pytest.mark.parametrize("new_runtime_files", [False, True])
+def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(
+    tmp_path, new_runtime_files
+):
     project = _make_project(tmp_path)
-    runtime = project / "Packages/vendor/gameplay/Runtime/lifecycle.py"
-    editor = project / "Packages/vendor/gameplay/Editor/panel.py"
-    content = project / "Assets/Plugins/vendor/gameplay/Scenes/Demo.scene"
-    control = project / "Packages/vendor/gameplay/InxPackage.json"
+    runtime = project / "Packages/vendor/gameplay/runtime/lifecycle.py"
+    resource = project / "Packages/vendor/gameplay/runtime/message.txt"
+    editor = project / "Packages/vendor/gameplay/editor/panel.py"
+    content = project / "Assets/Plugins/Scenes/Demo.scene"
+    control = project / "Packages/vendor/gameplay/inx_package.json"
+    lifecycle_source = (
+        b"from Infernux.lifecycle import InxPreload\n"
+        b"class RuntimeLifecycle(InxPreload):\n"
+        b"    def preload(self, context):\n"
+        b"        self.message = context.package_path('runtime/message.txt')\n"
+    )
     files = (
-        (runtime, "runtime-guid", "Runtime/lifecycle.py", "runtime", b"VALUE = 1\n"),
-        (editor, "editor-guid", "Editor/panel.py", "editor", b"PANEL = True\n"),
+        (runtime, "runtime-guid", "runtime/lifecycle.py", "runtime", lifecycle_source),
+        (
+            resource,
+            "resource-guid",
+            "runtime/message.txt",
+            "runtime",
+            "Player package resource ready\n".encode("utf-8"),
+        ),
+        (editor, "editor-guid", "editor/panel.py", "editor", b"PANEL = True\n"),
         (content, "content-guid", "Scenes/Demo.scene", "content", b"{}\n"),
     )
     records = []
@@ -583,7 +730,6 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
                 "logical_path": logical,
                 "path_hint": path.relative_to(project).as_posix(),
                 "guid": guid,
-                "sha256": hashlib.sha256(payload).hexdigest(),
                 "role": role,
                 "owned": True,
             }
@@ -600,14 +746,43 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
         {"reference": "vendor/gameplay", "name": "Gameplay", "version": "1.0"},
         files=records,
         control={
-            "logical_path": "InxPackage.json",
+            "logical_path": "inx_package.json",
             "path_hint": control.relative_to(project).as_posix(),
             "guid": "control-guid",
-            "sha256": hashlib.sha256(control_payload).hexdigest(),
             "role": "control",
             "owned": True,
         },
+        package_path="C:/Users/Author/.cache/private.inxpkg",
+        source={
+            "type": "local",
+            "location": "C:/Users/Author/source/plugin.inxpkg",
+        },
     )
+    original_registry = registry.load()
+    if new_runtime_files:
+        # Files authored after installation are project assets, not new
+        # uninstall ownership. They must nevertheless reach the Player.
+        additions = (
+            (
+                runtime.parent / "new_component.py", "new-script-guid",
+                "runtime/new_component.py", "runtime", b"VALUE = 42\n",
+            ),
+            (
+                resource.parent / "new_data.json", "new-data-guid",
+                "runtime/new_data.json", "runtime", b'{"value": 42}\n',
+            ),
+            (
+                editor.parent / "new_panel.py", "new-editor-guid",
+                "editor/new_panel.py", "editor", b"EDITOR = True\n",
+            ),
+        )
+        for path, guid, _logical, _role, payload in additions:
+            path.write_bytes(payload)
+            Path(str(path) + ".meta").write_text(
+                json.dumps({"metadata": {"guid": {"type": "string", "value": guid}}}),
+                encoding="utf-8",
+            )
+        files += additions
     scene = project / "Assets/Main.scene"
     _write_asset_index(
         project,
@@ -626,20 +801,240 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(tmp_p
 
     builder._stage_player_plugins(str(data))
 
-    staged_runtime = data / "Packages/vendor/gameplay/Runtime/lifecycle.py"
-    assert staged_runtime.read_bytes() == b"VALUE = 1\n"
-    assert not (data / "Packages/vendor/gameplay/Editor/panel.py").exists()
+    staged_runtime = data / "Packages/vendor/gameplay/runtime/lifecycle.py"
+    assert staged_runtime.read_bytes() == lifecycle_source
+    staged_resource = data / "Packages/vendor/gameplay/runtime/message.txt"
+    assert staged_resource.read_text(encoding="utf-8") == "Player package resource ready\n"
+    assert not (data / "Packages/vendor/gameplay/editor/panel.py").exists()
+    if new_runtime_files:
+        assert (data / "Packages/vendor/gameplay/runtime/new_component.py").read_bytes() == b"VALUE = 42\n"
+        assert (data / "Packages/vendor/gameplay/runtime/new_data.json").is_file()
+        assert not (data / "Packages/vendor/gameplay/editor/new_panel.py").exists()
+    assert registry.load() == original_registry
     shipped = json.loads(
         (data / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
     )
     assert [item["logical_path"] for item in shipped["installed"][0]["files"]] == [
-        "Runtime/lifecycle.py",
+        "runtime/lifecycle.py",
+        "runtime/message.txt",
         "Scenes/Demo.scene",
-    ]
+    ] + (["runtime/new_component.py", "runtime/new_data.json"] if new_runtime_files else [])
+    if new_runtime_files:
+        assert all(not item["owned"] for item in shipped["installed"][0]["files"][-2:])
+    assert "package_path" not in shipped["installed"][0]
+    assert "source" not in shipped["installed"][0]
+    assert "installed_at" not in shipped["installed"][0]
+    assert "C:/Users/Author" not in json.dumps(shipped)
+
+    context = PreloadContext(
+        project_root=str(data),
+        source_path=str(staged_runtime),
+        script_guid="runtime-guid",
+        type_id="fixture-preload",
+        package_reference="vendor/gameplay",
+        runtime=True,
+    )
+    assert context.package_path("runtime/message.txt") == str(staged_resource.resolve())
+    assert Path(context.package_path("runtime/message.txt")).read_text(
+        encoding="utf-8"
+    ) == "Player package resource ready\n"
+    assert not builder._runtime_catalog_payload_required(
+        "ProjectSettings/InxPlugins.json"
+    )
 
     builder._compile_player_plugin_scripts(str(output))
     assert not staged_runtime.exists()
     assert staged_runtime.with_suffix(".pyc").is_file()
+    assert staged_resource.is_file()
+    if new_runtime_files:
+        new_script = data / "Packages/vendor/gameplay/runtime/new_component.py"
+        assert not new_script.exists()
+        assert new_script.with_suffix(".pyc").is_file()
+        assert {"new-script-guid", "new-data-guid"} <= builder._staged_player_plugin_guids
+        assert {"new-script-guid", "new-data-guid"} <= builder._cooked_asset_entries.keys()
+    runtime_registry = json.loads(
+        (data / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
+    )
+    lifecycle_record = runtime_registry["installed"][0]["files"][0]
+    assert lifecycle_record["compiled_path_hint"].endswith("runtime/lifecycle.pyc")
+    assert lifecycle_record["preload_declarations"] == [
+        {
+            "name": "RuntimeLifecycle",
+            "bases": ["Infernux.lifecycle.InxPreload"],
+        }
+    ]
+
+    manager = PreloadManager(str(data), runtime=True)
+    states = manager.reload_all()
+    assert len(states) == 1
+    assert states[0].loaded is True
+    assert states[0].error == ""
+    assert states[0].instance is not None
+    assert states[0].instance.message == str(staged_resource.resolve())
+    assert manager.unload_all() == ()
+
+    registry.set_enabled("vendor/gameplay", False)
+    disabled_data = tmp_path / "disabled-build" / "Data"
+    builder._stage_player_plugins(str(disabled_data))
+    assert not (disabled_data / "Packages").exists()
+    assert builder._staged_player_plugin_guids == set()
+    assert json.loads(
+        (disabled_data / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
+    )["installed"] == []
+
+
+@pytest.mark.parametrize("reference,authored_manifest", [
+    ("local_probe", False), ("local_probe", True), ("vendor/local_probe", True),
+])
+def test_player_exports_local_author_package_without_installing(
+    tmp_path, reference, authored_manifest
+):
+    project = _make_project(tmp_path)
+    root = project / "Packages" / reference
+    runtime = root / "runtime/lifecycle.py"
+    message = root / "runtime/message.txt"
+    editor = root / "editor/panel.py"
+    sources = (
+        (runtime, "local-script-guid", (
+            "from Infernux.lifecycle import InxPreload\n"
+            "from pathlib import Path\n"
+            "class LocalLifecycle(InxPreload):\n"
+            "    def preload(self, context):\n"
+            "        self.message = Path(context.package_path('runtime/message.txt')).read_text()\n"
+        )),
+        (message, "local-text-guid", "Local author resource ready"),
+        (editor, "local-editor-guid", "raise RuntimeError('Editor must not enter Player')\n"),
+    )
+    for path, guid, payload in sources:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload, encoding="utf-8")
+        Path(str(path) + ".meta").write_text(
+            json.dumps({"metadata": {"guid": {"type": "string", "value": guid}}}),
+            encoding="utf-8",
+        )
+    if authored_manifest:
+        (root / "inx_package.json").write_text(json.dumps({
+            "reference": "future/distribution-name", "name": "Local Author",
+            "version": "1.2.3",
+        }), encoding="utf-8")
+    registry = PluginRegistry(str(project))
+    original_registry = registry.load()
+    _write_asset_index(project, [
+        _asset_index_entry(project, path, guid, "", "Script" if path.suffix == ".py" else "Binary")
+        for path, guid, _payload in sources
+    ])
+    output = tmp_path / "build"
+    data = output / "Data"
+    builder = GameBuilder(str(project), str(output), game_name="LocalAuthorGame")
+
+    builder._stage_player_plugins(str(data))
+
+    staged = data / "Packages" / reference
+    assert (staged / "runtime/lifecycle.py").is_file()
+    assert (staged / "runtime/message.txt").read_text() == "Local author resource ready"
+    assert not (staged / "editor").exists()
+    assert not (staged / "inx_package.json").exists()
+    assert registry.load() == original_registry
+    assert builder._staged_player_plugin_guids == {"local-script-guid", "local-text-guid"}
+    assert builder._cooked_asset_entries.keys() == builder._staged_player_plugin_guids
+    shipped = PluginRegistry(str(data)).load()["installed"]
+    assert len(shipped) == 1
+    assert shipped[0]["reference"] == reference
+    assert shipped[0]["name"] == ("Local Author" if authored_manifest else "local_probe")
+    assert shipped[0]["version"] == ("1.2.3" if authored_manifest else "0.0.0")
+    assert not shipped[0]["control"]["owned"]
+    assert all(not item["owned"] for item in shipped[0]["files"])
+    builder._compile_player_plugin_scripts(str(output))
+    assert not (staged / "runtime/lifecycle.py").exists()
+    assert (staged / "runtime/lifecycle.pyc").is_file()
+    manager = PreloadManager(str(data), runtime=True)
+    try:
+        states = manager.reload_all()
+        assert len(states) == 1
+        assert states[0].loaded, states[0].error
+        assert states[0].instance.message == "Local author resource ready"
+    finally:
+        manager.unload_all()
+
+
+@pytest.mark.parametrize("original_role,current_role", [
+    ("runtime", "editor"), ("editor", "runtime"), ("runtime", None),
+])
+def test_player_uses_current_package_role_not_installation_history(
+    tmp_path, original_role, current_role
+):
+    project = _make_project(tmp_path)
+    root = project / "Packages/vendor/mutable"
+    root.mkdir(parents=True)
+    (root / "inx_package.json").write_text("{}", encoding="utf-8")
+    guid = "mutable-script-guid"
+    original = root / original_role / "script.py"
+    registry = PluginRegistry(str(project))
+    registry.record_install(
+        {"reference": "vendor/mutable"},
+        files=[{
+            "logical_path": f"{original_role}/script.py",
+            "path_hint": original.relative_to(project).as_posix(),
+            "guid": guid, "role": original_role, "owned": True,
+        }],
+        control={"logical_path": "inx_package.json", "guid": "control-guid"},
+    )
+    before = registry.load()
+    entries = []
+    if current_role:
+        current = root / current_role / "script.py"
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.write_text("VALUE = 1\n", encoding="utf-8")
+        current.with_suffix(".py.meta").write_text(
+            json.dumps({"metadata": {"guid": {"value": guid}}}), encoding="utf-8",
+        )
+        entries.append(_asset_index_entry(project, current, guid, "", "Script"))
+    _write_asset_index(project, entries)
+    output = tmp_path / "build"
+    data = output / "Data"
+    builder = GameBuilder(str(project), str(output), game_name="MutableGame")
+
+    builder._stage_player_plugins(str(data))
+
+    exported = current_role == "runtime"
+    assert (data / "Packages/vendor/mutable/runtime/script.py").is_file() is exported
+    assert not (data / "Packages/vendor/mutable/editor").exists()
+    assert registry.load() == before
+    shipped = PluginRegistry(str(data)).load()["installed"]
+    assert len(shipped) == int(exported)
+    if exported:
+        assert shipped[0]["files"][0]["role"] == "runtime"
+        assert shipped[0]["files"][0]["logical_path"] == "runtime/script.py"
+    assert builder._staged_player_plugin_guids == ({guid} if exported else set())
+
+
+def test_preload_context_package_path_fails_closed(tmp_path):
+    project = tmp_path / "Project"
+    resource = project / "Packages/vendor/gameplay/runtime/server.jar"
+    resource.parent.mkdir(parents=True)
+    resource.write_bytes(b"jar")
+
+    context = PreloadContext(
+        project_root=str(project),
+        source_path=str(resource.parent / "lifecycle.py"),
+        script_guid="runtime-guid",
+        type_id="fixture-preload",
+        package_reference="vendor/gameplay",
+    )
+    assert context.package_path("runtime/server.jar") == str(resource.resolve())
+    with pytest.raises(ValueError, match="escapes"):
+        context.package_path("../outside.jar")
+    with pytest.raises(FileNotFoundError, match="not available"):
+        context.package_path("runtime/missing.json")
+
+    loose = PreloadContext(
+        project_root=str(project),
+        source_path=str(project / "Assets/lifecycle.py"),
+        script_guid="loose-guid",
+        type_id="loose-preload",
+    )
+    with pytest.raises(RuntimeError, match="installed package"):
+        loose.package_path("runtime/server.jar")
 
 
 def _write_texture_asset_index(project_root: Path, source: Path, guid: str, artifact_path: str):
@@ -808,6 +1203,18 @@ class TestGameBuilderAnimationClipPreflight:
             texture_path="Assets/Sprites/sheet.png",
             sprite_frame_id=missing_id,
         )
+        _write_asset_index(
+            project,
+            [
+                _asset_index_entry(
+                    project,
+                    texture,
+                    self.TEXTURE_GUID,
+                    "",
+                    "Texture",
+                )
+            ],
+        )
         builder = GameBuilder(
             str(project), str(tmp_path / "build_output"), game_name="TestGame"
         )
@@ -832,6 +1239,18 @@ class TestGameBuilderAnimationClipPreflight:
             texture_guid=self.TEXTURE_GUID,
             texture_path="Assets/Textures/albedo.png",
             sprite_frame_id=self.FRAME_ID,
+        )
+        _write_asset_index(
+            project,
+            [
+                _asset_index_entry(
+                    project,
+                    texture,
+                    self.TEXTURE_GUID,
+                    "",
+                    "Texture",
+                )
+            ],
         )
         builder = GameBuilder(
             str(project), str(tmp_path / "build_output"), game_name="TestGame"
@@ -863,16 +1282,16 @@ def test_validate_accepts_project_relative_build_scene_paths(tmp_path):
     builder._validate()
 
 
-def test_build_scene_outside_assets_is_rejected_without_legacy_fallback(tmp_path):
+def test_build_scene_outside_assets_is_rejected(tmp_path):
     project_root = _make_project(tmp_path)
-    legacy_scene = project_root / "Legacy.scene"
-    legacy_scene.write_text('{"objects": []}', encoding="utf-8")
+    outside_scene = project_root / "Outside.scene"
+    outside_scene.write_text('{"objects": []}', encoding="utf-8")
     builder = GameBuilder(
         str(project_root), str(tmp_path / "build_output"), game_name="TestGame"
     )
 
     with pytest.raises(ValueError, match="inside the project Assets folder"):
-        builder._resolve_build_scene_path("Legacy.scene")
+        builder._resolve_build_scene_path("Outside.scene")
 
 
 def test_rewrite_build_settings_keeps_project_relative_scene_identity(tmp_path):
@@ -903,11 +1322,10 @@ def test_rewrite_build_settings_strips_authoring_only_fields(tmp_path):
     settings.update(
         {
             "output_dir": str(tmp_path / "private-player-output"),
-            "icon_path": str(project_root / "Assets" / "icon.png"),
+            "icon_guid": "icon-guid",
             "debug_mode": False,
             "lto": True,
             "enable_jit": False,
-            "additional_cook_roots": ["Assets/RuntimeOnly"],
         }
     )
     settings_path.write_text(json.dumps(settings), encoding="utf-8")
@@ -967,6 +1385,7 @@ def test_successful_build_log_is_not_created_in_project_or_kept_in_output(tmp_pa
 def test_nuitka_cancellation_does_not_wait_for_the_next_stdout_line(tmp_path, monkeypatch):
     monkeypatch.setattr(nuitka_builder_module, "_ensure_windows_msvc_environment", lambda env: env)
     builder = object.__new__(NuitkaBuilder)
+    builder._build_cache_root = str(tmp_path)
     builder._staging_dir = str(tmp_path)
     cancelled = threading.Event()
     cancelled.set()
@@ -980,6 +1399,41 @@ def test_nuitka_cancellation_does_not_wait_for_the_next_stdout_line(tmp_path, mo
         )
 
     assert time.perf_counter() - started < 2.5
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows junction contract")
+def test_nuitka_unicode_build_cache_uses_temporary_ascii_junction(tmp_path):
+    cache_root = tmp_path / "项目" / "Cache" / "Build" / "Desktop"
+    alias = nuitka_builder_module._windows_ascii_build_alias(str(cache_root))
+    try:
+        assert alias
+        assert alias.isascii()
+        Path(alias, "probe.txt").write_text("project-owned", encoding="utf-8")
+        assert (cache_root / "probe.txt").read_text(encoding="utf-8") == "project-owned"
+    finally:
+        nuitka_builder_module._remove_windows_build_alias(alias)
+
+    assert not Path(alias).exists()
+    assert cache_root.is_dir()
+
+
+def test_nuitka_build_artifacts_are_scoped_to_the_requested_cache_root(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("INFERNUX_NUITKA_ROOT", raising=False)
+    cache_root = tmp_path / "project" / "Cache" / "Build" / "Desktop"
+    builder = NuitkaBuilder(
+        entry_script=str(tmp_path / "boot.py"),
+        output_dir=str(tmp_path / "output"),
+        build_cache_root=str(cache_root),
+    )
+
+    assert Path(builder._build_cache_root) == cache_root.resolve()
+    assert Path(builder._staging_root) == cache_root.resolve() / "Staging"
+    assert Path(builder._nuitka_cache_dir) == cache_root.resolve() / "Nuitka"
+    assert Path(builder._runtime_pack_dir) == cache_root.resolve() / "RuntimePacks"
+    assert Path(builder._requirements_state_dir) == cache_root.resolve() / "Requirements"
 
 
 @pytest.mark.parametrize(
@@ -1045,7 +1499,10 @@ def test_player_module_stages_explicit_python_bootstrap_runtime(tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     sources = {}
-    for filename in ("python312.dll", "_ctypes.pyd", "ffi.dll", "zlib.dll"):
+    for filename in (
+        "python313.dll", "_ctypes.pyd", "libffi-8.dll", "zlib.dll",
+        "vcruntime140.dll", "vcruntime140_1.dll",
+    ):
         source = runtime / filename
         source.write_bytes(filename.encode("ascii"))
         sources[filename] = source
@@ -1058,13 +1515,156 @@ def test_player_module_stages_explicit_python_bootstrap_runtime(tmp_path):
     builder._python_bootstrap_runtime_sources = lambda: (sources, encodings)
     dist = tmp_path / "dist"
     dist.mkdir()
+    engine_lib = dist / "Infernux" / "lib"
+    engine_lib.mkdir(parents=True)
+    for filename in sources:
+        (engine_lib / filename).write_bytes(b"duplicate bootstrap dependency")
+    (engine_lib / "InfernuxFoundation.dll").write_bytes(b"engine-owned")
 
     builder._inject_python_bootstrap_runtime(str(dist))
 
     for filename in sources:
         assert (dist / filename).read_bytes() == sources[filename].read_bytes()
+        assert not (engine_lib / filename).exists()
+    assert (engine_lib / "InfernuxFoundation.dll").read_bytes() == b"engine-owned"
+    bootstrap_manifest = json.loads(
+        (dist / game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert bootstrap_manifest == {
+        "$schema": game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
+        "files": sorted(sources),
+    }
     assert (dist / "stdlib" / "encodings" / "__init__.pyc").is_file()
     assert not list((dist / "stdlib" / "encodings").glob("*.py"))
+
+
+def test_python_bootstrap_runtime_accepts_standalone_libffi_name(tmp_path, monkeypatch):
+    python_root = tmp_path / "python313"
+    dll_root = python_root / "DLLs"
+    encodings = python_root / "Lib" / "encodings"
+    dll_root.mkdir(parents=True)
+    encodings.mkdir(parents=True)
+    python_executable = python_root / "python.exe"
+    python_executable.write_bytes(b"python")
+    (python_root / "python313.dll").write_bytes(b"python ABI")
+    ctypes_module = dll_root / "_ctypes.pyd"
+    ctypes_module.write_bytes(b"ctypes ABI")
+    libffi = dll_root / "libffi-8.dll"
+    libffi.write_bytes(b"libffi ABI")
+
+    def find_spec(name):
+        if name == "_ctypes":
+            return SimpleNamespace(origin=str(ctypes_module))
+        if name == "encodings":
+            return SimpleNamespace(submodule_search_locations=[str(encodings)])
+        return None
+
+    monkeypatch.setattr(nuitka_builder_module.sys, "platform", "win32")
+    monkeypatch.setattr(nuitka_builder_module.sys, "stdlib_module_names", frozenset())
+    monkeypatch.setattr(nuitka_builder_module.importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(nuitka_builder_module, "resolved_path", lambda value: str(value))
+    monkeypatch.setattr(
+        nuitka_builder_module,
+        "path_key",
+        lambda value: os.path.normcase(os.path.abspath(str(value))),
+    )
+    builder = object.__new__(NuitkaBuilder)
+    builder._builder_python = str(python_executable)
+
+    sources, resolved_encodings = builder._python_bootstrap_runtime_sources()
+
+    assert sources["libffi-8.dll"] == libffi
+    assert "ffi.dll" not in sources
+    assert resolved_encodings == encodings
+
+
+@pytest.mark.parametrize("builtin_ctypes", [True, False])
+def test_linux_bootstrap_runtime_uses_the_interpreter_ctypes_layout(tmp_path, monkeypatch, builtin_ctypes):
+    python_root = tmp_path / "python313"
+    (python_root / "bin").mkdir(parents=True)
+    library = python_root / "lib"
+    encodings = library / "python3.13" / "encodings"
+    encodings.mkdir(parents=True)
+    python_library = library / "libpython3.13.so.1.0"
+    python_library.write_bytes(b"python ABI")
+    ctypes_module = library / "_ctypes.cpython-313-x86_64-linux-gnu.so"
+    ffi = library / "libffi.so.8"
+    if not builtin_ctypes:
+        ctypes_module.write_bytes(b"ctypes ABI")
+        ffi.write_bytes(b"ffi ABI")
+
+    def find_spec(name):
+        if name == "_ctypes":
+            return SimpleNamespace(origin="built-in" if builtin_ctypes else str(ctypes_module))
+        if name == "encodings":
+            return SimpleNamespace(submodule_search_locations=[str(encodings)])
+        return None
+
+    monkeypatch.setattr(nuitka_builder_module.sys, "platform", "linux")
+    monkeypatch.setattr(nuitka_builder_module.sys, "stdlib_module_names", frozenset())
+    monkeypatch.setattr(nuitka_builder_module.importlib.util, "find_spec", find_spec)
+    builder = object.__new__(NuitkaBuilder)
+    builder._builder_python = str(python_root / "bin" / "python")
+
+    sources, resolved_encodings = builder._python_bootstrap_runtime_sources()
+
+    expected = {python_library.name: python_library}
+    if not builtin_ctypes:
+        expected.update({ctypes_module.name: ctypes_module, ffi.name: ffi})
+    assert sources == expected
+    assert resolved_encodings == encodings
+
+
+def test_python_bootstrap_runtime_follows_venv_base_prefix(tmp_path, monkeypatch):
+    venv_root = tmp_path / "project" / ".venv"
+    scripts_root = venv_root / "Scripts"
+    dll_root = venv_root / "DLLs"
+    base_root = tmp_path / "managed-python313"
+    encodings = venv_root / "Lib" / "encodings"
+    scripts_root.mkdir(parents=True)
+    dll_root.mkdir(parents=True)
+    base_root.mkdir()
+    encodings.mkdir(parents=True)
+    python_executable = scripts_root / "python.exe"
+    python_executable.write_bytes(b"venv launcher")
+    python_dll = base_root / "python313.dll"
+    python_dll.write_bytes(b"base Python ABI")
+    ctypes_module = dll_root / "_ctypes.pyd"
+    ctypes_module.write_bytes(b"ctypes ABI")
+    libffi = dll_root / "libffi-8.dll"
+    libffi.write_bytes(b"libffi ABI")
+
+    def find_spec(name):
+        if name == "_ctypes":
+            return SimpleNamespace(origin=str(ctypes_module))
+        if name == "encodings":
+            return SimpleNamespace(submodule_search_locations=[str(encodings)])
+        return None
+
+    monkeypatch.setattr(nuitka_builder_module.sys, "platform", "win32")
+    monkeypatch.setattr(nuitka_builder_module.sys, "prefix", str(venv_root))
+    monkeypatch.setattr(nuitka_builder_module.sys, "exec_prefix", str(venv_root))
+    monkeypatch.setattr(nuitka_builder_module.sys, "base_prefix", str(base_root))
+    monkeypatch.setattr(nuitka_builder_module.sys, "base_exec_prefix", str(base_root))
+    monkeypatch.setattr(nuitka_builder_module.sys, "executable", str(python_executable))
+    monkeypatch.setattr(nuitka_builder_module.sys, "stdlib_module_names", frozenset())
+    monkeypatch.setattr(nuitka_builder_module.importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(nuitka_builder_module, "resolved_path", lambda value: str(value))
+    monkeypatch.setattr(
+        nuitka_builder_module,
+        "path_key",
+        lambda value: os.path.normcase(os.path.abspath(str(value))),
+    )
+    builder = object.__new__(NuitkaBuilder)
+    builder._builder_python = str(python_executable)
+
+    sources, resolved_encodings = builder._python_bootstrap_runtime_sources()
+
+    assert sources["python313.dll"] == python_dll
+    assert sources["libffi-8.dll"] == libffi
+    assert resolved_encodings == encodings
 
 
 def test_player_module_stages_source_less_engine_runtime(tmp_path, monkeypatch):
@@ -1084,7 +1684,7 @@ def test_player_module_stages_source_less_engine_runtime(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     (source / "engine" / "runtime_artifact_catalog.py").write_text(
-        "from .path_utils import resolved_path\nCATALOG_VERSION = 1\n",
+        "from .path_utils import resolved_path\n",
         encoding="utf-8",
     )
     (source / "engine" / "build_settings.py").write_text(
@@ -1185,142 +1785,99 @@ def test_player_module_stages_source_less_engine_runtime(tmp_path, monkeypatch):
     assert probe.returncode == 0, probe.stderr
 
 
-def test_player_always_raw_copies_numpy_when_jit_is_disabled(tmp_path, monkeypatch):
-    captured: dict = {}
+@pytest.mark.parametrize("debug_mode", (False, True))
+def test_player_stages_plugin_payload_without_compiler_or_cache_lookup(tmp_path, monkeypatch, debug_mode):
+    from Infernux.engine import precompiled_player
+    captured = {}
 
-    class _FakeNuitkaBuilder:
-        _JIT_NOFOLLOW_PACKAGES = NuitkaBuilder._JIT_NOFOLLOW_PACKAGES
+    def stage(root, staging_root, **kwargs):
+        captured.update(root=root, staging_root=staging_root, **kwargs)
+        return str(tmp_path / "dist")
 
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def build(self, **_kwargs):
-            return str(tmp_path / "dist")
-
-    monkeypatch.setattr(game_builder_module, "NuitkaBuilder", _FakeNuitkaBuilder)
+    monkeypatch.setattr(precompiled_player, "stage_desktop_runtime", stage)
+    monkeypatch.setattr(game_builder_module, "NuitkaBuilder",
+                        lambda **kwargs: pytest.fail("No compiler builder for the base Player"))
     builder = _make_builder(tmp_path, tmp_path / "build_output")
-    builder.enable_jit = False
-
-    result = builder._run_nuitka(
-        str(tmp_path / "boot.py"),
-        on_progress=None,
-        user_packages=[],
-    )
-
+    builder.debug_mode = debug_mode
+    result = builder._stage_player_runtime(str(tmp_path / "boot.py"), None, user_packages=[])
     assert result == str(tmp_path / "dist")
-    assert captured["raw_copy_packages"] == ["numpy", "packaging"]
-    assert captured["runtime_support_packages"] == ["numba", "llvmlite"]
-    assert captured["runtime_pack_cache"] is True
-    assert captured["output_filename"] == ("_InfernuxPlayer.pyd" if sys.platform == "win32" else "_InfernuxPlayer.so")
-    assert captured["player_module"] is True
-    assert captured["product_name"] == "Infernux Player"
-    assert captured["icon_path"]
-    assert Path(captured["icon_path"]).name == "icon.png"
-    assert Path(captured["icon_path"]).is_file()
+    assert captured["root"] == builder.player_runtime_root
+    assert Path(captured["staging_root"]) == Path(builder.project_path) / "Cache/Build/Desktop"
+    assert captured["parallel"] is False
 
 
-@pytest.mark.parametrize(
-    ("debug_mode", "expected_profile"),
-    ((False, "release"), (True, "development")),
-)
-def test_jit_build_installs_optional_parallel_runtime_module(
-    tmp_path,
-    monkeypatch,
-    debug_mode,
-    expected_profile,
-):
-    captured: dict = {}
-    installed: dict = {}
+@pytest.mark.parametrize("debug_mode", (False, True))
+def test_jit_build_selects_the_plugin_parallel_archive(tmp_path, monkeypatch, debug_mode):
+    from Infernux.engine import precompiled_player
+    captured = {}
 
-    class _FakeNuitkaBuilder:
-        _JIT_NOFOLLOW_PACKAGES = NuitkaBuilder._JIT_NOFOLLOW_PACKAGES
+    def stage(root, staging_root, **kwargs):
+        captured.update(kwargs)
+        return str(tmp_path / "dist")
 
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def build(self, **_kwargs):
-            return str(tmp_path / "dist")
-
-        def install_runtime_module(self, dist_dir, **kwargs):
-            installed.update({"dist_dir": dist_dir, **kwargs})
-            return True
-
-    monkeypatch.setattr(game_builder_module, "NuitkaBuilder", _FakeNuitkaBuilder)
+    monkeypatch.setattr(precompiled_player, "stage_desktop_runtime", stage)
+    monkeypatch.setattr(game_builder_module, "NuitkaBuilder",
+                        lambda **kwargs: pytest.fail("Do not assemble a replacement Parallel module"))
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     builder.enable_jit = True
     builder.debug_mode = debug_mode
-
-    result = builder._run_nuitka(
-        str(tmp_path / "boot.py"),
-        on_progress=None,
-        user_packages=[],
-    )
-
-    assert result == str(tmp_path / "dist")
-    assert captured["raw_copy_packages"] == ["numpy", "packaging"]
-    assert installed == {
-        "dist_dir": str(tmp_path / "dist"),
-        "module_name": "parallel",
-        "packages": ["numba", "llvmlite"],
-        "archive_only": True,
-        "profile": expected_profile,
-    }
+    assert builder._stage_player_runtime(str(tmp_path / "boot.py"), None) == str(tmp_path / "dist")
+    assert captured == {"parallel": True}
 
 
-def test_debug_player_uses_generic_reusable_runtime_pack(tmp_path, monkeypatch):
-    captured: dict = {}
-
-    class _FakeNuitkaBuilder:
-        _JIT_NOFOLLOW_PACKAGES = NuitkaBuilder._JIT_NOFOLLOW_PACKAGES
-
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def build(self, **_kwargs):
-            return str(tmp_path / "dist")
-
-    monkeypatch.setattr(game_builder_module, "NuitkaBuilder", _FakeNuitkaBuilder)
-    builder = _make_builder(tmp_path, tmp_path / "build_output")
-    builder.debug_mode = True
-
-    builder._run_nuitka(str(tmp_path / "boot.py"), on_progress=None, user_packages=[])
-
-    assert captured["runtime_pack_cache"] is True
-    assert captured["output_filename"] == ("_InfernuxPlayer.pyd" if sys.platform == "win32" else "_InfernuxPlayer.so")
-    assert captured["player_module"] is True
-    assert captured["product_name"] == "Infernux Player"
-    assert captured["icon_path"]
-    assert Path(captured["icon_path"]).name == "icon.png"
-    assert Path(captured["icon_path"]).is_file()
-
-
-def test_pack_core_runtime_moves_boot_deferred_stdlib_extensions(tmp_path):
+def test_pack_core_runtime_moves_unclassified_native_files(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"
     final_dir.mkdir()
     data_root = final_dir / "TestGame_Data"
     data_root.mkdir()
-    deferred = sorted(builder._PLAYER_DEFERRED_STDLIB_FILES)
-    for index, filename in enumerate(deferred):
-        (final_dir / filename).write_bytes(f"deferred-{index}".encode("ascii"))
     (final_dir / "late-runtime.dll").write_bytes(b"move into runtime")
     (final_dir / "Infernux" / "resources").mkdir(parents=True)
     (final_dir / "Infernux" / "resources" / "runtime.txt").write_text(
         "runtime", encoding="utf-8"
     )
     (final_dir / "Infernux" / "engine" / "locales").mkdir(parents=True)
+    packaging_root = final_dir / "packaging"
+    packaging_root.mkdir()
+    (packaging_root / "__init__.pyc").write_bytes(b"packaging runtime")
     builder._pack_core_runtime_archive(str(final_dir))
 
     manifest = read_manifest(data_root / builder._RUNTIME_ARCHIVE_FILENAME)
     paths = {entry["path"] for entry in manifest["files"]}
-    assert {f"stdlib/{filename}" for filename in deferred} <= paths
     assert "stdlib/late-runtime.dll" in paths
+    assert "packaging/__init__.pyc" in paths
     assert "stdlib/__future__.pyc" not in paths
-    assert all(not (final_dir / filename).exists() for filename in deferred)
     assert not (final_dir / "late-runtime.dll").exists()
+    assert not packaging_root.exists()
     assert not (final_dir / "Infernux").exists()
 
 
+def test_pack_core_runtime_moves_versioned_linux_sonames_off_root(
+    tmp_path, monkeypatch
+):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    final_dir = tmp_path / "dist"
+    data_root = final_dir / "TestGame_Data"
+    runtime_root = final_dir / "Infernux" / "resources"
+    data_root.mkdir(parents=True)
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "runtime.bin").write_bytes(b"runtime")
+    (final_dir / "libz.so.1").write_bytes(b"versioned soname")
+    monkeypatch.setattr(game_builder_module.sys, "platform", "linux")
+
+    builder._pack_core_runtime_archive(str(final_dir))
+
+    paths = {
+        entry["path"]
+        for entry in read_manifest(data_root / builder._RUNTIME_ARCHIVE_FILENAME)["files"]
+    }
+    assert "stdlib/libz.so.1" in paths
+    assert not (final_dir / "libz.so.1").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="validates the Windows Player DLL layout"
+)
 def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"
@@ -1331,15 +1888,12 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     (package_lib / "_Infernux.pyd").write_bytes(b"full bridge")
     (package_lib / "InfernuxFoundation.dll").write_bytes(b"foundation")
     (package_lib / "InfernuxRendererRuntime.dll").write_bytes(b"runtime")
-    for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
-        (package_lib / legacy_name).write_bytes(b"legacy static dependency")
-        (final_dir / legacy_name).write_bytes(b"legacy root dependency")
     (final_dir / "_InfernuxBootstrap.pyd").write_bytes(b"bootstrap")
     (final_dir / "InfernuxFoundation.dll").write_bytes(b"foundation")
     (final_dir / "InfernuxRendererRuntime.dll").write_bytes(b"runtime")
-    (final_dir / "python312.dll").write_bytes(b"python")
+    (final_dir / "python313.dll").write_bytes(b"python")
     (final_dir / "_ctypes.pyd").write_bytes(b"ctypes ABI")
-    (final_dir / "ffi.dll").write_bytes(b"libffi ABI")
+    (final_dir / "libffi-8.dll").write_bytes(b"libffi ABI")
     (final_dir / "_socket.pyd").write_bytes(b"socket")
 
     builder._pack_core_runtime_archive(str(final_dir))
@@ -1354,42 +1908,63 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     assert "stdlib/_socket.pyd" in paths
     assert (final_dir / "_InfernuxBootstrap.pyd").is_file()
     assert (final_dir / "InfernuxFoundation.dll").is_file()
-    assert (final_dir / "python312.dll").is_file()
+    assert (final_dir / "python313.dll").is_file()
     assert (final_dir / "_ctypes.pyd").is_file()
-    assert (final_dir / "ffi.dll").is_file()
+    assert (final_dir / "libffi-8.dll").is_file()
     assert "stdlib/_ctypes.pyd" not in paths
-    assert "stdlib/ffi.dll" not in paths
-    assert not {
-        f"Infernux/lib/{name}" for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS
-    } & paths
-    assert not {
-        f"stdlib/{name}" for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS
-    } & paths
+    assert "stdlib/libffi-8.dll" not in paths
     assert not (final_dir / "InfernuxRendererRuntime.dll").exists()
-    assert all(
-        not (final_dir / name).exists()
-        for name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS
-    )
     assert not (final_dir / "Infernux").exists()
 
 
-def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path):
+@pytest.mark.parametrize("builtin_ctypes", [False, True])
+def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path, builtin_ctypes):
+    if builtin_ctypes and sys.platform == "win32":
+        pytest.skip("Windows runtime ships external _ctypes")
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     final_dir = tmp_path / "dist"
     data_root = final_dir / "TestGame_Data"
     package_lib = final_dir / "Infernux" / "lib"
     data_root.mkdir(parents=True)
     package_lib.mkdir(parents=True)
-    for filename in (
-        "python312.dll",
-        "_ctypes.pyd",
-        "ffi.dll",
-        "_InfernuxBootstrap.pyd",
-    ):
+    if sys.platform == "win32":
+        python_bootstrap_files = (
+            "python313.dll",
+            "_ctypes.pyd",
+            "libffi-8.dll",
+            "_opcode.pyd",
+        )
+        bootstrap_module_name = "_InfernuxBootstrap.pyd"
+        module_name = "_InfernuxPlayer.cp313-win_amd64.pyd"
+        foundation_name = "InfernuxFoundation.dll"
+    else:
+        python_bootstrap_files = (
+            "libpython3.13.so.1.0",
+            "_ctypes.cpython-312-x86_64-linux-gnu.so",
+            "libffi.so.8",
+            "_opcode.cpython-313-x86_64-linux-gnu.so",
+        )
+        bootstrap_module_name = "_InfernuxBootstrap.cpython-312-x86_64-linux-gnu.so"
+        module_name = "_InfernuxPlayer.cpython-312-x86_64-linux-gnu.so"
+        foundation_name = "libInfernuxFoundation.so"
+    if builtin_ctypes:
+        python_bootstrap_files = tuple(
+            name for name in python_bootstrap_files
+            if not name.startswith(("_ctypes", "libffi"))
+        )
+    for filename in (*python_bootstrap_files, bootstrap_module_name):
         (final_dir / filename).write_bytes(filename.encode("ascii"))
-    module_name = "_InfernuxPlayer.cp312-win_amd64.pyd"
+    (final_dir / game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "$schema": game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
+                "files": list(python_bootstrap_files),
+            }
+        ),
+        encoding="utf-8",
+    )
     (final_dir / module_name).write_bytes(b"player module")
-    (package_lib / "InfernuxFoundation.dll").write_bytes(b"foundation")
+    (package_lib / foundation_name).write_bytes(b"foundation")
     encodings = final_dir / "stdlib" / "encodings"
     encodings.mkdir(parents=True)
     for filename in ("__init__.pyc", "aliases.pyc", "utf_8.pyc"):
@@ -1405,6 +1980,8 @@ def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path):
     assert "stdlib/encodings/__init__.pyc" in paths
     assert "stdlib/__future__.pyc" in paths
     assert "stdlib/inspect.pyc" in paths
+    assert game_builder_module.BOOTSTRAP_NATIVE_MANIFEST_FILENAME in paths
+    assert any(Path(path).name.startswith("_opcode") for path in paths)
     assert all(
         path.endswith(".pyc")
         for path in paths
@@ -1418,11 +1995,12 @@ def test_bootstrap_archive_preserves_player_module_abi_filename(tmp_path):
 
 def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
     cache_root = tmp_path / "runtime-packs"
-    monkeypatch.setattr(nuitka_builder_module, "_RUNTIME_PACK_DIR", str(cache_root))
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(cache_root)
     builder._staging_dir = str(tmp_path / "staging")
     builder.console_mode = "disable"
     builder.lto = True
+    builder._player_compile_input_fingerprint = lambda: "current-player-runtime"
     os.makedirs(builder._staging_dir)
     dist = tmp_path / "original.dist"
     dist.mkdir(parents=True)
@@ -1452,12 +2030,77 @@ def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
     assert not (tmp_path / "staging" / "boot.dist" / "_infernux_runtime_pack.json").exists()
 
 
+def test_runtime_pack_cache_publish_retries_transient_windows_file_lock(
+    tmp_path, monkeypatch
+):
+    cache_root = tmp_path / "runtime-packs"
+    builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(cache_root)
+    builder.console_mode = "disable"
+    builder.lto = True
+    builder._player_compile_input_fingerprint = lambda: "current-player-runtime"
+    dist = tmp_path / "original.dist"
+    dist.mkdir()
+    (dist / "InfernuxPlayer.exe").write_bytes(b"runtime")
+    fingerprint = "a" * 64
+    destination = cache_root / fingerprint
+    native_replace = nuitka_builder_module.os.replace
+    attempts = 0
+
+    def locked_then_publish(source, target):
+        nonlocal attempts
+        if Path(target) == destination and attempts < 2:
+            attempts += 1
+            raise PermissionError("scanner retained the generated directory")
+        if Path(target) == destination:
+            attempts += 1
+        return native_replace(source, target)
+
+    monkeypatch.setattr(nuitka_builder_module.os, "replace", locked_then_publish)
+
+    builder._store_runtime_pack(fingerprint, str(dist))
+
+    assert attempts == 3
+    assert (destination / "Runtime.inxrt").is_file()
+    assert (destination / "Player.inxmanifest").is_file()
+
+
+@pytest.mark.parametrize(
+    ("short_name", "alias_name"),
+    [
+        ("_Infernux.pyd", "_Infernux.cp313-win_amd64.pyd"),
+        ("_Infernux.so", "_Infernux.cpython-313-x86_64-linux-gnu.so"),
+    ],
+)
+def test_runtime_pack_keeps_one_engine_native_module_name(
+    tmp_path, monkeypatch, short_name, alias_name
+):
+    cache_root = tmp_path / "runtime-packs"
+    builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(cache_root)
+    builder.console_mode = "disable"
+    builder.lto = True
+    builder._player_compile_input_fingerprint = lambda: "current-player-runtime"
+    dist = tmp_path / "original.dist"
+    package_lib = dist / "Infernux" / "lib"
+    package_lib.mkdir(parents=True)
+    (package_lib / short_name).write_bytes(b"runtime")
+    (package_lib / alias_name).write_bytes(b"duplicate")
+
+    builder._store_runtime_pack("a" * 64, str(dist))
+
+    manifest = read_manifest(cache_root / ("a" * 64) / "Runtime.inxrt")
+    paths = {entry["path"] for entry in manifest["files"]}
+    assert f"Infernux/lib/{short_name}" in paths
+    assert f"Infernux/lib/{alias_name}" not in paths
+
+
 def test_packaged_runtime_pack_restores_without_local_cache(tmp_path, monkeypatch):
     cache_root = tmp_path / "runtime-packs"
     packaged_root = tmp_path / "wheel" / "_runtime_packs"
-    monkeypatch.setattr(nuitka_builder_module, "_RUNTIME_PACK_DIR", str(cache_root))
     monkeypatch.setenv("INFERNUX_PREBUILT_RUNTIME_PACK_DIR", str(packaged_root))
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(cache_root)
     builder._staging_dir = str(tmp_path / "staging")
     builder._engine_fingerprint_cache = "engine-content"
     builder.console_mode = "disable"
@@ -1488,10 +2131,136 @@ def test_packaged_runtime_pack_restores_without_local_cache(tmp_path, monkeypatc
     assert (Path(restored) / "InfernuxPlayer.exe").read_bytes() == b"prebuilt-runtime"
 
 
+def test_runtime_pack_hit_does_not_prepare_compiler_or_install_requirements(tmp_path, monkeypatch):
+    entry = tmp_path / "boot.py"
+    entry.write_text("pass\n", encoding="utf-8")
+    builder = NuitkaBuilder(str(entry), str(tmp_path / "output"),
+                            build_cache_root=str(tmp_path / "cache"),
+                            runtime_pack_cache=True, player_module=True)
+    monkeypatch.setattr(builder, "_runtime_pack_fingerprint", lambda command: "cached")
+    monkeypatch.setattr(builder, "_runtime_pack_compatibility_key", lambda: "compatible")
+    monkeypatch.setattr(builder, "_restore_runtime_pack", lambda *args, **kwargs: "restored")
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("A precompiled Player does not need compilation tools")
+
+    monkeypatch.setattr(builder, "_check_nuitka", unexpected)
+    monkeypatch.setattr(builder, "_run_nuitka", unexpected)
+    monkeypatch.setattr(nuitka_builder_module, "_has_msvc_toolchain", unexpected)
+    monkeypatch.setattr(nuitka_builder_module.shutil, "which", unexpected)
+
+    assert builder.build() == "restored"
+
+
+@pytest.mark.parametrize("force_rebuild", [False, True])
+def test_consumer_player_never_compiles_on_a_runtime_pack_miss(
+    tmp_path, monkeypatch, force_rebuild
+):
+    entry = tmp_path / "boot.py"
+    entry.write_text("pass\n", encoding="utf-8")
+    builder = NuitkaBuilder(
+        str(entry), str(tmp_path / "output"),
+        build_cache_root=str(tmp_path / "cache"),
+        runtime_pack_cache=True, player_module=True,
+    )
+    monkeypatch.setattr(builder, "_runtime_pack_fingerprint", lambda command: "missing")
+    monkeypatch.setattr(builder, "_runtime_pack_compatibility_key", lambda: "compatible")
+    monkeypatch.setattr(builder, "_restore_runtime_pack", lambda *args, **kwargs: None)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Consumer export must not prepare or invoke a compiler")
+
+    for method in ("_check_nuitka", "_run_nuitka"):
+        monkeypatch.setattr(builder, method, unexpected)
+    monkeypatch.setattr(nuitka_builder_module, "_has_msvc_toolchain", unexpected)
+    monkeypatch.setattr(nuitka_builder_module.shutil, "which", unexpected)
+    with pytest.raises(RuntimeError, match="game export does not compile the engine"):
+        builder.build(force_runtime_rebuild=force_rebuild)
+
+
+def test_release_engineering_explicitly_compiles_player_payload(tmp_path, monkeypatch):
+    entry = tmp_path / "boot.py"
+    entry.write_text("pass\n", encoding="utf-8")
+    builder = NuitkaBuilder(
+        str(entry), str(tmp_path / "output"),
+        build_cache_root=str(tmp_path / "cache"),
+        runtime_pack_cache=True, player_module=True, packaged_runtime_lookup=False,
+    )
+    compiled = []
+    monkeypatch.setattr(builder, "_runtime_pack_fingerprint", lambda command: "build-input")
+    monkeypatch.setattr(builder, "_runtime_pack_compatibility_key", lambda: "compatible")
+    monkeypatch.setattr(builder, "_restore_runtime_pack", lambda *args, **kwargs: None)
+    monkeypatch.setattr(builder, "_check_nuitka", lambda: None)
+
+    def compile_payload(*args):
+        compiled.append(True)
+        return str(tmp_path / "player.dist")
+
+    monkeypatch.setattr(builder, "_run_nuitka", compile_payload)
+    for method in (
+        "_inject_native_libs", "_inject_engine_python_runtime",
+        "_inject_python_runtime_stdlib", "_inject_python_bootstrap_runtime",
+        "_store_runtime_pack",
+    ):
+        monkeypatch.setattr(builder, method, lambda *args, **kwargs: None)
+    assert builder.build() == str(tmp_path / "player.dist")
+    assert compiled == [True]
+
+
+def test_debug_and_release_share_the_compiled_player_entry(tmp_path, monkeypatch):
+    project = _make_project(tmp_path)
+    entries = []
+    keys = []
+    for debug in (False, True):
+        game = GameBuilder(str(project), str(tmp_path / str(debug)), debug_mode=debug)
+        entry = game._generate_boot_script()
+        entries.append(Path(entry).read_bytes())
+        builder = NuitkaBuilder(entry, str(tmp_path / str(debug)),
+                                build_cache_root=str(tmp_path / "cache"),
+                                console_mode="force" if debug else "disable", player_module=True)
+        monkeypatch.setattr(builder, "_player_compile_input_fingerprint", lambda: "same-engine")
+        keys.append(builder._runtime_pack_compatibility_key())
+    assert entries[0] == entries[1]
+    assert keys[0] == keys[1]
+
+
+def test_runtime_pack_key_tracks_the_compiled_entry(tmp_path, monkeypatch):
+    entry = tmp_path / "boot.py"
+    entry.write_text("value = 1\n", encoding="utf-8")
+    builder = NuitkaBuilder(str(entry), str(tmp_path / "output"),
+                            build_cache_root=str(tmp_path / "cache"), player_module=True)
+    monkeypatch.setattr(builder, "_player_compile_input_fingerprint", lambda: "same-engine")
+    original = builder._runtime_pack_compatibility_key()
+    entry.write_text("value = 2\n", encoding="utf-8")
+    assert builder._runtime_pack_compatibility_key() != original
+
+
+def test_runtime_pack_stores_the_environment_used_for_compilation(tmp_path, monkeypatch):
+    entry = tmp_path / "boot.py"
+    entry.write_text("pass\n", encoding="utf-8")
+    builder = NuitkaBuilder(str(entry), str(tmp_path / "output"),
+                            build_cache_root=str(tmp_path / "cache"), runtime_pack_cache=True)
+    environment = ["before-install"]
+    stored = []
+    monkeypatch.setattr(builder, "_runtime_pack_fingerprint", lambda command: environment[0])
+    monkeypatch.setattr(builder, "_runtime_pack_compatibility_key", lambda: "compatible")
+    monkeypatch.setattr(builder, "_restore_runtime_pack", lambda *args, **kwargs: None)
+    monkeypatch.setattr(builder, "_check_nuitka", lambda: environment.__setitem__(0, "compiled-environment"))
+    monkeypatch.setattr(builder, "_run_nuitka", lambda *args: str(tmp_path / "compiled.dist"))
+    for method in ("_inject_native_libs", "_embed_utf8_manifest", "_sign_executable"):
+        monkeypatch.setattr(builder, method, lambda *args: None)
+    monkeypatch.setattr(builder, "_store_runtime_pack", lambda key, *args, **kwargs: stored.append(key))
+
+    builder.build()
+
+    assert stored == ["compiled-environment"]
+    assert builder.last_runtime_pack_key == "compiled-environment"
+
+
 def test_runtime_pack_rejects_unsafe_archive_paths(tmp_path, monkeypatch):
     cache_root = tmp_path / "runtime-packs"
-    monkeypatch.setattr(nuitka_builder_module, "_RUNTIME_PACK_DIR", str(cache_root))
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(cache_root)
     builder._staging_dir = str(tmp_path / "staging")
     builder._engine_fingerprint_cache = "engine-content"
     builder.console_mode = "disable"
@@ -1529,6 +2298,28 @@ def test_raw_runtime_package_sources_are_replaced_with_adjacent_bytecode(tmp_pat
     assert not nested.exists()
     assert (package_root / "__init__.pyc").is_file()
     assert (package_root / "nested.pyc").is_file()
+
+
+def test_raw_runtime_package_injection_requires_one_complete_environment(
+    tmp_path, monkeypatch
+):
+    first = tmp_path / "first-site-packages"
+    second = tmp_path / "second-site-packages"
+    (first / "numba").mkdir(parents=True)
+    (second / "llvmlite").mkdir(parents=True)
+    monkeypatch.setattr(
+        nuitka_builder_module,
+        "_run_python",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            stdout=json.dumps([str(first), str(second)])
+        ),
+    )
+    builder = object.__new__(NuitkaBuilder)
+    builder._builder_python = sys.executable
+    builder.raw_copy_packages = ["numba", "llvmlite"]
+
+    with pytest.raises(RuntimeError, match="does not contain every raw runtime package"):
+        builder._inject_jit_packages(str(tmp_path / "dist"))
 
 
 def test_packaged_parallel_runtime_module_round_trip(tmp_path, monkeypatch):
@@ -1602,20 +2393,23 @@ def test_runtime_engine_fingerprint_ignores_generated_meta(tmp_path, monkeypatch
     package_init.write_text("VALUE = 1\n", encoding="utf-8")
     metadata = package_root / "shader.frag.meta"
     metadata.write_text("first", encoding="utf-8")
+    package_lib = package_root / "lib"
+    package_lib.mkdir()
     monkeypatch.setattr(Infernux, "__file__", str(package_init))
     monkeypatch.setattr(
-        nuitka_builder_module,
-        "_RUNTIME_PACK_DIR",
-        str(tmp_path / "runtime-packs"),
+        NuitkaBuilder,
+        "_native_payload_dir",
+        staticmethod(lambda: package_lib),
     )
 
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(tmp_path / "runtime-packs")
     builder._engine_fingerprint_cache = ""
-    first = builder._engine_content_fingerprint()
+    first = builder._player_compile_input_fingerprint()
     metadata.write_text("changed", encoding="utf-8")
     builder._engine_fingerprint_cache = ""
 
-    assert builder._engine_content_fingerprint() == first
+    assert builder._player_compile_input_fingerprint() == first
 
 
 def test_runtime_engine_fingerprint_ignores_editor_backups(tmp_path, monkeypatch):
@@ -1624,21 +2418,24 @@ def test_runtime_engine_fingerprint_ignores_editor_backups(tmp_path, monkeypatch
     (package_root / "__init__.py").write_text("", encoding="utf-8")
     backup = package_root / "bindings.pyi.bak"
     backup.write_text("old", encoding="utf-8")
+    package_lib = package_root / "lib"
+    package_lib.mkdir()
     fake_package = SimpleNamespace(__file__=str(package_root / "__init__.py"))
     monkeypatch.setitem(sys.modules, "Infernux", fake_package)
     monkeypatch.setattr(
-        nuitka_builder_module,
-        "_RUNTIME_PACK_DIR",
-        str(tmp_path / "runtime-packs"),
+        NuitkaBuilder,
+        "_native_payload_dir",
+        staticmethod(lambda: package_lib),
     )
 
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(tmp_path / "runtime-packs")
     builder._engine_fingerprint_cache = ""
-    first = builder._engine_content_fingerprint()
+    first = builder._player_compile_input_fingerprint()
     backup.write_text("changed", encoding="utf-8")
     builder._engine_fingerprint_cache = ""
 
-    assert builder._engine_content_fingerprint() == first
+    assert builder._player_compile_input_fingerprint() == first
 
 
 def test_player_compile_fingerprint_ignores_post_build_packaging_code(tmp_path, monkeypatch):
@@ -1656,14 +2453,13 @@ def test_player_compile_fingerprint_ignores_post_build_packaging_code(tmp_path, 
     compile_builder_source.write_text("COMPILE_RULE = 1\n", encoding="utf-8")
     fake_package = SimpleNamespace(__file__=str(package_init))
     monkeypatch.setitem(sys.modules, "Infernux", fake_package)
-    monkeypatch.setattr(
-        nuitka_builder_module,
-        "_RUNTIME_PACK_DIR",
-        str(tmp_path / "runtime-packs"),
-    )
 
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(tmp_path / "runtime-packs")
     builder._engine_fingerprint_cache = ""
+    native_dir = package_root / "lib"
+    native_dir.mkdir()
+    builder._native_payload_dir = lambda: native_dir
     first = builder._player_compile_input_fingerprint()
     audit_source.write_text("AUDIT = 2\n", encoding="utf-8")
     builder_source.write_text("BUILDER = 2\n", encoding="utf-8")
@@ -1696,6 +2492,12 @@ def test_runtime_pack_fingerprint_tracks_generated_boot_and_keeps_environment_in
     first = builder._runtime_pack_fingerprint(
         ["python", str(staged_entry), "--jobs=8"]
     )
+    original_layout = builder._RUNTIME_PACK_LAYOUT
+    builder._RUNTIME_PACK_LAYOUT = "different-layout"
+    assert builder._runtime_pack_fingerprint(
+        ["python", str(staged_entry), "--jobs=8"]
+    ) != first
+    builder._RUNTIME_PACK_LAYOUT = original_layout
     staged_entry.write_text("BOOT = 2\n", encoding="utf-8")
 
     assert builder._runtime_pack_fingerprint(
@@ -1713,17 +2515,18 @@ def test_runtime_engine_fingerprint_tracks_loaded_native_payload(tmp_path, monke
     native_root = tmp_path / "native"
     native_root.mkdir()
     native_module = (
-        "_Infernux.cp312-win_amd64.pyd"
+        "_Infernux.cp313-win_amd64.pyd"
         if sys.platform == "win32"
         else "_Infernux.so"
     )
     (native_root / native_module).write_bytes(b"module")
     bootstrap_module = (
-        "_InfernuxBootstrap.cp312-win_amd64.pyd"
+        "_InfernuxBootstrap.cp313-win_amd64.pyd"
         if sys.platform == "win32"
         else "_InfernuxBootstrap.so"
     )
     (native_root / bootstrap_module).write_bytes(b"bootstrap")
+    _write_player_native_contract(native_root)
     companion = native_root / (
         "InfernuxRendererRuntime.dll"
         if sys.platform == "win32"
@@ -1732,19 +2535,15 @@ def test_runtime_engine_fingerprint_tracks_loaded_native_payload(tmp_path, monke
     companion.write_bytes(b"first")
     monkeypatch.setattr(Infernux, "__file__", str(package_init))
     monkeypatch.setenv("INFERNUX_NATIVE_MODULE_DIR", str(native_root))
-    monkeypatch.setattr(
-        nuitka_builder_module,
-        "_RUNTIME_PACK_DIR",
-        str(tmp_path / "runtime-packs"),
-    )
 
     builder = object.__new__(NuitkaBuilder)
+    builder._runtime_pack_dir = str(tmp_path / "runtime-packs")
     builder._engine_fingerprint_cache = ""
-    first = builder._engine_content_fingerprint()
+    first = builder._player_compile_input_fingerprint()
     companion.write_bytes(b"second")
     builder._engine_fingerprint_cache = ""
 
-    assert builder._engine_content_fingerprint() != first
+    assert builder._player_compile_input_fingerprint() != first
 
 
 def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
@@ -1753,7 +2552,7 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
     native_root = tmp_path / "native"
     native_root.mkdir()
     native_module = (
-        "_Infernux.cp312-win_amd64.pyd"
+        "_Infernux.cp313-win_amd64.pyd"
         if sys.platform == "win32"
         else "_Infernux.so"
     )
@@ -1764,11 +2563,12 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
     )
     (native_root / native_module).write_bytes(b"current-module")
     bootstrap_module = (
-        "_InfernuxBootstrap.cp312-win_amd64.pyd"
+        "_InfernuxBootstrap.cp313-win_amd64.pyd"
         if sys.platform == "win32"
         else "_InfernuxBootstrap.so"
     )
     (native_root / bootstrap_module).write_bytes(b"bootstrap-module")
+    _write_player_native_contract(native_root)
     if sys.platform == "win32":
         # A stale short-name module can be left by Nuitka discovery. The
         # ABI-tagged build output must win and replace it atomically.
@@ -1780,12 +2580,10 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
         else native_root / "libInfernuxFoundation.so"
     )
     foundation.write_bytes(b"foundation")
-    python_runtime = native_root / "python312.dll" if sys.platform == "win32" else None
+    python_runtime = native_root / "python313.dll" if sys.platform == "win32" else None
     if python_runtime is not None:
         python_runtime.write_bytes(b"python-runtime")
         (native_root / "zlib.dll").write_bytes(b"runtime-zlib")
-        for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
-            (native_root / legacy_name).write_bytes(b"legacy static dependency")
     monkeypatch.setenv("INFERNUX_NATIVE_MODULE_DIR", str(native_root))
 
     dist = tmp_path / "boot.dist"
@@ -1797,9 +2595,6 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
     (package_lib / companion).write_bytes(b"stale-runtime")
     if sys.platform == "win32":
         (dist / companion).write_bytes(b"stale-root-runtime")
-        for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
-            (dist / legacy_name).write_bytes(b"stale root legacy")
-            (package_lib / legacy_name).write_bytes(b"stale package legacy")
 
     builder = object.__new__(NuitkaBuilder)
     builder._inject_native_libs(str(dist))
@@ -1811,23 +2606,109 @@ def test_native_payload_injection_uses_one_override_and_overwrites_stale_files(
         assert not (dist / companion).exists()
         assert (dist / "_InfernuxBootstrap.pyd").read_bytes() == b"bootstrap-module"
         assert (dist / "InfernuxFoundation.dll").read_bytes() == b"foundation"
-        assert (dist / "python312.dll").read_bytes() == b"python-runtime"
-        assert not (package_lib / "python312.dll").exists()
+        assert (dist / "python313.dll").read_bytes() == b"python-runtime"
+        assert not (package_lib / "python313.dll").exists()
         assert (package_lib / "zlib.dll").read_bytes() == b"runtime-zlib"
         assert not (dist / "zlib.dll").exists()
-        for legacy_name in NuitkaBuilder._FORBIDDEN_LEGACY_NATIVE_DLLS:
-            assert not (dist / legacy_name).exists()
-            assert not (package_lib / legacy_name).exists()
+
+
+def test_player_native_payload_requires_current_contract(tmp_path, monkeypatch):
+    native_root = tmp_path / "native"
+    native_root.mkdir()
+    native_module = (
+        "_Infernux.cp313-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_Infernux.so"
+    )
+    bootstrap_module = (
+        "_InfernuxBootstrap.cp313-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_InfernuxBootstrap.so"
+    )
+    (native_root / native_module).write_bytes(b"editor-module")
+    (native_root / bootstrap_module).write_bytes(b"bootstrap-module")
+    monkeypatch.setenv("INFERNUX_NATIVE_MODULE_DIR", str(native_root))
+
+    with pytest.raises(RuntimeError, match="static Release Player runtime"):
+        NuitkaBuilder._native_payload_dir()
+
+
+def test_player_native_payload_requires_complete_current_closure(tmp_path, monkeypatch):
+    native_root = tmp_path / "native"
+    native_root.mkdir()
+    native_module = (
+        "_Infernux.cp313-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_Infernux.so"
+    )
+    bootstrap_module = (
+        "_InfernuxBootstrap.cp313-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_InfernuxBootstrap.so"
+    )
+    (native_root / native_module).write_bytes(b"player-module")
+    (native_root / bootstrap_module).write_bytes(b"bootstrap-module")
+    _write_player_native_contract(native_root)
+    missing = sorted(nuitka_builder_module.player_native_library_filenames())[0]
+    (native_root / missing).unlink()
+    monkeypatch.setenv("INFERNUX_NATIVE_MODULE_DIR", str(native_root))
+
+    with pytest.raises(RuntimeError, match="static Release Player runtime"):
+        NuitkaBuilder._native_payload_dir()
+
+
+def test_player_native_payload_selects_static_source_build_sibling(
+    tmp_path, monkeypatch
+):
+    repository = tmp_path / "repository"
+    package_root = repository / "python" / "Infernux"
+    package_root.mkdir(parents=True)
+    package_init = package_root / "__init__.py"
+    package_init.write_text("", encoding="utf-8")
+    build_root = repository / "out" / "build"
+    editor_root = build_root / "windows-msvc-dev" / "python-sync"
+    player_root = build_root / "windows-msvc-release" / "python-sync"
+    editor_root.mkdir(parents=True)
+    player_root.mkdir(parents=True)
+    native_module = (
+        "_Infernux.cp313-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_Infernux.so"
+    )
+    bootstrap_module = (
+        "_InfernuxBootstrap.cp313-win_amd64.pyd"
+        if sys.platform == "win32"
+        else "_InfernuxBootstrap.so"
+    )
+    for root in (editor_root, player_root):
+        (root / native_module).write_bytes(root.name.encode("utf-8"))
+        (root / bootstrap_module).write_bytes(b"bootstrap-module")
+    _write_player_native_contract(player_root)
+
+    import Infernux
+
+    monkeypatch.delenv("INFERNUX_NATIVE_MODULE_DIR", raising=False)
+    monkeypatch.setattr(Infernux, "__file__", str(package_init))
+    monkeypatch.setattr(
+        nuitka_builder_module.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(__file__=str(editor_root / native_module)),
+    )
+
+    assert NuitkaBuilder._native_payload_dir() == player_root
 
 
 def test_runtime_compatibility_key_ignores_branding_and_managed_dependencies(
     tmp_path,
 ):
+    entry = tmp_path / "boot.py"
+    entry.write_text("pass\n", encoding="utf-8")
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("numba==1\nfastmcp==2\n", encoding="utf-8")
 
     def make_builder(*, icon: str, custom: list[str] | None = None):
         builder = object.__new__(NuitkaBuilder)
+        builder.entry_script = str(entry)
         builder.extra_requirements_files = [str(requirements)]
         builder.extra_include_packages = list(custom or [])
         builder.extra_include_data = [str(tmp_path / "project-specific-data")]
@@ -1908,16 +2789,7 @@ def test_cleanup_temp_removes_boot_directory_synchronously(tmp_path):
     assert not boot_dir.exists()
 
 
-def test_player_boot_file_helpers_replace_shutil_without_losing_atomic_copy(tmp_path):
-    source = tmp_path / "source.json"
-    destination = tmp_path / "nested" / "destination.json"
-    source.write_bytes(b'{"complete": true}')
-
-    game_builder_module._copy_player_file_atomic(str(source), str(destination))
-
-    assert destination.read_bytes() == source.read_bytes()
-    assert not list(destination.parent.glob("destination.json.*.tmp"))
-
+def test_player_build_tree_removal_uses_boot_required_stdlib(tmp_path):
     tree = tmp_path / "cache-tree"
     (tree / "nested").mkdir(parents=True)
     (tree / "nested" / "payload.bin").write_bytes(b"payload")
@@ -2079,26 +2951,33 @@ def test_release_output_copies_player_host_and_keeps_module(tmp_path, monkeypatc
     module_name = "_InfernuxPlayer.pyd" if sys.platform == "win32" else "_InfernuxPlayer.so"
     (dist / module_name).write_bytes(b"player module")
 
+    service = dist / "Infernux" / "Application.pyc"
+    service.parent.mkdir()
+    service.write_bytes(b"case-sensitive archive identity")
+
     final_dir = Path(builder._organize_output(str(dist)))
 
     game_name = "TestGame.exe" if sys.platform == "win32" else "TestGame"
     assert (final_dir / game_name).read_bytes() == b"host"
     assert (final_dir / module_name).read_bytes() == b"player module"
+    assert "Infernux" in [p.name for p in final_dir.iterdir()]
+    assert "Application.pyc" in [p.name for p in (final_dir / "Infernux").iterdir()]
+    assert not dist.parent.exists()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows PlayerHost path")
-def test_player_host_resolves_from_player_runtime_resources(tmp_path, monkeypatch):
+def test_player_host_resolves_from_selected_platform_plugin(tmp_path, monkeypatch):
+    monkeypatch.delenv("INFERNUX_PLAYER_HOST_PATH", raising=False)
     package = tmp_path / "Infernux"
     engine = package / "engine"
     runtime = package / "resources" / "player_runtime"
     engine.mkdir(parents=True)
     runtime.mkdir(parents=True)
-    host = runtime / "InfernuxPlayerHost.exe"
+    host = runtime / ("InfernuxPlayerHost.exe" if sys.platform == "win32" else "InfernuxPlayerHost")
     host.write_bytes(b"host")
     monkeypatch.setattr(game_builder_module, "__file__", str(engine / "game_builder.py"))
 
     builder = _make_builder(tmp_path, tmp_path / "build_output")
-
+    builder.player_runtime_root = str(runtime)
     assert Path(builder._player_host_path()) == host
 
 
@@ -2112,7 +2991,7 @@ def test_current_player_layout_uses_one_renamed_executable(tmp_path, monkeypatch
     dist.mkdir(parents=True)
     module_name = "_InfernuxPlayer.pyd" if sys.platform == "win32" else "_InfernuxPlayer.so"
     (dist / module_name).write_bytes(b"player module")
-    (dist / "python312.dll").write_bytes(b"python")
+    (dist / "python313.dll").write_bytes(b"python")
     final_dir = Path(builder._organize_output(str(dist)))
     (final_dir / "Data").mkdir()
     (final_dir / "Data" / "BuildManifest.json").write_text("{}", encoding="utf-8")
@@ -2121,67 +3000,37 @@ def test_current_player_layout_uses_one_renamed_executable(tmp_path, monkeypatch
     builder._write_output_marker(str(final_dir))
 
     data_root = final_dir / "TestGame_Data"
-    assert (final_dir / "TestGame.exe").read_bytes() == b"host"
-    assert [path.name for path in final_dir.glob("*.exe")] == ["TestGame.exe"]
+    executable_name = _player_executable_name()
+    assert (final_dir / executable_name).read_bytes() == b"host"
+    assert [path.name for path in final_dir.iterdir() if path.name == executable_name] == [
+        executable_name
+    ]
     assert (final_dir / module_name).read_bytes() == b"player module"
-    assert (final_dir / "python312.dll").read_bytes() == b"python"
+    assert (final_dir / "python313.dll").read_bytes() == b"python"
     assert (final_dir / GameBuilder.OUTPUT_MARKER_FILENAME).is_file()
     assert (data_root / "BuildManifest.json").is_file()
     assert not (data_root / "Runtime").exists()
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows PE resource contract")
-def test_windows_player_host_icon_is_replaced_with_project_icon(tmp_path):
-    host = (
-        Path(__file__).parents[1]
-        / "Infernux"
-        / "resources"
-        / "player_runtime"
-        / "InfernuxPlayerHost.exe"
-    )
-    if not host.is_file():
-        pytest.skip("InfernuxPlayerHost.exe is not built")
-    project_icon = (
-        Path(__file__).parents[1]
-        / "Infernux"
-        / "resources"
-        / "icons"
-        / "icon.png"
-    )
-    executable = tmp_path / "BrandedGame.exe"
-    shutil.copy2(host, executable)
-
-    GameBuilder._apply_windows_executable_icon(str(executable), str(project_icon))
-
-    kernel32 = ctypes.windll.kernel32
-    kernel32.LoadLibraryExW.argtypes = [wintypes.LPCWSTR, wintypes.HANDLE, wintypes.DWORD]
-    kernel32.LoadLibraryExW.restype = wintypes.HMODULE
-    kernel32.FindResourceW.argtypes = [wintypes.HMODULE, ctypes.c_void_p, ctypes.c_void_p]
-    kernel32.FindResourceW.restype = wintypes.HRSRC
-    kernel32.SizeofResource.argtypes = [wintypes.HMODULE, wintypes.HRSRC]
-    kernel32.SizeofResource.restype = wintypes.DWORD
-    module = kernel32.LoadLibraryExW(str(executable), None, 0x00000002)
-    assert module
-    try:
-        group = kernel32.FindResourceW(module, ctypes.c_void_p(101), ctypes.c_void_p(14))
-        assert group
-        assert kernel32.SizeofResource(module, group) >= 6 + 14 * 6
-    finally:
-        kernel32.FreeLibrary.argtypes = [wintypes.HMODULE]
-        kernel32.FreeLibrary(module)
-
-
 def test_build_branding_assets_are_manifested_and_packed(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
-    icon = tmp_path / "project-icon.png"
-    splash = tmp_path / "opening.png"
+    icon = Path(builder.project_path) / "Assets" / "project-icon.png"
+    splash = Path(builder.project_path) / "Assets" / "opening.png"
     icon.write_bytes(b"icon")
     splash.write_bytes(b"splash")
-    builder.icon_path = str(icon)
+    entries = load_asset_index(builder.project_path)
+    entries.extend(
+        (
+            _asset_index_entry(Path(builder.project_path), icon, "icon-guid", "", "Texture"),
+            _asset_index_entry(Path(builder.project_path), splash, "splash-guid", "", "Texture"),
+        )
+    )
+    builder.freeze_asset_index_entries(entries)
+    builder.icon_guid = "icon-guid"
     builder.splash_items = [
         {
             "type": "image",
-            "path": str(splash),
+            "asset_guid": "splash-guid",
             "duration": 2.0,
             "fade_in": 0.25,
             "fade_out": 0.5,
@@ -2197,7 +3046,7 @@ def test_build_branding_assets_are_manifested_and_packed(tmp_path):
     builder._process_build_icon(str(final_dir))
     builder._process_splash_items(str(final_dir))
     builder._generate_manifest(str(final_dir))
-    (final_dir / "TestGame.exe").write_bytes(b"player")
+    _write_player_executable(final_dir, b"player")
     builder._organize_player_layout(str(final_dir))
 
     manifest = json.loads(
@@ -2205,6 +3054,7 @@ def test_build_branding_assets_are_manifested_and_packed(tmp_path):
     )
     assert manifest["icon_path"] == "Branding/icon.png"
     assert manifest["splash_items"][0]["path"] == "Splash/opening.png"
+    assert manifest["splash_items"][0]["layout"] == "contain"
     builder._pack_content_archive(str(final_dir))
     header = read_manifest(final_dir / "TestGame_Data" / "Content.inxpkg")
     names = {entry["path"] for entry in header["files"]}
@@ -2212,18 +3062,81 @@ def test_build_branding_assets_are_manifested_and_packed(tmp_path):
     assert "Splash/opening.png" in names
 
 
+def test_build_branding_reuses_identical_icon_for_splash(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    branding = Path(builder.project_path) / "Assets" / "branding.png"
+    branding.write_bytes(b"one-branding-payload")
+    entries = load_asset_index(builder.project_path)
+    entries.append(
+        _asset_index_entry(
+            Path(builder.project_path), branding, "branding-guid", "", "Texture"
+        )
+    )
+    builder.freeze_asset_index_entries(entries)
+    builder.icon_guid = "branding-guid"
+    builder.splash_items = [
+        {
+            "type": "image",
+            "asset_guid": "branding-guid",
+            "duration": 2.0,
+            "fade_in": 0.25,
+            "fade_out": 0.5,
+        }
+    ]
+    final_dir = tmp_path / "dist"
+    settings = final_dir / "Data" / "ProjectSettings"
+    settings.mkdir(parents=True)
+    (settings / "BuildSettings.json").write_text(
+        json.dumps({"scenes": []}), encoding="utf-8"
+    )
+
+    builder._process_build_icon(str(final_dir))
+    builder._process_splash_items(str(final_dir))
+    builder._generate_manifest(str(final_dir))
+
+    manifest = json.loads(
+        (final_dir / "Data" / "BuildManifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["icon_path"] == "Branding/icon.png"
+    assert manifest["splash_items"][0]["path"] == "Branding/icon.png"
+    assert manifest["splash_items"][0]["layout"] == "logo"
+    assert not (final_dir / "Data" / "Splash" / "branding.png").exists()
+
+
 def test_requirements_install_is_skipped_when_content_is_unchanged(tmp_path, monkeypatch):
     state_root = tmp_path / "requirements-state"
-    monkeypatch.setattr(nuitka_builder_module, "_REQUIREMENTS_STATE_DIR", str(state_root))
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("requests==2.32.0\n", encoding="utf-8")
     calls: list[list[str]] = []
     monkeypatch.setattr(nuitka_builder_module.subprocess, "check_call", lambda command: calls.append(command))
 
-    nuitka_builder_module._install_requirements_files(sys.executable, [str(requirements)])
-    nuitka_builder_module._install_requirements_files(sys.executable, [str(requirements)])
+    nuitka_builder_module._install_requirements_files(
+        sys.executable,
+        [str(requirements)],
+        str(state_root),
+    )
+    nuitka_builder_module._install_requirements_files(
+        sys.executable,
+        [str(requirements)],
+        str(state_root),
+    )
 
     assert len(calls) == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows case-insensitive file identities")
+def test_player_cleanup_deduplicates_case_variant_paths(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    final_dir = tmp_path / "dist"
+    stub = final_dir / "infernux" / "lib" / "_Infernux.pyi"
+    stub.parent.mkdir(parents=True)
+    stub.write_text("# build-time stubs", encoding="utf-8")
+    (stub.parent / "keep.dll").write_bytes(b"runtime")
+
+    builder._cleanup_dist(str(final_dir))
+
+    assert not stub.exists()
+    assert (stub.parent / "keep.dll").read_bytes() == b"runtime"
 
 
 def test_player_cleanup_preserves_engine_icon_resources(tmp_path):
@@ -2377,7 +3290,7 @@ def test_game_data_includes_render_effect_artifacts(tmp_path):
 
     assert shipped.read_text(encoding="utf-8") == artifact.read_text(encoding="utf-8")
 
-    (final_dir / "TestGame.exe").write_bytes(b"Infernux Player")
+    _write_player_executable(final_dir)
     builder._organize_player_layout(str(final_dir))
     builder._pack_content_archive(str(final_dir))
     header = read_manifest(
@@ -2482,7 +3395,7 @@ def test_game_data_replaces_current_texture_source_with_library_artifact(tmp_pat
 
     final_dir = tmp_path / "dist"
     builder._copy_game_data(str(final_dir))
-    (final_dir / "TestGame.exe").write_bytes(b"Infernux Player")
+    _write_player_executable(final_dir)
     builder._organize_player_layout(str(final_dir))
     builder._pack_content_archive(str(final_dir))
 
@@ -2512,16 +3425,14 @@ def test_game_data_rejects_missing_current_library_artifact(tmp_path):
 def test_game_data_includes_particle_artifacts(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     _reference_particle_graph(Path(builder.project_path), "smoke")
+    guid = hashlib.md5(b"smoke").hexdigest()
     artifact = (
         Path(builder.project_path)
         / "Library"
         / "Artifacts"
         / "Particle"
-        / "smoke.inxparticle"
+        / f"{guid}.inxparticle"
     )
-    artifact.parent.mkdir(parents=True, exist_ok=True)
-    graph_path = Path(builder.project_path) / "Assets" / "VFX" / "smoke.particlegraph"
-    _write_particle_artifact(artifact, graph_path)
     final_dir = tmp_path / "dist"
 
     builder._copy_game_data(str(final_dir))
@@ -2534,6 +3445,7 @@ def test_game_data_includes_particle_artifacts(tmp_path):
         / artifact.name
     )
     assert shipped.read_text(encoding="utf-8") == artifact.read_text(encoding="utf-8")
+    assert json.loads(shipped.read_text(encoding="utf-8"))["source_hash"]
     runtime_index = json.loads(
         (shipped.parent / builder._PARTICLE_RUNTIME_INDEX_FILENAME).read_text(
             encoding="utf-8"
@@ -2550,15 +3462,50 @@ def test_game_data_includes_particle_artifacts(tmp_path):
         ],
     }
 
-    (final_dir / "TestGame.exe").write_bytes(b"Infernux Player")
+    _write_player_executable(final_dir)
     builder._organize_player_layout(str(final_dir))
     builder._pack_content_archive(str(final_dir))
     header = read_manifest(
         final_dir / "TestGame_Data" / builder._CONTENT_ARCHIVE_FILENAME
     )
     names = {entry["path"] for entry in header["files"]}
-    assert "Library/Artifacts/Particle/smoke.inxparticle" in names
+    assert f"Library/Artifacts/Particle/{guid}.inxparticle" in names
     assert "Library/Artifacts/Particle/RuntimeIndex.json" in names
+
+
+def test_particle_reference_uses_guid_when_serialized_path_belongs_to_old_project(
+    tmp_path,
+):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    _reference_particle_graph(project, "portable")
+    scene_path = project / "Assets" / "Main.scene"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    reference = scene["objects"][0]["components"][0]["data"]["graph"]
+    reference["path_hint"] = "C:/retired/project/Assets/VFX/portable.particlegraph"
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    assert builder._collect_reachable_particle_artifacts() == [
+        {
+            "guid": hashlib.md5(b"portable").hexdigest(),
+            "path_hint": "Assets/VFX/portable.particlegraph",
+            "stable_id": "portable",
+        }
+    ]
+
+
+def test_particle_reference_without_guid_is_rejected(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    _reference_particle_graph(project, "path-only")
+    scene_path = project / "Assets" / "Main.scene"
+    scene = json.loads(scene_path.read_text(encoding="utf-8"))
+    reference = scene["objects"][0]["components"][0]["data"]["graph"]
+    reference["guid"] = ""
+    scene_path.write_text(json.dumps(scene), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="must declare a non-empty GUID"):
+        builder._collect_reachable_particle_artifacts()
 
 
 def test_game_data_excludes_unreachable_particle_artifacts(tmp_path):
@@ -2567,8 +3514,7 @@ def test_game_data_excludes_unreachable_particle_artifacts(tmp_path):
     _reference_particle_graph(project, "reachable")
     artifact_root = project / "Library" / "Artifacts" / "Particle"
     artifact_root.mkdir(parents=True, exist_ok=True)
-    graph_path = project / "Assets" / "VFX" / "reachable.particlegraph"
-    _write_particle_artifact(artifact_root / "reachable.inxparticle", graph_path)
+    guid = hashlib.md5(b"reachable").hexdigest()
     (artifact_root / "unreachable.inxparticle").write_text(
         '{"$schema":"infernux.particle_artifact"}',
         encoding="utf-8",
@@ -2578,8 +3524,59 @@ def test_game_data_excludes_unreachable_particle_artifacts(tmp_path):
     builder._copy_game_data(str(final_dir))
 
     shipped = final_dir / "Data" / "Library" / "Artifacts" / "Particle"
-    assert (shipped / "reachable.inxparticle").is_file()
+    assert (shipped / f"{guid}.inxparticle").is_file()
     assert not (shipped / "unreachable.inxparticle").exists()
+
+
+def test_game_data_recompiles_instead_of_shipping_stable_id_particle_artifact(
+    tmp_path,
+):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    _reference_particle_graph(project, "retired-name")
+    artifact_root = project / "Library" / "Artifacts" / "Particle"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    (artifact_root / "retired-name.inxparticle").write_text(
+        '{"$schema":"retired-particle-artifact"}',
+        encoding="utf-8",
+    )
+    guid = hashlib.md5(b"retired-name").hexdigest()
+
+    builder._copy_game_data(str(tmp_path / "dist"))
+
+    shipped = tmp_path / "dist" / "Data" / "Library" / "Artifacts" / "Particle"
+    assert (shipped / f"{guid}.inxparticle").is_file()
+    assert not (shipped / "retired-name.inxparticle").exists()
+
+
+def test_particle_runtime_index_rejects_path_only_entry(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    index_path = (
+        Path(builder.project_path)
+        / "Library"
+        / "Artifacts"
+        / "Particle"
+        / "RuntimeIndex.json"
+    )
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.particle_runtime_index",
+                "entries": [
+                    {
+                        "guid": "",
+                        "path_hint": "Assets/VFX/path-only.particlegraph",
+                        "stable_id": "path-only",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="non-empty GUID"):
+        builder._particle_library_artifacts()
 
 
 def test_game_data_compiles_missing_particle_artifact(tmp_path):
@@ -2712,7 +3709,7 @@ def test_particle_runtime_index_is_not_required_without_particle_references(tmp_
     (project / "Library" / "AssetIndex.json").unlink()
     data_dir = tmp_path / "dist" / "Data"
 
-    builder._copy_reachable_particle_artifacts(str(data_dir))
+    builder._write_particle_runtime_index(str(data_dir))
 
     assert not (data_dir / "Library" / "Artifacts" / "Particle").exists()
 
@@ -2724,7 +3721,7 @@ def test_particle_runtime_index_remains_required_for_reachable_graph(tmp_path):
     (project / "Library" / "AssetIndex.json").unlink()
 
     with pytest.raises(RuntimeError, match="current Library/AssetIndex.json"):
-        builder._copy_reachable_particle_artifacts(str(tmp_path / "dist" / "Data"))
+        builder._write_particle_runtime_index(str(tmp_path / "dist" / "Data"))
 
 
 def test_particle_script_is_not_a_player_build_source(tmp_path):
@@ -3078,7 +4075,7 @@ def test_core_runtime_archive_replaces_loose_numpy_and_resources(tmp_path):
     numpy_example = final_dir / "numpy" / "random" / "_examples" / "extending.pyx"
     numpy_stub = final_dir / "numpy" / "typing" / "_array_like.pyi"
     numpy_tests_extension = (
-        final_dir / "numpy" / "_core" / "_multiarray_tests.cp312-win_amd64.pyd"
+        final_dir / "numpy" / "_core" / "_multiarray_tests.cp313-win_amd64.pyd"
     )
     numpy_api_changes = final_dir / "numpy" / "ma" / "API_CHANGES.txt"
     numpy_license = final_dir / "numpy" / "LICENSE.txt"
@@ -3118,6 +4115,8 @@ def test_core_runtime_archive_replaces_loose_numpy_and_resources(tmp_path):
     )
     stray_exe.parent.mkdir(parents=True)
     stray_exe.write_bytes(b"must not enter Runtime.inxrt")
+    linux_player_host = stray_exe.with_name("InfernuxPlayerHost")
+    linux_player_host.write_bytes(b"linux host has no executable suffix")
     (final_dir / "TestGame_Data").mkdir(parents=True)
 
     builder._pack_core_runtime_archive(str(final_dir))
@@ -3159,6 +4158,31 @@ def test_core_runtime_archive_excludes_editor_icon_payloads(tmp_path):
     assert "Infernux/resources/icons/scene.png" not in names
 
 
+def test_core_runtime_archive_omits_generic_icon_for_configured_project_icon(
+    tmp_path,
+):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project_icon = Path(builder.project_path) / "Assets" / "project-icon.png"
+    project_icon.write_bytes(b"project-icon")
+    builder.icon_guid = "project-icon-guid"
+    final_dir = tmp_path / "dist"
+    data_root = final_dir / "TestGame_Data"
+    data_root.mkdir(parents=True)
+    icons = final_dir / "Infernux" / "resources" / "icons"
+    icons.mkdir(parents=True)
+    for name in ("icon.png", "gizmo_camera.png"):
+        (icons / name).write_bytes(name.encode("ascii"))
+
+    builder._pack_core_runtime_archive(str(final_dir))
+
+    names = {
+        entry["path"]
+        for entry in read_manifest(data_root / "Runtime.inxrt")["files"]
+    }
+    assert "Infernux/resources/icons/icon.png" not in names
+    assert "Infernux/resources/icons/gizmo_camera.png" in names
+
+
 @pytest.mark.parametrize(
     ("debug_mode", "expected_profile"),
     ((False, "release"), (True, "development")),
@@ -3180,13 +4204,13 @@ def test_player_runtime_and_content_archives_share_build_profile(
     runtime_source.write_bytes(b"runtime")
     content_source.write_text("{}", encoding="utf-8")
     observed: dict[str, str] = {}
-    native_write_pack = game_builder_module.write_pack
+    native_write_pack = game_builder_module.write_pack_isolated
 
     def record_profile(files, destination, **kwargs):
         observed[Path(destination).name] = kwargs.get("profile", "development")
         return native_write_pack(files, destination, **kwargs)
 
-    monkeypatch.setattr(game_builder_module, "write_pack", record_profile)
+    monkeypatch.setattr(game_builder_module, "write_pack_isolated", record_profile)
 
     builder._pack_core_runtime_archive(str(final_dir))
     builder._pack_content_archive(str(final_dir))
@@ -3422,68 +4446,6 @@ def test_payload_manifest_rejects_reachable_direct_scene_material_and_audio(tmp_
         builder._write_payload_manifest(str(final_dir))
 
 
-def test_all_imported_assets_enter_the_player_product_closure(tmp_path):
-    builder = _make_builder(tmp_path, tmp_path / "build_output")
-    project = Path(builder.project_path)
-    scene = project / "Assets" / "Main.scene"
-    material = project / "Assets" / "Materials" / "Bird.mat"
-    audio = project / "Assets" / "Audio" / "Wing.wav"
-    unused = project / "Assets" / "Unused.mat"
-    material.parent.mkdir(parents=True, exist_ok=True)
-    audio.parent.mkdir(parents=True, exist_ok=True)
-    scene.write_text(
-        json.dumps(
-            {
-                "objects": [
-                    {
-                        "components": [
-                            {"data": {"materials": ["material-guid"]}}
-                        ]
-                    }
-                ],
-                "document_id": "not-an-indexed-resource",
-            }
-        ),
-        encoding="utf-8",
-    )
-    material.write_text(
-        json.dumps({"preview_audio_guid": "audio-guid"}),
-        encoding="utf-8",
-    )
-    audio.write_bytes(b"reachable audio")
-    unused.write_text("{}", encoding="utf-8")
-    _write_asset_index(
-        project,
-        [
-            _asset_index_entry(project, scene, "scene-guid", "", "Scene"),
-            _asset_index_entry(
-                project, material, "material-guid", "", "Material"
-            ),
-            _asset_index_entry(project, audio, "audio-guid", "", "Audio"),
-            _asset_index_entry(project, unused, "unused-guid", "", "Material"),
-        ],
-    )
-    (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
-        encoding="utf-8",
-    )
-
-    indexed, reachable = builder._project_asset_reachability_evidence()
-
-    assert indexed == {
-        "assets/main.scene",
-        "assets/materials/bird.mat",
-        "assets/audio/wing.wav",
-        "assets/unused.mat",
-    }
-    assert reachable == {
-        "assets/main.scene",
-        "assets/materials/bird.mat",
-        "assets/audio/wing.wav",
-        "assets/unused.mat",
-    }
-
-
 def test_project_render_scripts_make_declared_shader_ids_reachable(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
@@ -3616,6 +4578,74 @@ def test_copy_cooked_assets_catalogs_builtin_shaders_without_duplicating_them(tm
     ]
 
 
+def test_platform_cook_packages_reachable_builtin_resources_in_content(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    scene = project / "Assets" / "Main.scene"
+    shader = project / "Library" / "Resources" / "shaders" / "standard.vert"
+    shader.parent.mkdir(parents=True, exist_ok=True)
+    shader.write_text("void main() {}\n", encoding="utf-8")
+    scene.write_text(json.dumps({"shader": "builtin-shader-guid"}), encoding="utf-8")
+    scene_entry = _asset_index_entry(project, scene, "scene-guid", "", "Scene")
+    shader_entry = _asset_index_entry(
+        project,
+        shader,
+        "builtin-shader-guid",
+        "",
+        "Shader",
+    )
+    shader_entry["read_only"] = True
+    _write_asset_index(project, [scene_entry, shader_entry])
+    final_dir = tmp_path / "dist"
+    data_dir = final_dir / "Data"
+
+    builder._copy_cooked_assets(
+        str(data_dir),
+        package_builtin_resources=True,
+    )
+
+    packaged_shader = data_dir / "Infernux/resources/shaders/standard.vert"
+    assert packaged_shader.read_text(encoding="utf-8") == "void main() {}\n"
+
+    builder._cooked_asset_entries = {"builtin-shader-guid": shader_entry}
+    builder._runtime_artifact_bindings = {}
+    builder._write_runtime_asset_records(
+        str(final_dir),
+        package_builtin_resources=True,
+    )
+    records = json.loads(
+        (data_dir / "Library" / "RuntimeAssetRecords.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    shader_record = next(
+        item for item in records["entries"] if item["guid"] == "builtin-shader-guid"
+    )
+    assert shader_record["runtime_artifacts"] == [
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": "Infernux/resources/shaders/standard.vert",
+            "runtime_artifact_id": game_builder_module.runtime_artifact_id(
+                "Content.inxpkg", "Infernux/resources/shaders/standard.vert"
+            ),
+        }
+    ]
+
+    data_root = final_dir / "TestGame_Data"
+    data_root.parent.mkdir(parents=True, exist_ok=True)
+    data_dir.rename(data_root)
+    (data_root / "Assets/Main.scene").unlink()
+    (data_root / "Assets").rmdir()
+    builder._pack_content_archive(
+        str(final_dir),
+        package_builtin_resources=True,
+    )
+    manifest = read_manifest(data_root / "Content.inxpkg")
+    assert "Infernux/resources/shaders/standard.vert" in {
+        entry["path"] for entry in manifest["files"]
+    }
+
+
 def test_package_resource_shader_keeps_guid_identity_in_headless_build(
     tmp_path, monkeypatch
 ):
@@ -3696,6 +4726,83 @@ def test_package_resource_shader_keeps_guid_identity_in_headless_build(
     )
 
 
+def test_source_checkout_shader_keeps_identity_when_wheel_builds_project(
+    tmp_path, monkeypatch
+):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    scene = project / "Assets" / "Main.scene"
+    checkout_resources = (
+        tmp_path / "source-checkout" / "python" / "Infernux" / "resources"
+    )
+    installed_resources = (
+        tmp_path / "project-venv" / "site-packages" / "Infernux" / "resources"
+    )
+    shader = checkout_resources / "shaders" / "particle_sprite.vert"
+    shader.parent.mkdir(parents=True, exist_ok=True)
+    shader.write_text(
+        'ShaderInfo { Name "Particle Sprite" Capabilities [ParticleSprite] }\n',
+        encoding="utf-8",
+    )
+    installed_resources.mkdir(parents=True, exist_ok=True)
+    scene.write_text("{}\n", encoding="utf-8")
+    scene_entry = _asset_index_entry(project, scene, "scene-guid", "", "Scene")
+    shader_entry = _asset_index_entry(
+        project,
+        shader,
+        "particle-shader-guid",
+        "",
+        "Shader",
+    )
+    shader_entry["read_only"] = True
+    shader_entry["metadata"]["metadata"]["shader_id"] = {
+        "type": "string",
+        "value": "Particle Sprite",
+    }
+    monkeypatch.setattr(
+        game_builder_module._resources,
+        "get_package_resources_path",
+        lambda: str(installed_resources),
+    )
+    monkeypatch.setattr(
+        game_builder_module._resources,
+        "resources_path",
+        str(installed_resources),
+    )
+    entries = [scene_entry, shader_entry]
+    _write_asset_index(project, entries)
+    (project / "ProjectSettings" / "BuildSettings.json").write_text(
+        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        encoding="utf-8",
+    )
+
+    selected = builder._collect_library_asset_entries(entries)
+
+    assert set(selected) == {"scene-guid", "particle-shader-guid"}
+    builder._copy_cooked_assets(str(tmp_path / "copy" / "Data"))
+    assert "particle-shader-guid" in builder._cooked_asset_entries
+    builder._cooked_asset_entries = {
+        "particle-shader-guid": selected["particle-shader-guid"]
+    }
+    builder._runtime_artifact_bindings = {}
+    final_dir = tmp_path / "dist"
+    builder._write_runtime_asset_records(str(final_dir))
+    records = json.loads(
+        (final_dir / "Data" / "Library" / "RuntimeAssetRecords.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    shader_record = next(
+        item for item in records["entries"] if item["guid"] == "particle-shader-guid"
+    )
+    assert shader_record["runtime_path"] == (
+        "Library/Resources/shaders/particle_sprite.vert"
+    )
+    assert shader_record["runtime_artifacts"][0]["runtime_path"] == (
+        "Infernux/resources/shaders/particle_sprite.vert"
+    )
+
+
 def test_cooked_python_component_keeps_script_and_runtime_guid_identity(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
@@ -3757,7 +4864,7 @@ def test_cooked_python_component_keeps_script_and_runtime_guid_identity(tmp_path
     expected_artifact_id = game_builder_module.runtime_artifact_id(
         "Content.inxpkg", "Assets/Scripts/Mover.pyc"
     )
-    assert records["records_version"] == 2
+    assert set(records) == {"$schema", "entries"}
     assert script_record["primary_runtime_artifact_id"] == expected_artifact_id
     assert script_record["runtime_artifact_ids"] == [expected_artifact_id]
     assert builder._runtime_asset_identity_bindings["Assets/Scripts/Mover.pyc"][
@@ -4116,7 +5223,7 @@ def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path, monkey
     assert not (staged / "Assets" / "Unused.mat.meta").exists()
     assert not (staged / "Assets" / "Dynamic" / "Runtime.bin").exists()
 
-    (final_dir / "TestGame.exe").write_bytes(b"Infernux Player")
+    _write_player_executable(final_dir)
     builder._organize_player_layout(str(final_dir))
     data_root = final_dir / "TestGame_Data"
     runtime_source = tmp_path / "runtime.bin"
@@ -4126,6 +5233,10 @@ def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path, monkey
         data_root / builder._RUNTIME_ARCHIVE_FILENAME,
     )
     builder._pack_content_archive(str(final_dir))
+    (data_root / "BuildManifest.json").write_text(
+        json.dumps({"game_name": builder.project_name, "scenes": ["Assets/Main.scene"]}),
+        encoding="utf-8",
+    )
 
     def reject_reopen(_package_path, entry_path):
         raise AssertionError(f"current-build catalog payload reopened from package: {entry_path}")
@@ -4147,12 +5258,8 @@ def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path, monkey
     assert "Assets/Audio/Wing.wav" not in content_names
     assert "Assets/Unused.mat" not in content_names
     assert "Assets/Dynamic/Runtime.bin" not in content_names
-    assert (data_root / "Library" / "RuntimeAssetCatalog.json").is_file()
-    catalog = json.loads(
-        (data_root / "Library" / "RuntimeAssetCatalog.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    assert (data_root / builder._ASSET_CATALOG_ARCHIVE_FILENAME).is_file()
+    catalog = _read_runtime_catalog(data_root, builder)
     assert not {
         artifact["payload_kind"]
         for artifact in catalog["artifacts"]
@@ -4188,7 +5295,6 @@ def test_cooked_document_catalog_resolves_author_path_dependency_alias():
             "package": "Content.inxpkg",
             "runtime_path": "Library/Artifacts/Document/scene-guid.scene",
             "bytes": len(scene_payload),
-            "sha256": hashlib.sha256(scene_payload).hexdigest(),
             "payload": scene_payload,
             "asset_binding": {
                 "source_guid": "scene-guid",
@@ -4200,7 +5306,6 @@ def test_cooked_document_catalog_resolves_author_path_dependency_alias():
             "package": "Content.inxpkg",
             "runtime_path": "Library/Artifacts/Document/material-guid.mat",
             "bytes": len(material_payload),
-            "sha256": hashlib.sha256(material_payload).hexdigest(),
             "payload": material_payload,
             "asset_binding": {
                 "source_guid": "material-guid",
@@ -4212,7 +5317,7 @@ def test_cooked_document_catalog_resolves_author_path_dependency_alias():
 
     catalog = build_catalog(
         entries,
-        player_host={"executable": "Game.exe", "sha256": "a" * 64},
+        player_host={"executable": "Game.exe"},
         package_records=[],
     )
 
@@ -4223,6 +5328,128 @@ def test_cooked_document_catalog_resolves_author_path_dependency_alias():
     scene = by_path["Library/Artifacts/Document/scene-guid.scene"]
     assert scene["dependencies"] == [material_id]
     assert scene["unresolved_dependencies"] == []
+
+
+def test_player_document_rewrite_normalizes_asset_hints_and_particle_duplicates(
+    tmp_path,
+):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    document_path = tmp_path / "RuntimeIndex.json"
+    document_path.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.particle_runtime_index",
+                "entries": [
+                    {
+                        "guid": "1" * 32,
+                        "stable_id": "2" * 32,
+                        "path_hint": "Assets/VFX/Wind.particlegraph",
+                    },
+                    {
+                        "guid": "1" * 32,
+                        "stable_id": "2" * 32,
+                        "path_hint": "C:/OldProject/Assets/VFX/Wind.particlegraph",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    builder._rewrite_player_document_paths(str(document_path), ".json")
+
+    rewritten = json.loads(document_path.read_text(encoding="utf-8"))
+    assert rewritten["entries"] == [
+        {
+            "guid": "1" * 32,
+            "stable_id": "2" * 32,
+            "path_hint": "Assets/VFX/Wind.particlegraph",
+        }
+    ]
+
+
+def test_runtime_catalog_does_not_treat_type_or_stable_ids_as_assets():
+    script_guid = "1" * 32
+    type_guid = "2" * 32
+    particle_guid = "3" * 32
+    stable_id = "4" * 32
+    script_payload = b"script"
+    particle_payload = b"particle"
+    type_registry = json.dumps(
+        {
+            "$schema": "infernux.runtime_type_registry",
+            "types": [
+                {
+                    "script_guid": script_guid,
+                    "type_guid": type_guid,
+                }
+            ],
+        }
+    ).encode("utf-8")
+    particle_index = json.dumps(
+        {
+            "$schema": "infernux.particle_runtime_index",
+            "entries": [
+                {
+                    "guid": particle_guid,
+                    "path_hint": "Assets/VFX/Wind.particlegraph",
+                    "stable_id": stable_id,
+                }
+            ],
+        }
+    ).encode("utf-8")
+    entries = [
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": "Assets/Scripts/Game.pyc",
+            "bytes": len(script_payload),
+            "asset_binding": {
+                "source_guid": script_guid,
+                "source_path": "Assets/Scripts/Game.py",
+                "dependencies": [],
+            },
+        },
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": f"Library/Artifacts/Particle/{particle_guid}.inxparticle",
+            "bytes": len(particle_payload),
+            "asset_binding": {
+                "source_guid": particle_guid,
+                "source_path": "Assets/VFX/Wind.particlegraph",
+                "dependencies": [],
+            },
+        },
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": "Library/RuntimeTypeRegistry.json",
+            "bytes": len(type_registry),
+            "payload": type_registry,
+        },
+        {
+            "package": "Content.inxpkg",
+            "runtime_path": "Library/Artifacts/Particle/RuntimeIndex.json",
+            "bytes": len(particle_index),
+            "payload": particle_index,
+        },
+    ]
+
+    catalog = build_catalog(
+        entries,
+        player_host={"executable": "Game"},
+        package_records=[],
+    )
+
+    by_path = {artifact["runtime_path"]: artifact for artifact in catalog["artifacts"]}
+    script = by_path["Assets/Scripts/Game.pyc"]
+    particle = by_path[
+        f"Library/Artifacts/Particle/{particle_guid}.inxparticle"
+    ]
+    registry = by_path["Library/RuntimeTypeRegistry.json"]
+    index = by_path["Library/Artifacts/Particle/RuntimeIndex.json"]
+    assert registry["dependencies"] == [script["runtime_artifact_id"]]
+    assert registry["unresolved_dependencies"] == []
+    assert index["dependencies"] == [particle["runtime_artifact_id"]]
+    assert index["unresolved_dependencies"] == []
 
 
 def test_animclip3d_catalog_depends_on_independent_animation_model():
@@ -4245,7 +5472,6 @@ def test_animclip3d_catalog_depends_on_independent_animation_model():
             "package": "Content.inxpkg",
             "runtime_path": f"Library/Artifacts/Document/{clip_guid}.animclip3d",
             "bytes": len(clip_payload),
-            "sha256": hashlib.sha256(clip_payload).hexdigest(),
             "payload": clip_payload,
             "asset_binding": {
                 "source_guid": clip_guid,
@@ -4257,7 +5483,6 @@ def test_animclip3d_catalog_depends_on_independent_animation_model():
             "package": "Content.inxpkg",
             "runtime_path": f"Library/Artifacts/Mesh/{animation_model_guid}.inxmesh",
             "bytes": len(mesh_payload),
-            "sha256": hashlib.sha256(mesh_payload).hexdigest(),
             "asset_binding": {
                 "source_guid": animation_model_guid,
                 "source_path": "Assets/Animations/Run.fbx",
@@ -4268,7 +5493,7 @@ def test_animclip3d_catalog_depends_on_independent_animation_model():
 
     catalog = build_catalog(
         entries,
-        player_host={"executable": "Game.exe", "sha256": "a" * 64},
+        player_host={"executable": "Game.exe"},
         package_records=[],
     )
 
@@ -4317,7 +5542,6 @@ def test_cooked_catalog_discovers_native_and_effect_group_asset_references():
                 "package": "Content.inxpkg",
                 "runtime_path": runtime_path,
                 "bytes": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest(),
                 "payload": payload,
                 "asset_binding": {
                     "source_guid": guid,
@@ -4329,7 +5553,7 @@ def test_cooked_catalog_discovers_native_and_effect_group_asset_references():
 
     catalog = build_catalog(
         entries,
-        player_host={"executable": "Game.exe", "sha256": "a" * 64},
+        player_host={"executable": "Game.exe"},
         package_records=[],
     )
 
@@ -4375,6 +5599,25 @@ def test_generated_player_log_is_lazy(tmp_path):
     assert "os.makedirs(_LOGS_DIR, exist_ok=True)" in source
     assert source.count("os.makedirs(_LOGS_DIR, exist_ok=True)") == 1
     assert "open(_LOG, \"w\", encoding=\"utf-8\").close()" not in source
+
+
+def test_generated_player_boot_registers_lowercase_public_namespace(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    source = Path(builder._generate_boot_script()).read_text(encoding="utf-8")
+
+    assert "import Infernux as _public_api" in source
+    assert 'sys.modules["infernux"] = _public_api' in source
+
+
+def test_generated_player_boot_requires_build_manifest_in_the_data_tree(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    source = Path(builder._generate_boot_script()).read_text(encoding="utf-8")
+
+    required = 'if not os.path.isfile(_BUILD_MANIFEST_PATH):'
+    assert required in source
+    assert '_BUILD_MANIFEST_PATH = os.path.join(_DATA_DIR, "BuildManifest.json")' in source
+    assert "_copy_player_file_atomic" not in source
+    assert 'if os.path.isfile(_BUILD_MANIFEST_PATH):' not in source
 
 
 def test_payload_manifest_rejects_invalid_native_package(tmp_path):
@@ -4424,34 +5667,141 @@ def test_payload_manifest_reports_current_native_packages(tmp_path):
 
     builder._write_payload_manifest(str(final_dir))
 
-    catalog = json.loads(
-        (data_root / "Library" / "RuntimeAssetCatalog.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    catalog = _read_runtime_catalog(data_root, builder)
     assert catalog["$schema"] == "infernux.runtime_asset_catalog"
-    assert catalog["player_host"]["executable"] == "TestGame.exe"
+    assert catalog["player_host"]["executable"] == _player_executable_name()
     assert {package["path"] for package in catalog["packages"]} == {
         "TestGame_Data/Runtime.inxrt",
         "TestGame_Data/Content.inxpkg",
     }
-    assert all(package["archive_sha256"] for package in catalog["packages"])
+    assert all(
+        set(package)
+        == {"path", "archive_bytes", "file_count", "raw_bytes", "stored_bytes", "codec"}
+        for package in catalog["packages"]
+    )
     package_index = (
         data_root / builder._PLAYER_PACKAGE_INDEX_FILENAME
     ).read_text(encoding="ascii").splitlines()
-    assert package_index[0] == "INFERNUX_PLAYER_PACKAGE_INDEX_V1"
+    assert package_index[0] == "INFERNUX_PLAYER_PACKAGE_INDEX"
     assert {line.split("\t", 1)[0] for line in package_index[1:]} == {
         "runtime",
         "content",
+        "catalog",
     }
     assert all(len(line.split("\t")) == 3 for line in package_index[1:])
     assert len(catalog["artifacts"]) == 2
     assert all(
         artifact["runtime_artifact_id"].startswith("ra_")
-        and artifact["content_sha256"]
         and artifact["dependencies"] == []
+        and set(artifact)
+        == {
+            "runtime_artifact_id",
+            "logical_type",
+            "payload_kind",
+            "package",
+            "runtime_path",
+            "content_bytes",
+            "dependencies",
+            "unresolved_dependencies",
+        }
         for artifact in catalog["artifacts"]
     )
+
+
+def test_desktop_player_keeps_project_content_in_native_package(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    final_dir = tmp_path / "dist"
+    data_root = _prepare_runtime_catalog_inputs(builder, final_dir)
+    bootstrap_source = tmp_path / "bootstrap.pyd"
+    python_source = tmp_path / "python313.dll"
+    bootstrap_source.write_bytes(b"bootstrap")
+    python_source.write_bytes(b"python")
+    write_pack(
+        (
+            ("_InfernuxBootstrap.pyd", bootstrap_source),
+            ("python313.dll", python_source),
+        ),
+        data_root / "Bootstrap.inxrt",
+    )
+    (data_root / "BuildManifest.json").write_text(
+        json.dumps({"scenes": ["Assets/Main.scene"]}), encoding="utf-8"
+    )
+    builder._write_payload_manifest(str(final_dir))
+
+    builder._materialize_desktop_player_layout(str(final_dir))
+    builder._audit_direct_player_layout(str(final_dir))
+
+    assert (data_root / "Runtime" / "_InfernuxBootstrap.pyd").read_bytes() == b"bootstrap"
+    assert (data_root / "Runtime" / "python313.dll").read_bytes() == b"python"
+    assert (data_root / "Runtime" / "Infernux" / "resources" / "runtime.bin").read_bytes() == b"runtime"
+    assert not (data_root / "Bootstrap.inxrt").exists()
+    assert not (data_root / builder._RUNTIME_ARCHIVE_FILENAME).exists()
+    assert (data_root / builder._CONTENT_ARCHIVE_FILENAME).is_file()
+    assert (data_root / builder._ASSET_CATALOG_ARCHIVE_FILENAME).is_file()
+    assert (data_root / builder._PLAYER_PACKAGE_INDEX_FILENAME).is_file()
+    assert not (data_root / "Library").exists()
+    assert not (data_root / "BuildManifest.json").exists()
+    assert not (data_root / "RuntimeAssets").exists()
+    assert not (data_root / "Cache").exists()
+    catalog = _read_runtime_catalog(data_root, builder)
+    assert json.loads(
+        read_entry(
+            data_root / builder._ASSET_CATALOG_ARCHIVE_FILENAME,
+            "BuildManifest.json",
+        ).decode("utf-8")
+    )["scenes"] == ["Assets/Main.scene"]
+    assert len(catalog["packages"]) == 1
+    assert Path(catalog["packages"][0]["path"]).name == "Content.inxpkg"
+    manifest = json.loads(
+        (data_root / builder._PLAYER_MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+    assert manifest["product"]["layout"] == "single_executable_native_packages"
+    package_index = (data_root / builder._PLAYER_PACKAGE_INDEX_FILENAME).read_text(
+        encoding="ascii"
+    )
+    assert "content\t" in package_index
+    assert "catalog\t" in package_index
+    assert "runtime\t" not in package_index
+
+
+def test_payload_manifest_supports_platform_native_player_host(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    final_dir = tmp_path / "dist"
+    data_root = _prepare_runtime_catalog_inputs(
+        builder,
+        final_dir,
+        include_runtime=False,
+        include_executable=False,
+    )
+    host = {
+        "identity": "android-sdl-python-player-host",
+        "entry_point": "com.infernux.bootstrap/.InfernuxActivity",
+        "platform": "android",
+        "architecture": "x86_64",
+    }
+
+    builder._write_payload_manifest(
+        str(final_dir),
+        platform_host=host,
+        include_runtime_archive=False,
+    )
+
+    catalog = _read_runtime_catalog(data_root, builder)
+    manifest = json.loads(
+        (data_root / "Player.inxmanifest").read_text(encoding="utf-8")
+    )
+    package_index = (data_root / "PackageIndex.inxmanifest").read_text(
+        encoding="ascii"
+    )
+    assert catalog["player_host"] == host
+    assert [record["path"] for record in catalog["packages"]] == [
+        "TestGame_Data/Content.inxpkg"
+    ]
+    assert manifest["product"]["layout"] == "platform_native_packages"
+    assert manifest["product"]["entry_points"] == [host["entry_point"]]
+    assert "content\t" in package_index
+    assert "catalog\t" in package_index
+    assert "runtime\t" not in package_index
 
 
 def test_payload_manifest_rejects_direct_documents_after_dependency_reads(
@@ -4462,7 +5812,7 @@ def test_payload_manifest_rejects_direct_documents_after_dependency_reads(
     final_dir = tmp_path / "dist"
     data_root = final_dir / "TestGame_Data"
     data_root.mkdir(parents=True)
-    (final_dir / "TestGame.exe").write_bytes(b"Infernux Player")
+    _write_player_executable(final_dir)
 
     sources = tmp_path / "catalog-payloads"
     sources.mkdir()
@@ -4607,48 +5957,43 @@ class TestGameBuilderOutputSafety:
         boot_path = builder._generate_boot_script()
         boot_bytes = Path(boot_path).read_bytes()
         assert b"\x00" not in boot_bytes
-        assert b"\\x00" in boot_bytes
         boot_source = boot_bytes.decode("utf-8")
         compile(boot_source, boot_path, "exec")
         assert "import json" not in boot_source
         assert "import pathlib" not in boot_source
         assert "from pathlib" not in boot_source
         assert "import traceback" not in boot_source
-        assert "_DEBUG_MODE = True" in boot_source
-        assert 'os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] = "1" if _DEBUG_MODE else "0"' in boot_source
+        assert '_DEBUG_MODE = os.environ["_INFERNUX_PLAYER_DEBUG_BUILD"] == "1"' in boot_source
+        assert boot_source.index("_DATA_DIR = prepare_platform_player(") < boot_source.index("_DEBUG_MODE =")
         assert 'os.environ["PYTHONDONTWRITEBYTECODE"] = "1"' in boot_source
         assert 'os.environ["_INFERNUX_PLAYER_DATA_ROOT"] = _DATA_ROOT' in boot_source
+        assert (
+            'os.environ["_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT"] = '
+            '_PLAYER_PERSISTENT_DATA_ROOT'
+        ) in boot_source
         assert "sys.dont_write_bytecode = True" in boot_source
         assert 'os.environ["_INFERNUX_PACKAGED_RESOURCE_ROOT"]' in boot_source
-        assert '_RUNTIME_ARCHIVE = os.path.join(_DATA_ROOT, "Runtime.inxrt")' in boot_source
+        assert "_CORE_RUNTIME_DIR = _RUNTIME_ROOT" in boot_source
+        assert "if not os.path.isdir(_CORE_RUNTIME_DIR):" in boot_source
         assert '"stdlib"' in boot_source
         assert '_STDLIB_RUNTIME_DIR' in boot_source
         assert 'os.add_dll_directory(_dll_dir)' in boot_source
-        assert '_CONTENT_ARCHIVE = os.path.join(_DATA_ROOT, "Content.inxpkg")' in boot_source
-        assert '_PARALLEL_ARCHIVE = os.path.join(_DATA_ROOT, "Modules", "Parallel.inxmod")' in boot_source
-        assert 'class _ParallelRuntimeFinder:' in boot_source
-        assert '_mark_boot_phase("parallel_deferred")' in boot_source
-        assert '_RUNTIME_MODULE_DIR = _extract_cached_archive(' in boot_source
-        assert 'if os.path.isfile(_PARALLEL_ARCHIVE):\n    _RUNTIME_MODULE_DIR = _extract_cached_archive(' not in boot_source
-        assert '_index_path = os.path.join(_DATA_ROOT, "PackageIndex.inxmanifest")' in boot_source
-        assert "_PLAYER_PACKAGE_INDEX = _load_player_package_index()" in boot_source
-        assert "for _package_kind, (_package_hash, _package_bytes) in _PLAYER_PACKAGE_INDEX.items():" in boot_source
-        assert '_source_marker = os.path.join(_cache_root, ".source")' in boot_source
-        assert "_archive_stat.st_mtime_ns" not in boot_source
-        assert '_source_identity = _expected_hash + "\\n" + str(_archive_stat.st_size)' in boot_source
-        assert "_extracted_manifest = dict(" in boot_source
-        assert "identity does not match its build index" in boot_source
+        assert "from Infernux.engine.platform_player_bootstrap import prepare_platform_player" in boot_source
+        assert "_DATA_DIR = prepare_platform_player(" in boot_source
+        assert '_RUNTIME_MODULE_DIR = os.path.join(_DATA_ROOT, "Modules", "Parallel")' in boot_source
+        assert 'if os.path.isdir(_RUNTIME_MODULE_DIR):' in boot_source
+        assert '_mark_boot_phase("parallel_ready")' in boot_source
+        assert 'class _ParallelRuntimeFinder:' not in boot_source
+        assert "_extract_cached_archive" not in boot_source
+        assert "PackageIndex.inxmanifest" not in boot_source
+        assert "_validate_native_archive_paths" not in boot_source
         assert '"_INFERNUX_PLAYER_DATA_ROOT"' in boot_source
-        assert "_extract_cached_archive" in boot_source
-        assert "_NATIVE_PACK._inxpack_extract" in boot_source
         assert "_INFERNUX_PLAYER_" in boot_source
-        assert "_ARCHIVE_SHA256" in boot_source
-        assert "_ARCHIVE_BYTES" in boot_source
+        assert "_ARCHIVE_SHA256" not in boot_source
+        assert "_ARCHIVE_BYTES" not in boot_source
         assert '_GAME_NAME = _EXE_STEM or "InfernuxPlayer"' in boot_source
         assert 'if os.environ.get("_INFERNUX_PLAYER_CONTROL_FILE"):' in boot_source
-        pre_native_boot = boot_source.split(
-            "_CORE_RUNTIME_DIR = _extract_cached_archive", 1
-        )[0]
+        pre_native_boot = boot_source.split("_CORE_RUNTIME_DIR = _RUNTIME_ROOT", 1)[0]
         assert "from Infernux" not in pre_native_boot
         assert "import Infernux" not in pre_native_boot
         assert "os.path.dirname(sys.executable)" in pre_native_boot
@@ -4664,19 +6009,8 @@ class TestGameBuilderOutputSafety:
         assert "from Infernux.lib import _Infernux" not in boot_source
         assert '_INFERNUX_LIB_DIR = os.path.join(_CORE_RUNTIME_DIR, "Infernux", "lib")' in boot_source
         assert 'os.environ["INFERNUX_NATIVE_MODULE_DIR"] = _INFERNUX_LIB_DIR' in boot_source
-        assert "os.O_EXCL" in boot_source
-        assert "Timed out waiting for Player cache publication" in boot_source
-        expected_cache_helper = inspect.getsource(
-            game_builder_module._publish_player_cache
-        ).strip()
-        assert "json." not in expected_cache_helper
-        assert 'str(os.getpid()).encode("ascii")' in expected_cache_helper
-        assert expected_cache_helper in boot_source.replace("\r\n", "\n")
-        assert "_NATIVE_PACK._inxplayer_process_is_alive(pid)" in boot_source
-        assert "os.kill(pid, 0)" not in boot_source
-        assert "_remove_player_path(cache_root)" in boot_source
-        assert "_copy_player_file_atomic(" in boot_source
-        assert "os.replace(lock_path, stale_path)" in boot_source
+        assert "PlayerCache" not in boot_source
+        assert "cache.complete" not in boot_source
         assert boot_source.index("import _InfernuxBootstrap as _NATIVE_PACK") < boot_source.index(
             "from Infernux.engine import run_player"
         )
@@ -4733,6 +6067,22 @@ class TestGameBuilderOutputSafety:
         assert output_dir.is_dir()
         assert list(output_dir.iterdir()) == []
 
+    def test_clean_output_propagates_directory_removal_failure(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "build_output"
+        nested_dir = output_dir / "Data"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "stale.txt").write_text("stale", encoding="utf-8")
+        builder = _make_builder(tmp_path, output_dir)
+        builder._write_output_marker(str(output_dir))
+
+        def reject_removal(_path):
+            raise PermissionError("directory is locked")
+
+        monkeypatch.setattr(game_builder_module.shutil, "rmtree", reject_removal)
+
+        with pytest.raises(PermissionError, match="directory is locked"):
+            builder._clean_output()
+
     def test_write_output_marker_creates_reusable_build_marker(self, tmp_path):
         output_dir = tmp_path / "build_output"
         output_dir.mkdir()
@@ -4761,6 +6111,34 @@ class TestGameBuilderOutputSafety:
 
         assert list(output_dir.iterdir()) == []
 
+    @pytest.mark.parametrize("same_project,same_name", [(True, True), (False, True), (True, False)])
+    def test_sealed_output_manifest_controls_rebuild_ownership(self, tmp_path, same_project, same_name):
+        output_dir = tmp_path / "build_output"
+        builder = _make_builder(tmp_path, output_dir)
+        data_root = output_dir / "TestGame_Data"
+        data_root.mkdir(parents=True)
+        source = tmp_path / "BuildManifest.json"
+        source.write_text(json.dumps({"build_output": {
+            "tool": "Infernux",
+            "project_name": builder.project_name if same_name else "OtherGame",
+            "project_identity": game_builder_module.path_fingerprint(builder.project_path) if same_project else "0" * 64,
+        }}), encoding="utf-8")
+        metadata = write_pack((("BuildManifest.json", source),), data_root / "AssetCatalog.inxcat")
+        (data_root / "PackageIndex.inxmanifest").write_text(
+            f"INFERNUX_PLAYER_PACKAGE_INDEX\ncatalog\t{metadata['archive_sha256']}\t{metadata['archive_bytes']}\n",
+            encoding="ascii",
+        )
+        sentinel = output_dir / "preserve.bin"
+        sentinel.write_bytes(b"previous product")
+
+        if same_project and same_name:
+            builder._validate_output_directory()
+        else:
+            with pytest.raises(BuildOutputDirectoryError, match="must be empty"):
+                builder._validate_output_directory()
+        assert sentinel.read_bytes() == b"previous product"
+        assert not (data_root / "BuildManifest.json").exists()
+
     def test_foreign_output_marker_does_not_authorize_cleanup(self, tmp_path):
         output_dir = tmp_path / "build_output"
         output_dir.mkdir()
@@ -4781,145 +6159,6 @@ class TestGameBuilderOutputSafety:
 
         with pytest.raises(BuildOutputDirectoryError, match="must be empty"):
             builder._clean_output()
-
-
-@pytest.fixture
-def native_player_process_probe(monkeypatch):
-    calls = []
-
-    class _NativePack:
-        @staticmethod
-        def _inxplayer_process_is_alive(pid):
-            calls.append(pid)
-            return pid == os.getpid()
-
-    monkeypatch.setattr(game_builder_module, "_NATIVE_PACK", _NativePack, raising=False)
-    return calls
-
-
-def test_player_cache_publication_is_safe_for_competing_processes(
-    tmp_path, native_player_process_probe
-):
-    expected_hash = "a" * 64
-    cache_root = tmp_path / "cache" / "runtime-a"
-    barrier = threading.Barrier(2)
-    results: list[str] = []
-    errors: list[BaseException] = []
-
-    def publish(index: int) -> None:
-        temporary = tmp_path / f"runtime-{index}.tmp"
-        temporary.mkdir()
-        (temporary / ".ready").write_text(expected_hash, encoding="ascii")
-        (temporary / "payload.bin").write_bytes(b"same payload")
-        try:
-            barrier.wait(timeout=5)
-            results.append(
-                game_builder_module._publish_player_cache(
-                    str(temporary), str(cache_root), expected_hash
-                )
-            )
-        except BaseException as exc:
-            errors.append(exc)
-
-    workers = [threading.Thread(target=publish, args=(index,)) for index in range(2)]
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=10)
-
-    assert not errors
-    assert results == [str(cache_root), str(cache_root)]
-    assert (cache_root / ".ready").read_text(encoding="ascii") == expected_hash
-    assert (cache_root / "payload.bin").read_bytes() == b"same payload"
-    assert not (tmp_path / "cache" / "runtime-a.lock").exists()
-
-
-def test_player_cache_reclaims_stale_lock(tmp_path, native_player_process_probe):
-    expected_hash = "b" * 64
-    cache_root = tmp_path / "cache" / "runtime-b"
-    lock_path = Path(str(cache_root) + ".lock")
-    lock_path.parent.mkdir(parents=True)
-    lock_path.write_text(str(2**31 - 1), encoding="ascii")
-    stale_time = time.time() - 60
-    os.utime(lock_path, (stale_time, stale_time))
-
-    temporary = tmp_path / "runtime-b.tmp"
-    temporary.mkdir()
-    (temporary / ".ready").write_text(expected_hash, encoding="ascii")
-    (temporary / "payload.bin").write_bytes(b"recovered payload")
-
-    published = game_builder_module._publish_player_cache(
-        str(temporary),
-        str(cache_root),
-        expected_hash,
-        timeout_seconds=0.5,
-        stale_lock_seconds=0.01,
-    )
-
-    assert published == str(cache_root)
-    assert (cache_root / "payload.bin").read_bytes() == b"recovered payload"
-    assert not lock_path.exists()
-
-
-def test_player_cache_default_stale_window_precedes_timeout(
-    tmp_path, native_player_process_probe
-):
-    helper_signature = inspect.signature(game_builder_module._publish_player_cache)
-    default_timeout = helper_signature.parameters["timeout_seconds"].default
-    default_stale_window = helper_signature.parameters["stale_lock_seconds"].default
-    assert default_stale_window <= 1.0
-    assert default_stale_window < default_timeout
-
-    expected_hash = "d" * 64
-    cache_root = tmp_path / "cache" / "runtime-d"
-    lock_path = Path(str(cache_root) + ".lock")
-    lock_path.parent.mkdir(parents=True)
-    lock_path.write_text(str(2**31 - 1), encoding="ascii")
-    stale_time = time.time() - 2
-    os.utime(lock_path, (stale_time, stale_time))
-
-    temporary = tmp_path / "runtime-d.tmp"
-    temporary.mkdir()
-    (temporary / ".ready").write_text(expected_hash, encoding="ascii")
-
-    # Keep the test bounded while leaving stale_lock_seconds at its default.
-    published = game_builder_module._publish_player_cache(
-        str(temporary),
-        str(cache_root),
-        expected_hash,
-        timeout_seconds=1.0,
-    )
-
-    assert published == str(cache_root)
-    assert not lock_path.exists()
-
-
-def test_player_cache_does_not_reclaim_live_lock(tmp_path, native_player_process_probe):
-    expected_hash = "c" * 64
-    cache_root = tmp_path / "cache" / "runtime-c"
-    lock_path = Path(str(cache_root) + ".lock")
-    lock_path.parent.mkdir(parents=True)
-    lock_path.write_text(str(os.getpid()), encoding="ascii")
-    stale_time = time.time() - 60
-    os.utime(lock_path, (stale_time, stale_time))
-
-    temporary = tmp_path / "runtime-c.tmp"
-    temporary.mkdir()
-    (temporary / ".ready").write_text(expected_hash, encoding="ascii")
-
-    try:
-        with pytest.raises(RuntimeError, match="Timed out waiting"):
-            game_builder_module._publish_player_cache(
-                str(temporary),
-                str(cache_root),
-                expected_hash,
-                timeout_seconds=0.05,
-                stale_lock_seconds=0.01,
-            )
-        assert lock_path.exists()
-        assert os.getpid() in native_player_process_probe
-    finally:
-        lock_path.unlink(missing_ok=True)
 
 
 class TestGameBuilderDependencyCollection:
@@ -5123,8 +6362,81 @@ class TestGameBuilderDependencyCollection:
 
         assert deps == ["llvmlite", "numba", "numpy"]
 
+    def test_collect_user_dependencies_excludes_both_public_engine_names(self, tmp_path):
+        project_root = _make_project(tmp_path)
+        _write_asset_script(project_root, "public_api.py", "import infernux as inx\nfrom Infernux import Application\n")
+        builder = GameBuilder(str(project_root), str(tmp_path / "build_output"))
+        assert builder._collect_user_dependencies() == []
+
+    def test_collect_user_dependencies_rejects_invalid_project_script(self, tmp_path):
+        project_root = _make_project(tmp_path)
+        _write_asset_script(project_root, "broken.py", "def broken(:\n")
+        script_path = project_root / "Assets" / "broken.py"
+        builder = GameBuilder(
+            str(project_root),
+            str(tmp_path / "build_output"),
+            game_name="TestGame",
+        )
+
+        with pytest.raises(SyntaxError) as exc_info:
+            builder._collect_user_dependencies()
+
+        assert exc_info.value.filename == str(script_path)
+
+    def test_collect_user_dependencies_rejects_missing_packages(self, tmp_path, monkeypatch):
+        project_root = _make_project(tmp_path)
+        _write_asset_script(
+            project_root,
+            "missing_dependency.py",
+            "import absent_first\nimport absent_second\n",
+        )
+        builder = GameBuilder(
+            str(project_root),
+            str(tmp_path / "build_output"),
+            game_name="TestGame",
+        )
+        monkeypatch.setattr(importlib.util, "find_spec", lambda _name: None)
+
+        with pytest.raises(
+            RuntimeError,
+            match="Player build dependencies are not installed: absent_first, absent_second",
+        ):
+            builder._collect_user_dependencies()
+
 
 class TestGameBuilderAutoParallelExport:
+    def test_compile_user_scripts_propagates_bytecode_failure(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "build_output"
+        assets_dir = output_dir / "Data" / "Assets"
+        assets_dir.mkdir(parents=True)
+        script_path = assets_dir / "gameplay.py"
+        script_path.write_text("score = 1\n", encoding="utf-8")
+
+        builder = _make_builder(tmp_path, output_dir)
+        _bind_staged_script_to_asset_index(
+            builder,
+            output_dir,
+            script_path,
+            guid="gameplay-script-guid",
+        )
+        failure = py_compile.PyCompileError(
+            SyntaxError,
+            SyntaxError("compiler rejected source"),
+            str(script_path),
+            "compiler rejected source",
+        )
+
+        def reject_compile(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(game_builder_module.py_compile, "compile", reject_compile)
+
+        with pytest.raises(py_compile.PyCompileError):
+            builder._compile_user_scripts(str(output_dir))
+
+        assert script_path.is_file()
+        assert not (assets_dir / "gameplay.pyc").exists()
+
     def test_compile_user_scripts_embeds_auto_parallel_without_sidecar(self, tmp_path):
         output_dir = tmp_path / "build_output"
         assets_dir = output_dir / "Data" / "Assets"
@@ -5326,6 +6638,7 @@ class TestGameBuilderAutoParallelExport:
             builder._collect_user_dependencies()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows SDK environment")
 class TestNuitkaWindowsSdkEnvironment:
     def test_augment_windows_sdk_environment_adds_kits_tools_and_paths(self, tmp_path, monkeypatch):
         monkeypatch.setattr(nuitka_builder_module.sys, "platform", "win32")

@@ -20,12 +20,6 @@ _SKIP = {
     "project_templates",
 }
 _SYNC_MANIFEST = ".InfernuxResources.json"
-_SYNC_SCHEMA = 1
-
-
-def _ignored_resource_entries(_directory: str, entries: list[str]) -> list[str]:
-    """Keep package/build metadata out of the project Library cache."""
-    return [entry for entry in entries if entry in _SKIP or entry.endswith(".meta")]
 
 
 def _resource_snapshot(root: str) -> dict[str, dict[str, int]]:
@@ -34,6 +28,11 @@ def _resource_snapshot(root: str) -> dict[str, dict[str, int]]:
         folders[:] = sorted(folder for folder in folders if folder not in _SKIP)
         for filename in sorted(files):
             if filename in _SKIP or filename.endswith(".meta"):
+                continue
+            # Direct .inxpkg children are wheel-mandatory packages.  Plugin
+            # startup consumes them from the installed Python resources root;
+            # they are not ordinary project-visible engine resources.
+            if directory == root and filename.casefold().endswith(".inxpkg"):
                 continue
             source = os.path.join(directory, filename)
             relative = relative_path(source, root)
@@ -57,8 +56,6 @@ def _read_sync_manifest(path: str) -> dict[str, dict[str, int]]:
     try:
         with open(path, "r", encoding="utf-8") as stream:
             document = json.load(stream)
-        if document.get("schema") != _SYNC_SCHEMA:
-            return {}
         entries = document.get("entries")
         return entries if isinstance(entries, dict) else {}
     except (OSError, ValueError, TypeError):
@@ -73,7 +70,7 @@ def _write_sync_manifest(path: str, entries: dict[str, dict[str, int]]) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
             json.dump(
-                {"schema": _SYNC_SCHEMA, "entries": entries},
+                {"entries": entries},
                 stream,
                 ensure_ascii=False,
                 separators=(",", ":"),

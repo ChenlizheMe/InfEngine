@@ -103,7 +103,6 @@ bool MaterialUBO::Create(VmaAllocator allocator, VkDevice device, const Material
     // Zero-initialize
     std::memset(m_mappedData, 0, m_size);
 
-    INXLOG_DEBUG("Created MaterialUBO with size ", m_size, " bytes");
     return true;
 }
 
@@ -395,7 +394,6 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
         if (it->second->layout == requiredLayout && needsMaterialUBO == hasMaterialUBO &&
             needsVertexMaterialUBO == hasVertexMaterialUBO && needsBindlessTextureUBO == hasBindlessTextureUBO &&
             hasSameTextureABI) {
-            INXLOG_DEBUG("GetOrCreateDescriptorSet: REUSING cached descriptor for '", materialName, "'");
             return it->second.get();
         } else {
             INXLOG_INFO("Material '", materialName, "' descriptor requirements changed, recreating descriptor set");
@@ -573,10 +571,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
 
                     matDescSet->textureBindings[binding.binding] = resolvedBinding;
 
-                    if (resolvedExplicit) {
-                        INXLOG_DEBUG("Bound texture '", *texturePath, "' to binding ", binding.binding,
-                                     " for material '", materialName, "'");
-                    } else if (resolveStatus == TextureResolveStatus::Failed) {
+                    if (!resolvedExplicit && resolveStatus == TextureResolveStatus::Failed) {
                         INXLOG_WARN("Failed to resolve texture '", *texturePath, "' for material '", materialName,
                                     "' property '", propName, "' — binding default texture");
                     }
@@ -598,7 +593,6 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
     MaterialDescriptorSet *result = matDescSet.get();
     m_descriptorSets[materialName] = std::move(matDescSet);
 
-    INXLOG_DEBUG("Created descriptor set for material: ", materialName);
     return result;
 }
 
@@ -615,8 +609,6 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
     bufferInfos.reserve(bindings.size());
     imageInfos.reserve(bindings.size());
 
-    INXLOG_DEBUG("UpdateDescriptorBindings: ", bindings.size(), " reflected bindings");
-
     for (const auto &binding : bindings) {
         // Only write set 0 bindings into the material descriptor set.
         // Set 1 (per-view shadow map) is handled separately per render graph.
@@ -626,8 +618,6 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
 
         if (binding.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
             VkDescriptorBufferInfo bufferInfo{};
-
-            INXLOG_DEBUG("  Binding ", binding.binding, ": UBO");
 
             // Set 0 is exclusively material-owned. Camera and lighting data
             // belong to the active RenderView descriptor set (set 1).
@@ -981,8 +971,6 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                                           !HasSameGpuBinding(previous->second, resolvedBinding);
                         candidateBindings[binding.binding] = resolvedBinding;
                     }
-                    INXLOG_DEBUG("Cleared texture binding ", binding.binding, " for material '", materialName,
-                                 "' property '", propName, "' -> rebound default texture");
                     break;
                 }
 
@@ -1008,10 +996,6 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                     bindingsChanged = bindingsChanged || previous == candidateBindings.end() ||
                                       !HasSameGpuBinding(previous->second, resolvedBinding);
                     candidateBindings[binding.binding] = resolvedBinding;
-                    if (resolvedExplicit) {
-                        INXLOG_DEBUG("Re-bound texture '", *texturePath, "' to binding ", binding.binding,
-                                     " for material '", materialName, "'");
-                    }
                 } else {
                     if (resolveStatus == TextureResolveStatus::Failed) {
                         INXLOG_WARN("Failed to resolve texture '", *texturePath, "' for material '", materialName,

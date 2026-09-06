@@ -19,7 +19,6 @@ from .shortcuts import KeyChord, ShortcutBinding
 
 
 SHORTCUT_PROFILES_SCHEMA = "infernux.shortcut_profiles"
-SHORTCUT_PROFILES_VERSION = 1
 DEFAULT_PROFILE_ID = "default"
 DEFAULT_PROFILE_NAME = "Default"
 
@@ -660,7 +659,6 @@ class ShortcutProfileModel:
     ) -> dict[str, Any]:
         return {
             "schema": SHORTCUT_PROFILES_SCHEMA,
-            "version": SHORTCUT_PROFILES_VERSION,
             "active_profile_id": active_profile_id,
             "defaults": [
                 {
@@ -695,15 +693,11 @@ class ShortcutProfileModel:
     ) -> tuple[dict[str, _ProfileState], str]:
         root = self._require_object(
             payload,
-            {"schema", "version", "active_profile_id", "defaults", "profiles"},
+            {"schema", "active_profile_id", "defaults", "profiles"},
             "shortcut profiles",
         )
         if root["schema"] != SHORTCUT_PROFILES_SCHEMA:
             raise ValueError("shortcut profiles schema is invalid")
-        if type(root["version"]) is not int or root["version"] != SHORTCUT_PROFILES_VERSION:
-            raise ValueError(
-                f"shortcut profiles require version {SHORTCUT_PROFILES_VERSION}"
-            )
 
         defaults = self._require_array(root["defaults"], "shortcut profile defaults")
         persisted_default_ids: set[str] = set()
@@ -827,7 +821,6 @@ __all__ = [
     "DEFAULT_PROFILE_ID",
     "DEFAULT_PROFILE_NAME",
     "SHORTCUT_PROFILES_SCHEMA",
-    "SHORTCUT_PROFILES_VERSION",
     "ShortcutBindingSnapshot",
     "ShortcutOverrideSnapshot",
     "ShortcutProfileDiff",

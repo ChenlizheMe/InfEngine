@@ -8,35 +8,15 @@ from Infernux.debug import Debug
 
 
 def _safe_sequence(values):
-    if values is None:
-        return []
-    if isinstance(values, list):
-        return values
-    try:
-        return list(values)
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return []
+    return list(values)
 
 
 def _get_components_safe(obj):
-    if obj is None:
-        return []
-    try:
-        return _safe_sequence(obj.get_components())
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return []
+    return _safe_sequence(obj.get_components())
 
 
 def _get_py_components_safe(obj):
-    if obj is None:
-        return []
-    try:
-        return _safe_sequence(obj.get_py_components())
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return []
+    return _safe_sequence(obj.get_py_components())
 
 
 def _get_component_script_error(comp, asset_database):

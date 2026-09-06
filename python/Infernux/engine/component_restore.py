@@ -1212,10 +1212,8 @@ def resolve_script_from_guid(
 ) -> Optional[str]:
     """Resolve a script GUID to an absolute filesystem path.
 
-    Handles:
-    - Normal editor look-up via AssetDatabase
-    - Packaged-build ``.py → .pyc`` fallback
-    - Build-time GUID manifest fallback
+    Editor projects resolve through AssetDatabase; cooked Players resolve
+    through their build-time GUID table.
     """
     script_path = None
 
@@ -1224,7 +1222,6 @@ def resolve_script_from_guid(
         if raw:
             script_path = resolve_script_path(raw)
 
-    # Packaged-build fallback: use build-time GUID manifest
     if not script_path and script_guid:
         script_path = resolve_guid_to_path(script_guid)
 

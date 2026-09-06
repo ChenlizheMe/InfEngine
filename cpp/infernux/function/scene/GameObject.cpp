@@ -10,9 +10,9 @@
 #include "function/audio/AudioSource.h"
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
-#include <InxLog.h>
 #include <algorithm>
 #include <atomic>
+#include <core/log/InxLog.h>
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -504,6 +504,10 @@ Component *GameObject::AttachComponent(std::unique_ptr<Component> component, boo
 {
     if (!component)
         return nullptr;
+    if (dynamic_cast<PyComponentProxy *>(component.get()) != nullptr &&
+        (!m_scene || !m_scene->UsesRuntimeLifecycleScheduler())) {
+        throw std::runtime_error("Python components require the RuntimeExecutionScheduler Scene bridge");
+    }
     const auto blockers =
         GetAttachmentBlockers(component->GetConstraintTypeId(), component->GetTypeName(),
                               component->GetComponentTypeConstraints(), nullptr, enforceUserAddable, true);
@@ -614,6 +618,8 @@ Component *GameObject::AddPreparedPythonComponent(std::unique_ptr<Component> com
 {
     if (!component || dynamic_cast<PyComponentProxy *>(component.get()) == nullptr)
         throw std::invalid_argument("prepared component must be a PyComponentProxy");
+    if (!m_scene || !m_scene->UsesRuntimeLifecycleScheduler())
+        throw std::runtime_error("Python components require the RuntimeExecutionScheduler Scene bridge");
 
     const auto blockers = GetAttachmentBlockers(component->GetConstraintTypeId(), component->GetTypeName(),
                                                 component->GetComponentTypeConstraints(), nullptr, false, false);
@@ -963,11 +969,8 @@ void GameObject::Update(float deltaTime)
         // invoking the same Python proxy a second time.
         if (m_scene && m_scene->UsesRuntimeLifecycleScheduler() && comp->UsesRuntimeLifecycleScheduler())
             continue;
-        if (comp->IsEnabled()) {
+        if (comp->IsEnabled())
             comp->Update(deltaTime);
-        } else {
-            comp->TickWhileDisabledUpdate(deltaTime);
-        }
     }
 }
 
@@ -982,11 +985,8 @@ void GameObject::FixedUpdate(float fixedDeltaTime)
             continue;
         if (m_scene && m_scene->UsesRuntimeLifecycleScheduler() && comp->UsesRuntimeLifecycleScheduler())
             continue;
-        if (comp->IsEnabled()) {
+        if (comp->IsEnabled())
             comp->FixedUpdate(fixedDeltaTime);
-        } else {
-            comp->TickWhileDisabledFixedUpdate(fixedDeltaTime);
-        }
     }
 }
 
@@ -1001,11 +1001,8 @@ void GameObject::LateUpdate(float deltaTime)
             continue;
         if (m_scene && m_scene->UsesRuntimeLifecycleScheduler() && comp->UsesRuntimeLifecycleScheduler())
             continue;
-        if (comp->IsEnabled()) {
+        if (comp->IsEnabled())
             comp->LateUpdate(deltaTime);
-        } else {
-            comp->TickWhileDisabledLateUpdate(deltaTime);
-        }
     }
 }
 

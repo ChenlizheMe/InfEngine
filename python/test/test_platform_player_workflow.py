@@ -1,0 +1,475 @@
+from __future__ import annotations
+
+from pathlib import Path
+import os
+import shutil
+import subprocess
+import sys
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = ROOT / ".github" / "workflows" / "platform-player.yml"
+ANDROID_DRIVER = ROOT / "scripts" / "acceptance" / "android_emulator_ci.sh"
+
+
+def _text() -> str:
+    return WORKFLOW.read_text(encoding="utf-8")
+
+
+def _android_driver_text() -> str:
+    return ANDROID_DRIVER.read_text(encoding="utf-8")
+
+
+def test_android_ci_uses_pinned_gradle_without_unrelated_example_wrappers():
+    text = _text()
+    setup = text.split("- uses: gradle/actions/setup-gradle@v4", 1)[1].split("- name:", 1)[0]
+    assert 'gradle-version: "8.12"' in setup
+    assert "validate-wrappers: false" in setup
+    assert "gradlew" not in _android_driver_text()
+
+
+def test_ci_software_driver_is_included_in_the_staged_wheel(tmp_path):
+    cmake = shutil.which("cmake")
+    if cmake is None:
+        pytest.skip("CMake is required to exercise its install hook")
+    project = tmp_path / "project"
+    driver = project / "out/toolchains/windows-swiftshader/runtime/vk_swiftshader.dll"
+    driver.parent.mkdir(parents=True)
+    driver.write_bytes(b"software driver fixture")
+    (project / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.25)\n"
+        "project(Infernux LANGUAGES NONE)\n"
+        'set(INFERNUX_PYTHON_INSTALL_COMPONENT "PythonWheel")\n'
+        'install(FILES CMakeLists.txt DESTINATION . COMPONENT PythonWheel)\n',
+        encoding="utf-8",
+    )
+    build = tmp_path / "build"
+    hook = ROOT / "scripts/acceptance/windows_software_vulkan.cmake"
+    subprocess.run([cmake, "-S", str(project), "-B", str(build),
+                    f"-DCMAKE_PROJECT_Infernux_INCLUDE={hook}"], check=True, capture_output=True)
+    destination = tmp_path / "wheel-source"
+    subprocess.run([cmake, "--install", str(build), "--prefix", str(destination),
+                    "--component", "PythonWheel"], check=True, capture_output=True)
+    assert (destination / "python/Infernux/lib/vulkan-1.dll").read_bytes() == driver.read_bytes()
+    # Reconfiguring for delivery must remove the test-only install rule.
+    subprocess.run([cmake, "-S", str(project), "-B", str(build),
+                    "-U", "CMAKE_PROJECT_Infernux_INCLUDE"], check=True, capture_output=True)
+    public_destination = tmp_path / "public-wheel-source"
+    subprocess.run([cmake, "--install", str(build), "--prefix", str(public_destination),
+                    "--component", "PythonWheel"], check=True, capture_output=True)
+    assert (public_destination / "CMakeLists.txt").is_file()
+    assert not (public_destination / "python/Infernux/lib/vulkan-1.dll").exists()
+
+
+def test_desktop_distribution_disables_the_test_driver_install_hook():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    delivery = workflow.split("- name: Build Windows editor wheel and Hub distribution", 1)[1]
+    assert delivery.index("-U CMAKE_PROJECT_Infernux_INCLUDE") < delivery.index(
+        "cmake --build --preset windows-msvc-wheel"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Android CI driver runs on Linux")
+@pytest.mark.parametrize("explicit", (False, True))
+def test_android_driver_shares_tool_state_between_player_and_instrumentation(
+    tmp_path, explicit
+):
+    driver = tmp_path / "android-driver.sh"
+    driver.write_text(_android_driver_text(), encoding="utf-8")
+    (tmp_path / "tests/fixtures/multiplatform_player").mkdir(parents=True)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    invocation_log = tmp_path / "invocations.txt"
+    recorder = (
+        '#!/bin/sh\n'
+        'printf "%s|%s|%s\\n" "$0" "${GRADLE_USER_HOME:-}" '
+        '"${ANDROID_USER_HOME:-}" >> "$PROBE_LOG"\n'
+    )
+    for name in ("python", "gradle"):
+        executable = tools / name
+        executable.write_text(recorder, encoding="utf-8")
+        executable.chmod(0o755)
+    environment = dict(os.environ)
+    for name in ("GRADLE_USER_HOME", "ANDROID_USER_HOME"):
+        environment.pop(name, None)
+    environment.update(
+        PATH=str(tools) + os.pathsep + environment["PATH"],
+        PROBE_LOG=str(invocation_log),
+        INFERNUX_ANDROID_RUNTIME=str(tmp_path / "runtime"),
+        INFERNUX_ANDROID_BUILD_CACHE=str(tmp_path / "build-cache"),
+    )
+    expected_cache = str(tmp_path / "out/cache/gradle")
+    expected_state = str(tmp_path / "out/state/android")
+    if explicit:
+        expected_cache = environment["GRADLE_USER_HOME"] = str(tmp_path / "author cache")
+        expected_state = environment["ANDROID_USER_HOME"] = str(tmp_path / "author state")
+    completed = subprocess.run(
+        [shutil.which("bash"), str(driver), str(tools / "python"), "build"],
+        cwd=tmp_path, env=environment, capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    invocations = [line.split("|") for line in invocation_log.read_text().splitlines()]
+    assert [Path(row[0]).name for row in invocations] == ["python", "gradle"]
+    assert [row[1:] for row in invocations] == [[expected_cache, expected_state]] * 2
+
+
+def test_android_ci_caches_the_managed_gradle_location():
+    text = _text()
+    assert text.count("out/cache/gradle/caches") == 2
+    assert text.count("out/cache/gradle/wrapper") == 2
+    assert "~/.gradle" not in text
+
+
+def test_scheduled_android_acceptance_does_not_restore_build_intermediates():
+    workflow = _text()
+    restore = workflow[workflow.index("- name: Restore Android Python runtime and build intermediates") :]
+    restore = restore[:restore.index("- name: Install Linux host dependencies")]
+    assert "if: github.event_name != 'schedule'" in restore
+    save = workflow[workflow.index("- name: Save Android Python runtime and build intermediates") :]
+    save = save[:save.index("- name: Validate Android Player on API 36")]
+    assert "if: github.event_name != 'schedule' && steps.android-build-cache.outputs.cache-hit != 'true'" in save
+
+
+def test_platform_workflow_reuses_repository_build_and_acceptance_entry_points():
+    text = _text() + "\n" + _android_driver_text()
+
+    assert "scripts/acceptance/build_player.py" in text
+    assert "scripts\\acceptance\\windows_player_smoke.py" in text
+    assert "scripts/acceptance/linux_player_smoke.py" in text
+    assert "scripts/acceptance/web_mobile_input_smoke.cjs" in text
+    assert "scripts/acceptance/android_player_smoke.py" in text
+    assert "scripts/acceptance/android_multitouch_smoke.py" in text
+    assert "scripts/setup/build_web_toolchain.sh" in text
+    assert "scripts/setup/build_android_python_runtime.sh" in text
+
+
+def test_android_runtime_builder_creates_build_python_before_cross_build():
+    script = (
+        ROOT / "scripts" / "setup" / "build_android_python_runtime.sh"
+    ).read_text(encoding="utf-8")
+
+    build_python = '\"$python_source/Android/android.py\" build build'
+    cross_python = '\"$python_source/Android/android.py\" build \"$host\"'
+    assert script.index(build_python) < script.index(cross_python)
+
+
+def test_linux_setup_installs_required_shader_reflection_dependency():
+    script = (
+        ROOT / "scripts" / "setup" / "install_linux_dependencies.sh"
+    ).read_text(encoding="utf-8")
+    native_targets = (ROOT / "cmake" / "InfernuxNativeTargets.cmake").read_text(
+        encoding="utf-8"
+    )
+
+    assert "libspirv-cross-c-shared-dev" in script
+    assert "SPIRV-Cross libraries are required" in native_targets
+
+
+def test_windows_native_build_can_load_the_vulkan_linked_module():
+    text = _text()
+    loader_step = text.index(
+        "- name: Provide pinned software Vulkan to the build and Player closure"
+    )
+    build_step = text.index("- name: Build Windows Player runtime")
+
+    assert loader_step < build_step
+    assert 'Copy-Item -LiteralPath $softwareVulkan -Destination "python\\Infernux\\lib\\vulkan-1.dll"' in text[loader_step:build_step]
+    assert (
+        'Copy-Item -LiteralPath $softwareVulkan -Destination '
+        '"out\\build\\windows-msvc-release\\Release\\vulkan-1.dll"'
+        in text[loader_step:build_step]
+    )
+    assert "runtime\\vk_swiftshader_icd.json" in text[loader_step:build_step]
+    assert "VK_DRIVER_FILES=$swiftShaderManifest" in text[loader_step:build_step]
+    assert "CMAKE_PROJECT_Infernux_INCLUDE=$PWD/scripts/acceptance/windows_software_vulkan.cmake" in text
+    install_rule = (ROOT / "scripts/acceptance/windows_software_vulkan.cmake").read_text()
+    assert 'DESTINATION "python/Infernux/lib"' in install_rule
+    assert 'RENAME "vulkan-1.dll"' in install_rule
+    assert "COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}" in install_rule
+
+
+def test_windows_publisher_has_a_system_loader_independent_of_sdk_cache():
+    # Publication imports a staged wheel outside the source/build DLL folders.
+    for name in ("ci.yml", "platform-player.yml"):
+        text = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
+        step = text.split("- name: Install Vulkan Runtime", 1)[1].split("- name:", 1)[0]
+        assert "if:" not in step
+        assert "VulkanRT-$env:VULKAN_SDK_VERSION-Installer.exe" in step
+        assert "-WindowStyle Hidden" in step
+        assert "ExitCode -ne 0" in step
+        assert "-ArgumentList '/auto'" in step
+
+
+def test_platform_workflow_keeps_product_graphics_contracts_explicit():
+    text = (_text() + "\n" + _android_driver_text()).casefold()
+
+    assert "web-wasm32" in text
+    assert "android-x64-emulator" in text
+    assert "api-level: 36" in text
+    assert "arch: x86_64" in text
+    assert '"ndk;27.3.13750724"' in text
+    assert '"ndk;29.0.14206865"' in text
+    assert "-gpu lavapipe " in text
+    assert "swiftshader_indirect" not in text
+    assert "opengl" not in text
+    assert "gles" not in text
+
+
+def test_platform_workflow_is_bounded_and_collects_evidence():
+    text = _text()
+    product_commands = text + "\n" + _android_driver_text()
+
+    assert text.count("timeout-minutes: 120") == 4
+    assert text.count("if: always()") == 5
+    assert "windows-player-build.json" in text
+    assert "windows-player-smoke.json" in text
+    assert "linux-player-build.json" in text
+    assert "linux-player-smoke.json" in text
+    assert "android-player-build.json" in product_commands
+    assert "android-player-smoke.json" in product_commands
+    assert "android-multitouch-smoke.json" in product_commands
+    assert "web-player-build.json" in text
+    assert "web-browser-player-smoke.json" in text
+
+
+def test_desktop_player_jobs_use_real_input_physics_and_line_renderer_smoke():
+    text = _text()
+
+    assert "windows-player:" in text
+    assert "linux-player:" in text
+    assert '"out/acceptance/桌面/linux/InfernuxPlatformFixture"' in text
+    assert '--object "Render Probe"' in text
+    assert text.count("minimum-axis-delta 0.5") == 2
+    assert text.count("minimum-final-y 0.0") == 2
+    assert text.count('"component_type":"LineRenderer"') == 2
+    assert "lvp_icd.x86_64.json" in text
+    assert "--validation" in text
+    assert "opengl" not in text.casefold()
+    assert "gles" not in text.casefold()
+
+
+def test_android_emulator_action_is_immutable_and_app_cleanup_is_default():
+    text = _text()
+    driver = _android_driver_text()
+    smoke = (ROOT / "scripts" / "acceptance" / "android_player_smoke.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "ReactiveCircus/android-emulator-runner@"
+        "a421e43855164a8197daf9d8d40fe71c6996bb0d" in text
+    )
+    emulator_step = text.index("ReactiveCircus/android-emulator-runner@")
+    emulator_script = text.index("script: |", emulator_step)
+    emulator_body = text[emulator_script : text.index("- name: Upload Android Player evidence", emulator_script)]
+    assert emulator_body.count("bash scripts/acceptance/android_emulator_ci.sh") == 1
+    assert '"$CONDA/envs/infernux/bin/python"' in emulator_body
+    assert '"$CONDA/envs/infernux/bin/python" smoke' in emulator_body
+    assert "build_player.py" not in emulator_body
+    assert '"--keep-running"' in smoke
+    assert '"--require-log"' in smoke
+    assert '"shell", "am", "force-stop", arguments.package' in smoke
+    assert "tests/android/input_instrumentation" in driver
+
+
+def test_android_emulator_driver_splits_build_work_from_software_avd_smoke():
+    workflow = _text()
+    driver = _android_driver_text()
+
+    assert "set -euo pipefail" in driver
+    assert 'mode="${2:-all}"' in driver
+    assert '"$python_executable" scripts/acceptance/build_player.py' in driver
+    assert "android-x64-emulator" in driver
+    assert "gradle -p tests/android/input_instrumentation" in driver
+    smoke = driver.index('"$python_executable" scripts/acceptance/android_player_smoke.py')
+    assert driver.count("locksettings set-disabled true") == 1
+    assert driver.count("svc power stayon true") == 1
+    assert driver.count("settings put secure immersive_mode_confirmations confirmed") == 1
+    assert driver.count("settings get secure immersive_mode_confirmations") == 1
+    assert driver.count("wait_for_android_input_service") == 2
+    assert "getprop sys.boot_completed" in driver
+    assert "service check input" in driver
+    assert driver.rindex("wait_for_android_input_service") < smoke
+    assert driver.rindex("locksettings set-disabled true") < smoke
+    assert driver.rindex("svc power stayon true") < smoke
+    assert driver.rindex("settings put secure immersive_mode_confirmations confirmed") < smoke
+    assert driver.rindex("settings get secure immersive_mode_confirmations") < smoke
+    # The shared Python smoke driver owns the complete display/keyguard lifecycle.
+    # Keeping a second partial sequence here made hosted and physical devices follow
+    # different unlock paths and left the API 36 software AVD in a stale state.
+    assert "KEYCODE_WAKEUP" not in driver
+    assert "wm dismiss-keyguard" not in driver
+    assert "KEYCODE_HOME" not in driver
+    assert '"$python_executable" scripts/acceptance/android_player_smoke.py' in driver
+    assert "--startup-timeout 240" in driver
+    assert '"$python_executable" scripts/acceptance/android_multitouch_smoke.py' in driver
+    assert "-PinfernuxTargetPackage=com.infernux.bootstrap" in driver
+    assert "--wait-milliseconds 20000" in driver
+    checkout_step = workflow.index("- uses: actions/checkout@v4", workflow.index("  android-player:"))
+    require_kvm = workflow.index("- name: Require KVM acceleration")
+    build_step = workflow.index("- name: Build Android Player and input instrumentation")
+    launch_emulator = workflow.index("ReactiveCircus/android-emulator-runner@")
+    assert checkout_step < require_kvm < build_step < launch_emulator
+    assert "[[ ! -c /dev/kvm ]]" in workflow[require_kvm:build_step]
+    assert "sudo chmod a+rw /dev/kvm" in workflow[require_kvm:build_step]
+    assert "[[ ! -r /dev/kvm || ! -w /dev/kvm ]]" in workflow[require_kvm:build_step]
+    assert "refusing the unusably slow Android software-emulator fallback" in workflow[require_kvm:build_step]
+    assert "disable-linux-hw-accel: false" in workflow[launch_emulator:]
+    assert '"$CONDA/envs/infernux/bin/python" build' in workflow[build_step:launch_emulator]
+
+
+def test_android_builds_host_modules_before_cross_platform_packaging():
+    workflow = _text()
+    android_job = workflow[workflow.index("  android-player:") :]
+
+    install_host = android_job.index("- name: Install Linux host dependencies")
+    build_host = android_job.index("- name: Build Linux host modules")
+    launch_emulator = android_job.index("ReactiveCircus/android-emulator-runner@")
+    assert install_host < build_host < launch_emulator
+    assert "scripts/setup/install_linux_dependencies.sh" in android_job
+    assert "cmake --preset linux-clang-headless" in android_job
+    assert "cmake --build --preset linux-clang-headless" in android_job
+    assert "out/build/linux-clang-headless" in android_job
+
+
+def test_headless_audio_device_absence_is_a_nonfatal_compatibility_boundary():
+    audio_engine = (
+        ROOT / "cpp" / "infernux" / "function" / "audio" / "AudioEngine.cpp"
+    ).read_text(encoding="utf-8")
+    open_failure = audio_engine[
+        audio_engine.index("if (m_deviceId == 0)") : audio_engine.index(
+            "SDL_AudioSpec actualSpec"
+        )
+    ]
+    assert "INXLOG_WARN" in open_failure
+    assert "continuing silently" in open_failure
+    assert "INXLOG_ERROR" not in open_failure
+
+
+def test_web_smoke_can_attach_to_a_physical_mobile_browser():
+    smoke = (ROOT / "scripts" / "acceptance" / "web_mobile_input_smoke.cjs").read_text(
+        encoding="utf-8"
+    )
+    workflow = _text()
+
+    assert '"--cdp-endpoint"' in smoke
+    assert "chromium.connectOverCDP" in smoke
+    assert 'session.send("Input.dispatchTouchEvent"' in smoke
+    assert 'process.argv.includes("--movement-touch")' in smoke
+    assert 'process.argv.includes("--verify-native-multitouch")' in smoke
+    assert 'process.argv.includes("--verify-mobile-ime")' in smoke
+    assert "--verify-mobile-ime requires a physical browser" in smoke
+    assert 'type: "touchStart"' in smoke
+    assert 'type: "touchMove"' in smoke
+    assert 'type: "touchCancel"' in smoke
+    assert "started.count === 2" in smoke
+    assert "movedDistances.every" in smoke
+    assert 'item.includes("phase=canceled")' in smoke
+    assert "const canceledIdsObserved = startedIds.every" in smoke
+    assert "cleared.count === 0" in smoke
+    assert "const before = await waitForNoUnityTouches()" in smoke
+    assert 'imeSession.send("Input.insertText"' in smoke
+    assert 'item.includes("BALANCE // TEXT COMMIT")' in smoke
+    assert "visible.visualViewportHeight < visible.innerHeight - 1" in smoke
+    assert "const movementTouchGeometry = movementTouch" in smoke
+    assert "viewportLeft + pixels(safe.paddingLeft) - rect.left" in smoke
+    assert "result.nativeMultitouch" in smoke
+    assert "result.mobileIme" in smoke
+    assert 'process.argv.includes("--skip-frame-checks")' in smoke
+    assert 'argumentValues("--require-diagnostic")' in smoke
+    assert 'argumentValue("--report")' in smoke
+    assert "writeJsonAtomic(reportPath" in smoke
+    assert 'argumentValue("--capture-frame-output")' in smoke
+    assert "result.captureFramePath" in smoke
+    assert "requiredDiagnostics: Object.fromEntries" in smoke
+    assert "Object.values(result.requiredDiagnostics)" in smoke
+    assert '"AudioSource::StartVoice: AudioEngine not initialized"' in smoke
+    assert "Object.values(result.forbiddenDiagnostics)" in smoke
+    assert '"touch:left-zone-forward"' in smoke
+    assert 'dataset.infernuxState === "ready"' in smoke
+    assert "awaiting-user-activation" not in smoke
+    assert "--verify-native-multitouch" in workflow
+
+
+def test_web_visual_acceptance_consumes_the_linux_built_artifact_in_chromium():
+    smoke = (ROOT / "scripts" / "acceptance" / "web_mobile_input_smoke.cjs").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"--enable-unsafe-webgpu"' in smoke
+    assert '"--use-webgpu-adapter=swiftshader"' in smoke
+    assert '"--disable-dawn-features=disallow_unsafe_apis"' in smoke
+    assert '"--enable-webgpu-developer-features"' in smoke
+    assert '"--use-gpu-in-tests"' in smoke
+    assert '"--enable-accelerated-2d-canvas"' in smoke
+    assert '"--disable-gpu-watchdog"' not in smoke
+    assert '{ channel: "chromium" }' in smoke
+    assert '"--use-angle=vulkan"' not in smoke
+    assert '"--disable-vulkan-surface"' not in smoke
+    assert "INFERNUX_WEB_BROWSER_CHANNEL" in smoke
+
+    workflow = (ROOT / ".github" / "workflows" / "platform-player.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "web-browser:" in workflow
+    assert "needs: web-player" in workflow
+    assert "Upload Web Player for visual acceptance" in workflow
+    assert "Download Linux-built Web Player" in workflow
+    assert "playwright.cmd install chromium" in workflow
+    assert "INFERNUX_WEB_BROWSER_CHANNEL: chromium" in workflow
+    assert "Validate Web Player pixels and input in Chromium" in workflow
+    assert "infernuxWebGpuAdapter=fallback" in workflow
+    assert "--report out/test-results/web-browser-player-smoke.json" in workflow
+    assert "--skip-frame-checks" not in workflow
+
+
+def test_windows_smoke_can_capture_the_engine_game_render_target():
+    smoke = (ROOT / "scripts" / "acceptance" / "windows_player_smoke.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"--capture-file"' in smoke
+    assert 'control.call(\n                "capture"' in smoke
+    assert 'capture.get("output_path"' in smoke
+
+
+def test_web_smoke_rejects_black_or_flat_frames_after_input():
+    acceptance = ROOT / "scripts" / "acceptance"
+    smoke = (acceptance / "web_mobile_input_smoke.cjs").read_text(encoding="utf-8")
+    package = (acceptance / "package.json").read_text(encoding="utf-8")
+
+    assert 'const { PNG } = require("pngjs")' in smoke
+    assert "frameAfterActivation" in smoke
+    assert "frameAfterInput" in smoke
+    assert "shadowDifference" in smoke
+    assert "skyDifference" in smoke
+    assert "InfernuxWebSetRenderDiagnostic" in smoke
+    assert 'process.argv.includes("--verify-particle-bloom")' in smoke
+    assert "withBloomContribution" in smoke
+    assert "withoutBloomContribution" in smoke
+    assert "haloPixelRatio" in smoke
+    assert "particle-with-bloom" in smoke
+    assert "no-particle-no-bloom" in smoke
+    assert "diagnosticTail" in smoke
+    assert "requiredDiagnosticMatches" in smoke
+    assert "requiredDiagnosticOrderResults" in smoke
+    assert "forbiddenDiagnosticMatches" in smoke
+    assert "Object.values(forbiddenDiagnosticMatches)" in smoke
+    assert "frameIsVisible" in smoke
+    assert "inputPreservedFrame" in smoke
+    assert '"pngjs": "7.0.0"' in package
+
+
+def test_web_deterministic_capture_rejects_browser_resampling():
+    smoke = (ROOT / "scripts" / "acceptance" / "web_mobile_input_smoke.cjs").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'deterministicCapture ? "1" : "2"' in smoke
+    assert "deterministic capture viewport must exactly match" in smoke
+    assert "deterministic capture requires --device-scale-factor 1" in smoke
+    assert 'phase: "deterministic-capture-layout"' in smoke
+    assert 'phase: "deterministic-capture-pixels"' in smoke
+    assert "frame.width !== expectedRenderWidth" in smoke

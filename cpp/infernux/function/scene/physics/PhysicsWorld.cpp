@@ -311,8 +311,6 @@ void PhysicsWorld::Initialize()
     if (m_initialized)
         return;
 
-    INXLOG_INFO("PhysicsWorld: Initializing Jolt Physics…");
-
     // Register Jolt allocation hooks (use default malloc)
     JPH::RegisterDefaultAllocator();
 
@@ -408,15 +406,12 @@ void PhysicsWorld::Initialize()
     }
 
     m_initialized = true;
-    INXLOG_INFO("PhysicsWorld: Jolt Physics initialized.");
 }
 
 void PhysicsWorld::Shutdown()
 {
     if (!m_initialized)
         return;
-
-    INXLOG_INFO("PhysicsWorld: Shutting down...");
 
     // Step 1: drop contact pair tracking before any body dies, so callbacks
     // racing the teardown can't dereference freed Collider* pointers.

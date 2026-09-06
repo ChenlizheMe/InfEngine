@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
-#include <core/log/InxLog.h>
 #include <limits>
 
 namespace infernux
@@ -171,9 +170,19 @@ void JobSystem::Initialize(uint32_t workerCount)
     for (uint32_t i = 0; i < resolved; ++i) {
         instance->m_workers.emplace_back([instance] { instance->WorkerLoop(); });
     }
+}
 
-    INXLOG_INFO("JobSystem online with ", resolved,
-                " worker thread(s) (hw_concurrency=", std::thread::hardware_concurrency(), ")");
+void JobSystem::InitializeInline()
+{
+    std::lock_guard<std::mutex> guard(g_singletonMutex);
+    if (g_instance.load(std::memory_order_acquire) != nullptr) {
+        throw std::logic_error("JobSystem::InitializeInline called twice");
+    }
+
+    auto *instance = new JobSystem();
+    instance->m_inline = true;
+    instance->m_state.store(State::Running, std::memory_order_release);
+    g_instance.store(instance, std::memory_order_release);
 }
 
 void JobSystem::Shutdown()
@@ -649,6 +658,11 @@ void JobSystem::WaitPassive(const JobHandle &handle)
         return;
     }
 
+    if (m_inline) {
+        Wait(handle);
+        return;
+    }
+
     const bool suspended = SuspendCurrentPermit();
     while (!WaitSatisfied(handle)) {
         std::unique_lock<std::mutex> lock(handle.m_state->completionMutex);
@@ -745,6 +759,14 @@ void JobSystem::ResetProfilerCounters()
     for (const auto &entry : m_domainProfilers) {
         reset(entry.second);
     }
+}
+
+uint32_t JobSystem::RunPendingJobs(uint32_t maxJobs)
+{
+    uint32_t completed = 0;
+    while ((maxJobs == 0 || completed < maxJobs) && TryRunOne())
+        ++completed;
+    return completed;
 }
 
 size_t JobSystem::GetQueuedTaskCount() const
@@ -869,6 +891,11 @@ void JobSystem::StopAndJoin() noexcept
         m_stopRequested = true;
     }
     m_queueCv.notify_all();
+
+    if (m_inline) {
+        while (TryRunOne()) {
+        }
+    }
 
     for (auto &worker : m_workers) {
         if (worker.joinable()) {

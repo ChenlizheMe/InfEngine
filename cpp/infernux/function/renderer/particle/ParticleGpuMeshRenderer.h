@@ -73,13 +73,11 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
     }
 
     [[nodiscard]] bool RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                  rhi::RenderTargetLayoutHandle renderTargetLayout,
                                   const MaterialPassPipelineDescriptor &pass, rhi::BufferHandle indirectArguments,
                                   const GpuParticleViewConstants &view, rhi::BufferHandle renderIndices = {},
                                   rhi::TextureViewHandle sceneDepth = {}, bool sceneDepthIsDepth = true,
                                   const GpuParticlePerViewBindings &perView = {}) override;
     [[nodiscard]] bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                         rhi::RenderTargetLayoutHandle renderTargetLayout,
                                          const MaterialPassPipelineDescriptor &pass,
                                          rhi::BufferHandle indirectArguments, const GpuParticleViewConstants &view,
                                          uint64_t ownerObjectId, rhi::BufferHandle renderIndices = {}) override;
@@ -87,7 +85,6 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
   private:
     struct PipelineEntry
     {
-        rhi::RenderTargetLayoutHandle renderTargetLayout;
         MaterialPassPipelineDescriptor pass;
         rhi::BindingLayoutHandle perViewLayout;
         uint8_t materialStateSignature = 0;
@@ -101,8 +98,7 @@ class ParticleGpuMeshRenderer final : public ParticleGpuOutputRenderer
 
     [[nodiscard]] rhi::BindGroupHandle CreateGeometryGroup(rhi::BufferHandle renderIndices) const;
     [[nodiscard]] rhi::BindGroupHandle ResolveGeometryGroup(rhi::BufferHandle renderIndices);
-    [[nodiscard]] rhi::GraphicsPipelineHandle GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
-                                                                  const MaterialPassPipelineDescriptor &pass,
+    [[nodiscard]] rhi::GraphicsPipelineHandle GetOrCreatePipeline(const MaterialPassPipelineDescriptor &pass,
                                                                   rhi::BindingLayoutHandle perViewLayout = {});
 
     rhi::Device *m_device = nullptr;

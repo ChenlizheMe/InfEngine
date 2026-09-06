@@ -6,10 +6,42 @@
 #include <memory>
 #include <string>
 
+namespace infernux::rhi
+{
+class Device;
+}
+
 namespace infernux
 {
 
 class InxVkCoreModular;
+
+class FullscreenRendererHost
+{
+  public:
+    virtual ~FullscreenRendererHost() = default;
+
+    [[nodiscard]] virtual rhi::Device &GetRhiDevice() noexcept = 0;
+    [[nodiscard]] virtual uint32_t GetFrameCount() const noexcept = 0;
+    [[nodiscard]] virtual uint32_t GetCurrentFrame() const noexcept = 0;
+
+    /// Return a module registration owned by the caller. The renderer releases
+    /// it after pipeline creation; the concrete backend decides whether the
+    /// underlying shader object is shared or newly created.
+    [[nodiscard]] virtual rhi::ShaderModuleHandle AcquireShaderModule(const std::string &name,
+                                                                      rhi::ShaderStage stage) = 0;
+    [[nodiscard]] virtual rhi::BindingLayoutHandle GetPerViewLayout() const noexcept = 0;
+    [[nodiscard]] virtual rhi::BindingLayoutHandle GetGlobalsLayout() const noexcept = 0;
+    [[nodiscard]] virtual rhi::BindGroupHandle GetCurrentGlobalsGroup() = 0;
+    virtual void ReportError(const std::string &message)
+    {
+        (void)message;
+    }
+    virtual void ReportInfo(const std::string &message)
+    {
+        (void)message;
+    }
+};
 
 struct FullscreenPushConstants
 {
@@ -23,6 +55,7 @@ struct FullscreenPipelineKey
     rhi::SampleCount samples = rhi::SampleCount::One;
     rhi::PixelFormat colorFormat = rhi::PixelFormat::RGBA8UNorm;
     uint32_t inputTextureCount = 0;
+    uint32_t depthInputMask = 0;
     bool useDynamicRendering = false;
 
     bool operator==(const FullscreenPipelineKey &other) const noexcept;
@@ -57,6 +90,7 @@ class FullscreenRenderer
     FullscreenRenderer(const FullscreenRenderer &) = delete;
     FullscreenRenderer &operator=(const FullscreenRenderer &) = delete;
 
+    void Initialize(std::shared_ptr<FullscreenRendererHost> host);
     void Initialize(InxVkCoreModular *vkCore);
     void Destroy();
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -11,7 +12,12 @@ from Infernux.engine.candidate_import import (
     CandidateImportError,
     CandidateImportTransaction,
 )
-from Infernux.engine.project_context import get_project_root, set_project_root
+from Infernux.engine.project_context import (
+    get_project_root,
+    get_script_import_paths,
+    get_script_module_name,
+    set_project_root,
+)
 
 
 @pytest.fixture
@@ -65,6 +71,62 @@ def test_trusted_import_bypasses_project_descendant_scan(candidate_project, monk
 
     assert module.VALUE == "Infernux"
     broker.rollback()
+
+
+@pytest.mark.parametrize("runtime_library", [
+    ".runtime/python313/Lib",
+    ".runtime/python313/lib/python3.13",
+    ".venv/lib/python3.13",
+])
+def test_package_candidate_does_not_own_project_private_stdlib(
+    candidate_project, monkeypatch, runtime_library,
+):
+    import pathlib
+
+    project = candidate_project.parent
+    installed_stdlib = project / runtime_library / "pathlib" / "__init__.py"
+    installed_stdlib.parent.mkdir(parents=True)
+    installed_stdlib.touch()
+    monkeypatch.setattr(pathlib, "__file__", str(installed_stdlib))
+    package = project / "Packages" / "probe"
+    runtime = package / "runtime"
+    runtime.mkdir(parents=True)
+    (package / "inx_package.json").write_text("{}", encoding="utf-8")
+    component = runtime / "component.py"
+    component.write_text("from pathlib import Path\nVALUE = Path\n", encoding="utf-8")
+    name = get_script_module_name(str(component))
+    broker = CandidateImportTransaction()
+    broker.register(name, str(component))
+    try:
+        assert broker.load(name).VALUE is pathlib.Path
+        assert "pathlib" not in broker.loaded_module_names
+        assert "pathlib" not in broker._reused_lkg
+    finally:
+        broker.rollback()
+
+
+def test_lowercase_public_engine_namespace_is_lazily_admitted(candidate_project):
+    previous = sys.modules.pop("infernux", None)
+    try:
+        broker = _broker(
+            candidate_project,
+            "lowercase_engine_candidate",
+            "import infernux as inx\nBASE = inx.InxComponent\n",
+        )
+
+        module = broker.load("lowercase_engine_candidate")
+
+        from Infernux import InxComponent
+
+        assert module.BASE is InxComponent
+        assert sys.modules["infernux"].InxComponent is InxComponent
+        assert "lowercase_engine_candidate" not in sys.modules
+        broker.rollback()
+    finally:
+        if previous is None:
+            sys.modules.pop("infernux", None)
+        else:
+            sys.modules["infernux"] = previous
 
 
 def test_candidate_scc_uses_private_table_until_commit(candidate_project):
@@ -172,6 +234,121 @@ def test_package_fromlist_and_relative_import_attach_private_submodule(candidate
     assert "package_helper" not in sys.modules
     assert "package_helper.helper" not in sys.modules
     broker.rollback()
+
+
+def test_installed_package_runtime_relative_import_uses_isolated_namespace(
+    candidate_project,
+):
+    project = candidate_project.parent
+    runtime = project / "Packages" / "studio" / "ai-tools" / "runtime"
+    runtime.mkdir(parents=True)
+    (runtime.parent / "inx_package.json").write_text("{}", encoding="utf-8")
+    helper = runtime / "helper.py"
+    component = runtime / "component.py"
+    helper.write_text("VALUE = 'package-runtime'\n", encoding="utf-8")
+    component.write_text("from .helper import VALUE\n", encoding="utf-8")
+    helper_name = get_script_module_name(str(helper))
+    component_name = get_script_module_name(str(component))
+    broker = CandidateImportTransaction()
+    broker.register(helper_name, str(helper))
+    broker.register(component_name, str(component))
+
+    module = broker.load(component_name)
+
+    assert module.VALUE == "package-runtime"
+    assert component_name == (
+        "_infernux_packages.studio.ai_2dtools.runtime.component"
+    )
+    assert get_script_import_paths(str(component))[:2] == [
+        str(runtime.resolve()),
+        str(runtime.parent.resolve()),
+    ]
+    assert helper_name not in sys.modules
+    broker.rollback()
+
+
+def test_legacy_package_editor_relative_import_keeps_canonical_identity(
+    candidate_project,
+):
+    project = candidate_project.parent
+    package = project / "Packages" / "infernux" / "platform-web"
+    editor = package / "Editor" / "infernux_web"
+    editor.mkdir(parents=True)
+    (package / "InxPackage.json").write_text("{}", encoding="utf-8")
+    helper = editor / "exporter.py"
+    lifecycle = editor / "lifecycle.py"
+    helper.write_text("VALUE = 'legacy-editor-ok'\n", encoding="utf-8")
+    lifecycle.write_text("from .exporter import VALUE\n", encoding="utf-8")
+
+    helper_name = get_script_module_name(str(helper))
+    lifecycle_name = get_script_module_name(str(lifecycle))
+    assert helper_name == "_infernux_packages.infernux.platform_2dweb.editor.infernux_web.exporter"
+    assert lifecycle_name == "_infernux_packages.infernux.platform_2dweb.editor.infernux_web.lifecycle"
+    assert get_script_import_paths(str(lifecycle))[:2] == [
+        str((package / "Editor").resolve()),
+        str(package.resolve()),
+    ]
+
+    broker = CandidateImportTransaction()
+    broker.register(helper_name, str(helper))
+    broker.register(lifecycle_name, str(lifecycle))
+    module = broker.load(lifecycle_name)
+
+    assert module.VALUE == "legacy-editor-ok"
+    broker.rollback()
+
+
+def test_preloaded_package_namespace_with_encoded_underscore_is_reused(
+    candidate_project,
+):
+    project = candidate_project.parent
+    package = project / "Packages" / "infernux" / "multiplatform_probe"
+    runtime = package / "runtime"
+    runtime.mkdir(parents=True)
+    (package / "inx_package.json").write_text("{}", encoding="utf-8")
+    lifecycle = runtime / "lifecycle.py"
+    component = runtime / "component.py"
+    lifecycle.write_text("VALUE = 'preloaded'\n", encoding="utf-8")
+    component.write_text("VALUE = 'candidate'\n", encoding="utf-8")
+    lifecycle_name = get_script_module_name(str(lifecycle))
+    component_name = get_script_module_name(str(component))
+    assert lifecycle_name is not None and component_name is not None
+
+    created = []
+    directory = lifecycle.parent
+    parent_names = [
+        ".".join(lifecycle_name.split(".")[:index])
+        for index in range(1, len(lifecycle_name.split(".")))
+    ]
+    directories = {}
+    for parent_name in reversed(parent_names):
+        directories[parent_name] = directory
+        directory = directory.parent
+    previous = {name: sys.modules.get(name) for name in parent_names}
+    try:
+        for parent_name in parent_names:
+            namespace = type(sys)(parent_name)
+            namespace.__path__ = [str(directories[parent_name])]
+            namespace.__file__ = str(directories[parent_name] / "__init__.py")
+            namespace.__spec__ = importlib.util.spec_from_loader(
+                parent_name, loader=None, is_package=True
+            )
+            sys.modules[parent_name] = namespace
+            created.append(parent_name)
+
+        broker = CandidateImportTransaction()
+        broker.register(component_name, str(component))
+        loaded = broker.load(component_name)
+
+        assert loaded.VALUE == "candidate"
+        assert broker.module_for(component_name) is loaded
+        broker.rollback()
+    finally:
+        for parent_name in reversed(created):
+            if previous[parent_name] is None:
+                sys.modules.pop(parent_name, None)
+            else:
+                sys.modules[parent_name] = previous[parent_name]
 
 
 def test_namespace_package_can_load_a_private_child(candidate_project):

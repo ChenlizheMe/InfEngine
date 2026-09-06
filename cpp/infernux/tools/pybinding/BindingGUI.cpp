@@ -621,8 +621,10 @@ void RegisterGUIBindings(py::module_ &m)
         .def("end_tab_bar", &InxGUIContext::EndTabBar)
         .def(
             "begin_tab_item",
-            [](InxGUIContext &context, const std::string &label) { return context.BeginTabItem(label, nullptr); },
-            py::arg("label"))
+            [](InxGUIContext &context, const std::string &label, bool selected) {
+                return context.BeginTabItem(label, nullptr, selected);
+            },
+            py::arg("label"), py::arg("selected") = false)
         .def("end_tab_item", &InxGUIContext::EndTabItem)
         .def("begin_main_menu_bar", &InxGUIContext::BeginMainMenuBar)
         .def("end_main_menu_bar", &InxGUIContext::EndMainMenuBar)
@@ -1501,7 +1503,6 @@ void RegisterGUIBindings(py::module_ &m)
         // Selection callbacks
         .def_readwrite("is_multi_selection", &InspectorPanel::isMultiSelection)
         .def_readwrite("get_selected_ids", &InspectorPanel::getSelectedIds)
-        .def_readwrite("get_value_generation", &InspectorPanel::getValueGeneration)
         .def_readwrite("get_revision_snapshot", &InspectorPanel::getRevisionSnapshot)
         // Object info callbacks
         .def_readwrite("get_object_info", &InspectorPanel::getObjectInfo)

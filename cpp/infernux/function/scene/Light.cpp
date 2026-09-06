@@ -4,7 +4,7 @@
 #include "GameObject.h"
 #include "SceneManager.h"
 #include "Transform.h"
-#include <InxLog.h>
+#include <core/log/InxLog.h>
 #include <limits>
 #include <nlohmann/json.hpp>
 
@@ -60,11 +60,6 @@ nlohmann::json Light::SerializeDocument() const
     // Shadows
     j["shadows"] = static_cast<int>(m_shadows);
     j["shadowStrength"] = m_shadowStrength;
-    // Bias is currently an engine policy rather than an authoring parameter.
-    // Keep canonical constants in the native document until the surrounding
-    // component document is migrated as a whole.
-    j["shadowBias"] = ShadowDepthBiasTexels;
-    j["shadowNormalBias"] = ShadowNormalBiasTexels;
     j["shadowSoftness"] = m_shadowSoftness;
 
     // Rendering
@@ -83,8 +78,8 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
     using namespace component_document_validation;
     ValidateComponentDocument(j, "Light",
                               {"lightType", "color", "intensity", "range", "spotAngle", "outerSpotAngle", "areaSize",
-                               "areaTwoSided", "shadows", "shadowStrength", "shadowBias", "shadowNormalBias",
-                               "shadowSoftness", "renderMode", "cullingMask", "influenceDomains", "baked"});
+                               "areaTwoSided", "shadows", "shadowStrength", "shadowSoftness", "renderMode",
+                               "cullingMask", "influenceDomains", "baked"});
     const int lightType = RequireInteger(j, "lightType", "Light");
     RequireFiniteVector(j, "color", 3, "Light");
     const float intensity = RequireFiniteFloat(j, "intensity", "Light");
@@ -95,8 +90,6 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
     RequireBoolean(j, "areaTwoSided", "Light");
     const int shadows = RequireInteger(j, "shadows", "Light");
     const float shadowStrength = RequireFiniteFloat(j, "shadowStrength", "Light");
-    const float shadowBias = RequireFiniteFloat(j, "shadowBias", "Light");
-    const float shadowNormalBias = RequireFiniteFloat(j, "shadowNormalBias", "Light");
     const float shadowSoftness = RequireFiniteFloat(j, "shadowSoftness", "Light");
     const int renderMode = RequireInteger(j, "renderMode", "Light");
     const uint64_t cullingMask = RequireUnsignedInteger(j, "cullingMask", "Light");
@@ -113,8 +106,6 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
         throw std::invalid_argument("Light area size is invalid");
     if (shadows < static_cast<int>(LightShadows::None) || shadows > static_cast<int>(LightShadows::Soft))
         throw std::invalid_argument("Light.shadows is unsupported");
-    (void)shadowBias;
-    (void)shadowNormalBias;
     if (shadowStrength < 0.0f || shadowStrength > 1.0f || shadowSoftness < 0.25f || shadowSoftness > 8.0f)
         throw std::invalid_argument("Light shadow parameters are invalid");
     if (renderMode < static_cast<int>(LightRenderMode::Auto) ||
@@ -143,8 +134,6 @@ bool Light::DeserializeDocument(const nlohmann::json &j)
         m_areaTwoSided = j["areaTwoSided"].get<bool>();
         m_shadows = static_cast<LightShadows>(j["shadows"].get<int>());
         m_shadowStrength = j["shadowStrength"].get<float>();
-        // Legacy documents still carry these keys, but authored values do not
-        // affect runtime behavior while bias is owned by the renderer.
         m_shadowSoftness = j["shadowSoftness"].get<float>();
         m_renderMode = static_cast<LightRenderMode>(j["renderMode"].get<int>());
         m_cullingMask = j["cullingMask"].get<uint32_t>();

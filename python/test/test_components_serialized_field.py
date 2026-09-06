@@ -235,7 +235,7 @@ class TestComponentFieldCollection:
         comp.x = 42.0
         assert comp.x == 42.0
 
-    def test_recovers_serialized_field_metadata_after_cache_clear(self):
+    def test_class_field_table_is_authoritative_after_cache_clear(self):
         class Comp(InxComponent):
             speed: float = serialized_field(default=10.0)
 
@@ -244,6 +244,4 @@ class TestComponentFieldCollection:
         clear_serialized_fields_cache(Comp)
         Comp._serialized_fields_ = {}
 
-        fields = get_serialized_fields(Comp)
-        assert "speed" in fields
-        assert fields["speed"].default == 10.0
+        assert get_serialized_fields(Comp) == {}

@@ -391,10 +391,6 @@ class ScenePrefabMixin:
         if not instances:
             return
 
-        Debug.log_internal(
-            f"Refreshing {len(instances)} prefab instance(s) for GUID={prefab_guid}"
-        )
-
         for old_obj in instances:
             try:
                 parent = old_obj.get_parent() if hasattr(old_obj, 'get_parent') else None

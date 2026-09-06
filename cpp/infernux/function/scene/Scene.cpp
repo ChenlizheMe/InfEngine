@@ -12,14 +12,15 @@
 #include "function/resources/AssetRegistry/AssetRegistry.h"
 #include "function/resources/InxMaterial/InxMaterial.h"
 #include "platform/filesystem/DocumentStore.h"
-#include <SDL3/SDL.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <core/log/InxLog.h>
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <numeric>
+#include <string_view>
 #include <type_traits>
 #include <unordered_set>
 
@@ -1373,10 +1374,10 @@ std::shared_ptr<InxMaterial> Scene::ResolveSkyboxMaterial() const
 bool Scene::DeserializeDocument(const nlohmann::json &j)
 {
     try {
-        const uint64_t profileStart = SDL_GetPerformanceCounter();
-        const double profileFrequency = static_cast<double>(SDL_GetPerformanceFrequency());
-        const auto elapsedMs = [&](uint64_t begin, uint64_t end) {
-            return static_cast<double>(end - begin) * 1000.0 / profileFrequency;
+        using ProfileClock = std::chrono::steady_clock;
+        const auto profileStart = ProfileClock::now();
+        const auto elapsedMs = [](ProfileClock::time_point begin, ProfileClock::time_point end) {
+            return std::chrono::duration<double, std::milli>(end - begin).count();
         };
         if (!ValidateSceneDocumentHeader(j))
             return false;
@@ -1397,7 +1398,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
                 throw std::invalid_argument("scene object graph validation failed");
             staging.m_rootObjects.push_back(std::move(obj));
         }
-        const uint64_t profileStaged = SDL_GetPerformanceCounter();
+        const auto profileStaged = ProfileClock::now();
 
         std::unordered_set<uint64_t> objectIds;
         std::unordered_set<uint64_t> componentIds;
@@ -1517,7 +1518,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
                 pythonComponentIds.push_back(componentId);
             }
         }
-        const uint64_t profileIndexed = SDL_GetPerformanceCounter();
+        const auto profileIndexed = ProfileClock::now();
 
         bool requiresFreshComponentIds = false;
         for (const auto &[component, componentId] : componentIdAssignments) {
@@ -1556,7 +1557,8 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
                 throw std::invalid_argument("mainCameraComponentId must be unsigned");
             const uint64_t mainCameraComponentId = j["mainCameraComponentId"].get<uint64_t>();
             const auto cameraIt = componentsByDocumentId.find(mainCameraComponentId);
-            if (cameraIt == componentsByDocumentId.end() || cameraIt->second->GetTypeName() != "Camera")
+            if (cameraIt == componentsByDocumentId.end() ||
+                std::string_view(cameraIt->second->GetTypeName()) != "Camera")
                 throw std::invalid_argument("mainCameraComponentId does not reference a Camera");
             stagedMainCamera = cameraIt->second;
         }
@@ -1609,7 +1611,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
                 throw std::logic_error("staging component was not present in the instance registry");
             stagedRegistryNodes.push_back(std::move(node));
         }
-        const uint64_t profileValidated = SDL_GetPerformanceCounter();
+        const auto profileValidated = ProfileClock::now();
 
         // Commit starts here. All schema/factory/component validation has completed.
         m_mainCamera = nullptr;
@@ -1657,7 +1659,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
         // loading can overwrite an existing ID in m_objectsById.
         for (const uint64_t objectId : objectIds)
             GameObject::EnsureNextID(objectId);
-        const uint64_t profileCommitted = SDL_GetPerformanceCounter();
+        const auto profileCommitted = ProfileClock::now();
 
         // ── Step 5: native Awake pass. ──
         // PyComponentProxy instances are NOT in m_rootObjects yet — they live
@@ -1668,7 +1670,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
         for (const auto &root : m_rootObjects) {
             AwakeObject(root.get());
         }
-        const uint64_t profileAwake = SDL_GetPerformanceCounter();
+        const auto profileAwake = ProfileClock::now();
 
         // Restore main camera reference from component ID
         if (stagedMainCamera)
@@ -1676,7 +1678,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j)
 
         ++m_structureVersion; // Scene was fully rebuilt
 
-        const uint64_t profileEnd = SDL_GetPerformanceCounter();
+        const auto profileEnd = ProfileClock::now();
         if (elapsedMs(profileStart, profileEnd) >= 20.0) {
             INXLOG_INFO("[Perf] Scene deserialize: total=", elapsedMs(profileStart, profileEnd),
                         "ms stage=", elapsedMs(profileStart, profileStaged),

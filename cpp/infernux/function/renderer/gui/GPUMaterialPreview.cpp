@@ -183,7 +183,6 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
         return nullptr;
     if (!m_vkCore->RefreshPreviewMaterialPipeline(basePreviewMaterial, basePreviewMaterial->GetVertShaderName(),
                                                   basePreviewMaterial->GetFragShaderName(), false)) {
-        INXLOG_DEBUG("GPUMaterialPreview: material domain has no sphere preview pipeline");
         return nullptr;
     }
     ownedPreviewMaterials.push_back(basePreviewMaterial);
@@ -191,7 +190,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
 
     const RenderState &baseState = basePreviewMaterial->GetRenderState();
     if (baseState.blendEnable) {
-        auto buildPreviewPass = [&](VkCullModeFlags cullMode, bool overrideCull) -> std::shared_ptr<InxMaterial> {
+        auto buildPreviewPass = [&](MaterialCullMode cullMode, bool overrideCull) -> std::shared_ptr<InxMaterial> {
             // Preview passes must not reuse the source material's GUID/name key,
             // otherwise descriptor-cache replacement can invalidate the live set
             // still used by the main scene.
@@ -202,9 +201,9 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
 
             // Preview path uses transparent clear color (alpha=0), so alpha must
             // be written by the material pass instead of preserving destination alpha.
-            state.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-            state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-            state.alphaBlendOp = VK_BLEND_OP_ADD;
+            state.srcAlphaBlendFactor = MaterialBlendFactor::SourceAlpha;
+            state.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+            state.alphaBlendOp = MaterialBlendOp::Add;
 
             passMaterial->SetRenderState(state);
             passMaterial->MarkOverride(RenderStateOverride::BlendMode);
@@ -219,9 +218,9 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
             return passMaterial;
         };
 
-        if (!baseState.depthWriteEnable && baseState.cullMode == VK_CULL_MODE_NONE) {
-            auto backFacePass = buildPreviewPass(VK_CULL_MODE_FRONT_BIT, true);
-            auto frontFacePass = buildPreviewPass(VK_CULL_MODE_BACK_BIT, true);
+        if (!baseState.depthWriteEnable && baseState.cullMode == MaterialCullMode::None) {
+            auto backFacePass = buildPreviewPass(MaterialCullMode::Front, true);
+            auto frontFacePass = buildPreviewPass(MaterialCullMode::Back, true);
             if (backFacePass && frontFacePass) {
                 ownedPreviewMaterials.push_back(backFacePass);
                 ownedPreviewMaterials.push_back(frontFacePass);
@@ -229,7 +228,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
                 previewPassMaterials.push_back(backFacePass);
                 previewPassMaterials.push_back(frontFacePass);
             } else {
-                INXLOG_DEBUG("GPUMaterialPreview: transparent two-pass preview unavailable, using original pipeline");
+                return nullptr;
             }
         } else {
             auto singlePass = buildPreviewPass(baseState.cullMode, false);
@@ -238,8 +237,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
                 previewPassMaterials.clear();
                 previewPassMaterials.push_back(singlePass);
             } else {
-                INXLOG_DEBUG(
-                    "GPUMaterialPreview: transparent preview alpha override unavailable, using original pipeline");
+                return nullptr;
             }
         }
     }
@@ -259,13 +257,13 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMaterialPreview::BeginRenderToPixels
             return false;
         }
 
-        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material, true);
+        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material);
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE) {
             if (!m_vkCore->RefreshPreviewMaterialPipeline(binding.material, passMat->GetVertShaderName(),
                                                           passMat->GetFragShaderName(), false)) {
                 return false;
             }
-            rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material, true);
+            rd = m_vkCore->GetOrCreatePreviewMaterialPass(binding.material);
         }
 
         if (rd && rd->isValid && rd->descriptorSet != VK_NULL_HANDLE) {

@@ -21,6 +21,7 @@
 | TAB | `int` |  |
 | RETURN | `int` |  |
 | ESCAPE | `int` |  |
+| AC_BACK | `int` |  |
 | SPACE | `int` |  |
 | DELETE | `int` |  |
 | ALPHA0 | `int` |  |
@@ -128,7 +129,7 @@
 ## 示例
 
 <!-- USER CONTENT START --> example
-> **示例状态：** 当前尚未为此符号验证 0.3.7 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
+> **示例状态：** 当前尚未为此符号验证 0.4.0 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。
 <!-- USER CONTENT END -->
 
 ## 另请参阅

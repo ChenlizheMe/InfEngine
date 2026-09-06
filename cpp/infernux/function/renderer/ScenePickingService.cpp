@@ -5,7 +5,6 @@
 #include "particle/ParticleGpuDrawRegistry.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkHandle.h"
-#include "vk/VkRenderUtils.h"
 #include "vk/VkResourceManager.h"
 #include "vk/VulkanRhiDevice.h"
 #include <function/scene/Camera.h>
@@ -15,6 +14,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -23,6 +23,28 @@ namespace
 {
 constexpr VkFormat kPickingFormat = VK_FORMAT_R32G32_UINT;
 constexpr VkDeviceSize kPickingPixelBytes = sizeof(uint32_t) * 2u;
+
+VkImageMemoryBarrier2 MakeImageBarrier(VkImage image, VkImageLayout oldLayout, VkImageLayout newLayout,
+                                       VkImageAspectFlags aspectMask, VkPipelineStageFlags2 sourceStage,
+                                       VkAccessFlags2 sourceAccess, VkPipelineStageFlags2 destinationStage,
+                                       VkAccessFlags2 destinationAccess)
+{
+    VkImageMemoryBarrier2 barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    barrier.srcStageMask = sourceStage;
+    barrier.srcAccessMask = sourceAccess;
+    barrier.dstStageMask = destinationStage;
+    barrier.dstAccessMask = destinationAccess;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = aspectMask;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = 1;
+    return barrier;
+}
 } // namespace
 
 struct ScenePickingService::TargetGeneration
@@ -45,7 +67,22 @@ ScenePickingService::~ScenePickingService()
 
 void ScenePickingService::Initialize(InxVkCoreModular *core)
 {
+    if (!core)
+        throw std::invalid_argument("ScenePickingService requires a Vulkan core");
+    const auto &capabilities = core->GetDeviceContext().GetRhiDevice().GetCapabilityState();
+    if (!capabilities.dynamicRendering.IsEnabled() || !capabilities.synchronization2.IsEnabled())
+        throw std::runtime_error("ScenePickingService requires Dynamic Rendering and Synchronization2");
+
+    const rhi::DynamicRenderingCommands dynamicRenderingCommands =
+        rhi::ResolveDynamicRenderingCommands(core->GetDevice());
+    const rhi::Synchronization2Commands synchronization2Commands =
+        rhi::ResolveSynchronization2Commands(core->GetDevice());
+    if (!dynamicRenderingCommands.IsValid() || !synchronization2Commands.IsValid())
+        throw std::runtime_error("ScenePickingService could not resolve required Vulkan commands");
+
     m_core = core;
+    m_dynamicRenderingCommands = dynamicRenderingCommands;
+    m_synchronization2Commands = synchronization2Commands;
 }
 
 void ScenePickingService::Destroy()
@@ -63,6 +100,8 @@ void ScenePickingService::Destroy()
     m_hasPending = false;
     DestroyTarget();
     m_particleDrawRegistry = nullptr;
+    m_dynamicRenderingCommands = {};
+    m_synchronization2Commands = {};
     m_core = nullptr;
 }
 
@@ -126,15 +165,10 @@ void ScenePickingService::PublishFailure(uint64_t requestId, const std::string &
 
 bool ScenePickingService::EnsureTarget(uint32_t width, uint32_t height)
 {
-    const auto dynamicCommands =
-        m_core ? rhi::ResolveDynamicRenderingCommands(m_core->GetDevice()) : rhi::DynamicRenderingCommands{};
-    const bool dynamicRenderingAvailable =
-        m_core && m_core->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled &&
-        dynamicCommands.IsValid();
     if (m_target && m_target->color && m_target->depth && width == m_target->width && height == m_target->height &&
-        dynamicRenderingAvailable)
+        m_core)
         return true;
-    if (!dynamicRenderingAvailable || width == 0 || height == 0)
+    if (!m_core || width == 0 || height == 0)
         return false;
 
     auto candidate = std::make_unique<TargetGeneration>();
@@ -200,39 +234,43 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     }
     std::memset(mapped, 0, static_cast<size_t>(kPickingPixelBytes));
 
-    const auto particleEntries = m_particleDrawRegistry ? m_particleDrawRegistry->Snapshot(0, 5000)
-                                                        : std::vector<particle::GpuParticleDrawEntry>{};
-    if (!particleEntries.empty()) {
-        VkMemoryBarrier particleBarrier{};
-        particleBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    particle::ParticleGpuDrawRegistry::SnapshotHandle particleEntries;
+    if (m_particleDrawRegistry)
+        particleEntries = m_particleDrawRegistry->SnapshotShared(0, 5000);
+    if (particleEntries && !particleEntries->empty()) {
+        VkMemoryBarrier2 particleBarrier{};
+        particleBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        particleBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         particleBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        particleBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
         particleBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1,
-                             &particleBarrier, 0, nullptr, 0, nullptr);
+        VkDependencyInfo dependency{};
+        dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &particleBarrier;
+        m_synchronization2Commands.barrier(commandBuffer, &dependency);
     }
 
-    const auto dynamicCommands = rhi::ResolveDynamicRenderingCommands(m_core->GetDevice());
-    if (!dynamicCommands.IsValid()) {
-        PublishFailure(request.id, "Dynamic Rendering commands are unavailable for scene picking");
-        return;
-    }
-    VkImageMemoryBarrier barriers[2]{};
-    barriers[0] = vkrender::MakeImageBarrier(
+    VkImageMemoryBarrier2 barriers[2]{};
+    barriers[0] = MakeImageBarrier(
         target.color->GetImage(), target.colorLayout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         VK_IMAGE_ASPECT_COLOR_BIT,
+        target.colorLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ? VK_PIPELINE_STAGE_2_TRANSFER_BIT
+                                                                   : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
         target.colorLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ? VK_ACCESS_TRANSFER_READ_BIT : 0,
-        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-    barriers[1] = vkrender::MakeImageBarrier(
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+    barriers[1] = MakeImageBarrier(
         target.depth->GetImage(), target.depthLayout, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         rhi::ToVkImageAspectMask(target.depthFormat),
+        target.depthLayout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
+                                                        : VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
         target.depthLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
-    vkCmdPipelineBarrier(commandBuffer,
-                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
-                             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0,
-                         0, nullptr, 0, nullptr, 2, barriers);
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+    VkDependencyInfo targetDependency{};
+    targetDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    targetDependency.imageMemoryBarrierCount = 2;
+    targetDependency.pImageMemoryBarriers = barriers;
+    m_synchronization2Commands.barrier(commandBuffer, &targetDependency);
     target.colorLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     target.depthLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
@@ -260,7 +298,7 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     rendering.pDepthAttachment = &depthAttachment;
     rendering.pStencilAttachment =
         rhi::IsStencilFormat(rhi::FromVkFormat(target.depthFormat)) ? &depthAttachment : nullptr;
-    dynamicCommands.begin(commandBuffer, &rendering);
+    m_dynamicRenderingCommands.begin(commandBuffer, &rendering);
 
     VkViewport viewport{};
     viewport.width = static_cast<float>(target.width);
@@ -278,10 +316,9 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     pickingPass.colorFormats = {rhi::PixelFormat::RG32UInt};
     pickingPass.depthFormat = rhi::FromVkFormat(target.depthFormat);
     pickingPass.samples = rhi::SampleCount::One;
-    pickingPass.renderingMode = MaterialPassRenderingMode::DynamicRendering;
     m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perViewGroup, viewMatrix, 0, 5000,
                               "front_to_back", {}, {}, &pickingPass);
-    if (!particleEntries.empty()) {
+    if (particleEntries && !particleEntries->empty()) {
         Camera *camera = SceneManager::Instance().GetEditorCameraController().GetCamera();
         if (camera) {
             particle::GpuParticleViewConstants view;
@@ -295,21 +332,25 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
             vk::VulkanGraphicsCommandContext graphicsContext;
             auto encoder =
                 m_core->GetDeviceContext().GetRhiDevice().MakeGraphicsCommandEncoder(graphicsContext, commandBuffer);
-            for (const auto &entry : particleEntries) {
+            for (const auto &entry : *particleEntries) {
                 if (!entry.renderer || entry.ownerObjectId == 0)
                     continue;
                 [[maybe_unused]] const bool recorded = entry.renderer->RecordPickingDraw(
-                    encoder, {}, pickingPass, entry.indirectArguments, view, entry.ownerObjectId, entry.renderIndices);
+                    encoder, pickingPass, entry.indirectArguments, view, entry.ownerObjectId, entry.renderIndices);
             }
         }
     }
-    dynamicCommands.end(commandBuffer);
+    m_dynamicRenderingCommands.end(commandBuffer);
 
-    const VkImageMemoryBarrier renderToTransfer = vkrender::MakeImageBarrier(
+    const VkImageMemoryBarrier2 renderToTransfer = MakeImageBarrier(
         target.color->GetImage(), VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        VK_IMAGE_ASPECT_COLOR_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         0, 0, nullptr, 0, nullptr, 1, &renderToTransfer);
+        VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    VkDependencyInfo transferDependency{};
+    transferDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    transferDependency.imageMemoryBarrierCount = 1;
+    transferDependency.pImageMemoryBarriers = &renderToTransfer;
+    m_synchronization2Commands.barrier(commandBuffer, &transferDependency);
     target.colorLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
     const float normalizedX = std::clamp(request.x / request.viewportWidth, 0.0f, 0.999999f);

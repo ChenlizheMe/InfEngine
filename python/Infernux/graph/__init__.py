@@ -21,7 +21,15 @@ from .parameters import (
     graph_parameter_attributes_with_hdr,
 )
 from .parameter_transactions import GraphParameterDiff, GraphParameterTransaction
-from .ramp import CURVE_WRAP_MODES, GRADIENT_MODES, MAX_RAMP_KEYS, Curve, CurveKey, Gradient, GradientKey
+from .ramp import (
+    CURVE_WRAP_MODES,
+    GRADIENT_MODES,
+    MAX_RAMP_KEYS,
+    AnimationCurve,
+    Gradient,
+    GradientKey,
+    Keyframe,
+)
 from .registry import (
     COMMON_NODE_REGISTRY,
     NodeDef,

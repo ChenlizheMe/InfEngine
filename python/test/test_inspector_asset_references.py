@@ -1,6 +1,4 @@
 import copy
-import json
-
 from Infernux.core.assets import AssetManager
 from Infernux.core.asset_ref import RenderEffectRef
 from Infernux.engine.ui._inspector_references import (
@@ -12,19 +10,23 @@ from Infernux.engine.ui._inspector_references import (
 from Infernux.renderstack.effect_slot import EffectSlot
 
 
-def test_asset_guid_lookup_falls_back_to_adjacent_current_meta(monkeypatch, tmp_path):
+def test_asset_guid_lookup_requires_registered_identity(monkeypatch, tmp_path):
     asset = tmp_path / "Post.effectgroup"
     asset.write_text("{}", encoding="ascii")
-    (tmp_path / "Post.effectgroup.meta").write_text(
-        json.dumps(
-            {
-                "metadata": {
-                    "guid": {"type": "string", "value": "effect-guid"},
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
+
+    class RegisteredLookup:
+        @staticmethod
+        def get_guid_from_path(path):
+            return "effect-guid" if path == str(asset) else ""
+
+    monkeypatch.setattr(AssetManager, "_asset_database", RegisteredLookup())
+
+    assert _asset_guid_from_path(str(asset)) == "effect-guid"
+
+
+def test_asset_guid_lookup_rejects_unregistered_path(monkeypatch, tmp_path):
+    asset = tmp_path / "Post.effectgroup"
+    asset.write_text("{}", encoding="ascii")
 
     class EmptyLookup:
         @staticmethod
@@ -33,7 +35,10 @@ def test_asset_guid_lookup_falls_back_to_adjacent_current_meta(monkeypatch, tmp_
 
     monkeypatch.setattr(AssetManager, "_asset_database", EmptyLookup())
 
-    assert _asset_guid_from_path(str(asset)) == "effect-guid"
+    import pytest
+
+    with pytest.raises(LookupError, match="not registered"):
+        _asset_guid_from_path(str(asset))
 
 
 def test_inspector_asset_path_hint_is_project_relative(monkeypatch, tmp_path):

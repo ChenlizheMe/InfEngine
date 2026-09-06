@@ -17,7 +17,7 @@
 #define dlsym GetProcAddress
 #endif
 
-#include "InxLog.h"
+#include <core/log/InxLog.h>
 
 namespace infernux
 {
@@ -30,15 +30,12 @@ class InxExtLoad
 #if defined(__unix__) || defined(__unix) || defined(__APPLE__) || defined(__MACH__)
 #if defined(__APPLE__)
         std::string fullPath = JoinPath({dllDir, "lib" + dllName + ".dylib"});
-        INXLOG_DEBUG("Loading shared lib on macOS: ", fullPath.c_str());
 #else
         std::string fullPath = JoinPath({dllDir, "lib" + dllName + ".so"});
-        INXLOG_DEBUG("Loading shared lib on Linux: ", fullPath.c_str());
 #endif
         void *hLib = dlopen(fullPath.c_str(), RTLD_NOW | RTLD_GLOBAL);
 #else
         std::string fullPath = JoinPath({dllDir, dllName + ".dll"});
-        INXLOG_DEBUG("Loading DLL in windows: ", fullPath.c_str());
         HMODULE hLib = LoadLibraryA(fullPath.c_str());
 #endif
 
@@ -64,7 +61,6 @@ class InxExtLoad
         if (!sym)
             INXLOG_FATAL("Cannot to load symbol: ", funcName.c_str(), " from ", dllName.c_str());
 
-        INXLOG_DEBUG("Succeed to load symbol: ", funcName.c_str(), " from ", dllName.c_str());
         return sym;
     }
 

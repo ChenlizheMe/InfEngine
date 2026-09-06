@@ -1,7 +1,9 @@
 // Jolt types hidden behind opaque headers — no Jolt include needed
 #include "SceneManager.h"
 #include "Collider.h"
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
 #include "EditorCameraController.h"
+#endif
 #include "GameObject.h"
 #include "Light.h"
 #include "MeshCollider.h"
@@ -12,9 +14,14 @@
 #include "TransformECSStore.h"
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
-#include <InxLog.h>
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+#include <SDL3/SDL.h>
+#endif
 #include <algorithm>
+#include <core/log/InxLog.h>
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
 #include <function/audio/AudioEngine.h>
+#endif
 #include <platform/input/InputManager.h>
 
 namespace
@@ -32,6 +39,7 @@ namespace infernux
 
 namespace
 {
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
 void UpdateCapturedEditorCamera(EditorCameraController &controller, float deltaTime)
 {
     InputManager &input = InputManager::Instance();
@@ -84,6 +92,7 @@ void UpdateCapturedEditorCamera(EditorCameraController &controller, float deltaT
 
     controller.Update(std::max(deltaTime, 0.0f));
 }
+#endif
 } // namespace
 
 SceneManager &SceneManager::Instance()
@@ -116,11 +125,13 @@ SceneManager::SceneManager()
         }
     });
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Create editor camera
     m_editorCameraObject = std::make_unique<GameObject>("Editor Camera");
     m_editorCameraComponent = m_editorCameraObject->AddComponent<Camera>();
     m_editorCamera.SetCamera(m_editorCameraComponent);
     m_editorCamera.Reset(); // Set default position
+#endif
 }
 
 uint64_t SceneManager::GetGlobalTransformSerial() const
@@ -138,7 +149,7 @@ void SceneManager::PublishPhysicsTransformsToRenderer() noexcept
 Scene *SceneManager::CreateScene(const std::string &name)
 {
     auto scene = std::make_unique<Scene>(name);
-    scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable);
+    scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
     Scene *ptr = scene.get();
     m_scenes.push_back(std::move(scene));
 
@@ -167,8 +178,7 @@ void SceneManager::SetActiveScene(Scene *scene)
         m_resetDeltaTimeOnNextFrame = true;
     }
     if (m_activeScene) {
-        m_activeScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled &&
-                                                           m_runtimeLifecycleWorkAvailable);
+        m_activeScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
         m_activeScene->SetPlaying(m_isPlaying);
     }
 
@@ -238,11 +248,13 @@ void SceneManager::Shutdown()
     // Destroy all scenes (GameObjects → Components → Colliders → bodies).
     UnloadAllScenes();
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Destroy the editor camera object (its Camera component must leave the
     // component registry before any later teardown step).
     m_editorCamera.SetCamera(nullptr);
     m_editorCameraComponent = nullptr;
     m_editorCameraObject.reset();
+#endif
 
     // Drop callbacks so nothing external fires into a dead engine.
     m_onSceneLoaded = nullptr;
@@ -302,13 +314,12 @@ void SceneManager::SetRuntimeLifecycleCallbacks(RuntimeLifecycleBeginCallback be
         static_cast<bool>(m_runtimeLifecycleBegin) && static_cast<bool>(m_runtimeLifecycleFixedUpdate) &&
         static_cast<bool>(m_runtimeLifecycleUpdate) && static_cast<bool>(m_runtimeLifecycleLateUpdate) &&
         static_cast<bool>(m_runtimeLifecycleEditorUpdate) && static_cast<bool>(m_runtimeLifecycleEnd);
-    const bool schedulerActive = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
     for (const auto &scene : m_scenes) {
         if (scene)
-            scene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
+            scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
     }
     if (m_runtimePersistentScene)
-        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
+        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
 }
 
 void SceneManager::SetRuntimeLifecycleWorkAvailable(bool available) noexcept
@@ -317,13 +328,6 @@ void SceneManager::SetRuntimeLifecycleWorkAvailable(bool available) noexcept
         return;
 
     m_runtimeLifecycleWorkAvailable = available;
-    const bool schedulerActive = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
-    for (const auto &scene : m_scenes) {
-        if (scene)
-            scene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
-    }
-    if (m_runtimePersistentScene)
-        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(schedulerActive);
 }
 
 void SceneManager::SetRuntimeLifecyclePlan(uint64_t revision, size_t fixedUpdateCount, size_t updateCount,
@@ -378,9 +382,13 @@ void SceneManager::Update(float deltaTime)
 {
     m_lastFrameProfile = {};
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     auto t0 = ProfileClock::now();
     UpdateCapturedEditorCamera(m_editorCamera, deltaTime);
     m_lastFrameProfile.editorCameraMs += ProfileMsSince(t0);
+#else
+    auto t0 = ProfileClock::now();
+#endif
 
     if (!m_isPlaying && m_activeScene) {
         const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
@@ -440,6 +448,7 @@ void SceneManager::Update(float deltaTime)
         if (!TransformECSStore::Instance().IsFrameCacheActive())
             FlushPersistentPromotions();
         m_lastFrameProfile.gameplayUpdateMs += ProfileMsSince(t0);
+        ++m_runtimeFrameCount;
     }
 }
 
@@ -485,10 +494,14 @@ void SceneManager::LateUpdate(float deltaTime)
         m_lastFrameProfile.lateUpdateMs += ProfileMsSince(t0);
     }
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Update spatial audio (runs even when paused so listener position stays synced)
     auto t0 = ProfileClock::now();
     AudioEngine::Instance().Update(deltaTime);
     m_lastFrameProfile.audioMs += ProfileMsSince(t0);
+#else
+    (void)deltaTime;
+#endif
 }
 
 void SceneManager::EndFrame()
@@ -519,11 +532,14 @@ void SceneManager::Play()
         m_fixedTime = 0.0;
         m_fixedUnscaledTime = 0.0;
         m_lastScaledDeltaTime = 0.0f;
+        m_runtimeFrameCount = 0;
     }
 
     m_isPlaying = true;
     m_isPaused = false;
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     AudioEngine::Instance().ResumeAll();
+#endif
 
     // Notify renderer to exit idle mode immediately.
     if (m_onPlayStateChanged)
@@ -536,6 +552,11 @@ void SceneManager::StartActiveSceneForPlay()
 {
     if (!m_activeScene)
         return;
+
+    // Scene-relative frame numbering is the useful contract for deterministic
+    // capture and diagnostics. A transactional scene replacement therefore
+    // starts a fresh sequence even though the play session itself continues.
+    m_runtimeFrameCount = 0;
 
     const auto transitionStart = ProfileClock::now();
     m_activeScene->SetPlaying(true);
@@ -589,11 +610,14 @@ void SceneManager::Stop()
 {
     m_isPlaying = false;
     m_isPaused = false;
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     AudioEngine::Instance().ResumeAll();
+#endif
     m_fixedTimeAccumulator = 0.0f;
     m_fixedTime = 0.0;
     m_fixedUnscaledTime = 0.0;
     m_lastScaledDeltaTime = 0.0f;
+    m_runtimeFrameCount = 0;
 
     // Notify renderer that play stopped.
     if (m_onPlayStateChanged)
@@ -611,10 +635,12 @@ void SceneManager::Stop()
 void SceneManager::Pause()
 {
     m_isPaused = !m_isPaused;
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     if (m_isPaused)
         AudioEngine::Instance().PauseAll();
     else
         AudioEngine::Instance().ResumeAll();
+#endif
 }
 
 void SceneManager::Step(float deltaTime)
@@ -654,6 +680,7 @@ void SceneManager::Step(float deltaTime)
         m_activeScene->LateUpdate(deltaTime);
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->LateUpdate(deltaTime);
+    ++m_runtimeFrameCount;
     if (!TransformECSStore::Instance().IsFrameCacheActive())
         FlushPersistentPromotions();
     if (m_activeScene)
@@ -693,8 +720,7 @@ Scene *SceneManager::EnsureRuntimePersistentScene()
         return nullptr;
     if (!m_runtimePersistentScene) {
         m_runtimePersistentScene = std::make_unique<Scene>("DontDestroyOnLoad");
-        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled &&
-                                                                      m_runtimeLifecycleWorkAvailable);
+        m_runtimePersistentScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
         m_runtimePersistentScene->SetPlaying(true);
         // Start the empty Scene once. Trees transferred into it already own
         // their lifecycle state and must never replay Awake/Start/OnEnable.
@@ -1237,6 +1263,20 @@ void SceneManager::NotifyMeshRendererContentChanged(MeshRenderer *renderer)
     ++m_renderContentRevision;
     if (m_renderContentRevision == 0)
         m_renderContentRevision = 1;
+}
+
+void SceneManager::NotifyMeshRendererGeometryChanged(MeshRenderer *renderer)
+{
+    if (!renderer || m_activeMeshRendererSet.find(renderer) == m_activeMeshRendererSet.end())
+        return;
+    ++m_renderContentRevision;
+    if (m_renderContentRevision == 0)
+        m_renderContentRevision = 1;
+    // Camera visibility caches use this revision for every bounds-affecting
+    // change, including procedural geometry that moves in world space.
+    ++m_renderTransformRevision;
+    if (m_renderTransformRevision == 0)
+        m_renderTransformRevision = 1;
 }
 
 void SceneManager::MarkMeshRenderersDirtyForAsset(const std::string &meshGuid, const std::string &meshPath)

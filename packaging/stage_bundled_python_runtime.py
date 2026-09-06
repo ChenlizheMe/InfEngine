@@ -12,38 +12,36 @@ import zipfile
 
 from private_python_runtime import (
     extract_runtime_archive,
+    has_runtime_build_support,
     is_current_private_runtime_root,
-    remove_legacy_installer_artifacts,
+    prune_runtime_staging_cache,
     runtime_archive_for_machine,
     verify_runtime_archive,
 )
-from runtime_requirements import RUNTIME_PROFILE_VERSION, runtime_modules, runtime_packages
+from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
+from runtime_requirements import runtime_modules, runtime_packages
 import logging
+
+from hub_utils import get_hub_shared_data_dir, merge_child_env_utf8
 
 _RUNTIME_PACKAGES = runtime_packages()
 _RUNTIME_MODULES = runtime_modules()
 _RUNTIME_PROFILE_FILENAME = ".infernux-runtime-profile.json"
+_TARGET_RUNTIME = DEFAULT_PYTHON_RUNTIME
+_TARGET_VERSION = _TARGET_RUNTIME.series
+_TARGET_DIRECTORY = _TARGET_RUNTIME.directory_name
 
 
 def _child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    env = {**os.environ, **(extra or {})}
-    if sys.platform == "win32":
-        env.setdefault("PYTHONUTF8", "1")
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-    return env
+    return merge_child_env_utf8(extra)
 _RUNTIME_PRUNE_DIR_NAMES = {"__pycache__", ".pytest_cache", "test", "tests"}
 _RUNTIME_PRUNE_FILE_SUFFIXES = (".pyc", ".pyo")
-if sys.platform == "win32":
-    _BOOTSTRAP_ROOT = os.path.join(os.environ.get("SystemDrive", "C:"), "_InxRuntime")
-else:
-    _BOOTSTRAP_ROOT = os.path.join(os.path.expanduser("~"), ".infernux", "_InxRuntime")
 
 
-def _runtime_lib_names() -> list[str]:
-    version = f"{sys.version_info.major}{sys.version_info.minor}"
-    if sys.platform == "darwin":
-        return [f"libpython{version}.dylib", "libpython3.dylib"]
-    return [f"python{version}.lib", "python3.lib"]
+def _bootstrap_root() -> str:
+    return os.path.join(get_hub_shared_data_dir(), "Downloads", "RuntimeBootstrap")
+
+
 
 
 def _run(args: list[str], *, timeout: int = 20) -> subprocess.CompletedProcess:
@@ -62,7 +60,7 @@ def _run(args: list[str], *, timeout: int = 20) -> subprocess.CompletedProcess:
     return subprocess.run(args, **kwargs)
 
 
-def _is_python312(python_exe: str) -> bool:
+def _is_target_python(python_exe: str) -> bool:
     if not python_exe or not os.path.isfile(python_exe):
         return False
 
@@ -71,7 +69,7 @@ def _is_python312(python_exe: str) -> bool:
         "-c",
         "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
     ])
-    return completed.returncode == 0 and (completed.stdout or "").strip() == "3.12"
+    return completed.returncode == 0 and (completed.stdout or "").strip() == _TARGET_VERSION
 
 
 def _find_python_in_root(root: str) -> str | None:
@@ -82,31 +80,20 @@ def _find_python_in_root(root: str) -> str | None:
         direct_candidates = [
             os.path.join(root, "python.exe"),
             os.path.join(root, "Python.exe"),
-            os.path.join(root, "Python312", "python.exe"),
+            os.path.join(root, f"Python{_TARGET_RUNTIME.major}{_TARGET_RUNTIME.minor}", "python.exe"),
         ]
     else:
         direct_candidates = [
-            os.path.join(root, "bin", "python3.12"),
+            os.path.join(root, "bin", f"python{_TARGET_VERSION}"),
             os.path.join(root, "bin", "python3"),
             os.path.join(root, "bin", "python"),
-            os.path.join(root, "python3.12"),
+            os.path.join(root, f"python{_TARGET_VERSION}"),
             os.path.join(root, "python3"),
         ]
     for candidate in direct_candidates:
-        if _is_python312(candidate):
+        if _is_target_python(candidate):
             return candidate
 
-    exe_name = "python.exe" if sys.platform == "win32" else "python3"
-    for current_root, _dirs, files in os.walk(root):
-        for filename in files:
-            if sys.platform == "win32":
-                if filename.lower() != "python.exe":
-                    continue
-            elif filename not in ("python3.12", "python3", "python"):
-                continue
-            candidate = os.path.join(current_root, filename)
-            if _is_python312(candidate):
-                return candidate
     return None
 
 
@@ -125,14 +112,7 @@ def _is_embedded_root(root: str) -> bool:
 
 
 def _has_dev_support(root: str) -> bool:
-    include_dir = os.path.join(root, "include")
-    if sys.platform == "darwin":
-        libs_dir = os.path.join(root, "lib")
-    else:
-        libs_dir = os.path.join(root, "libs")
-    if not os.path.isfile(os.path.join(include_dir, "Python.h")):
-        return False
-    return any(os.path.isfile(os.path.join(libs_dir, name)) for name in _runtime_lib_names())
+    return has_runtime_build_support(root, _TARGET_RUNTIME)
 
 
 def _fast_copy_threads() -> int:
@@ -219,9 +199,8 @@ def _runtime_profile_path(dest_root: str) -> str:
 
 
 def _runtime_profile_payload() -> dict[str, object]:
-    archive = runtime_archive_for_machine()
+    archive = runtime_archive_for_machine(runtime=_TARGET_RUNTIME)
     return {
-        "profile_version": RUNTIME_PROFILE_VERSION,
         "source": "runtime-cache",
         "python_archive": archive.name,
         "python_archive_sha256": archive.sha256,
@@ -237,8 +216,7 @@ def _profile_matches(dest_root: str) -> bool:
     try:
         with open(profile_path, "r", encoding="utf-8") as f:
             profile = json.load(f)
-    except (OSError, json.JSONDecodeError) as _exc:
-        logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
+    except (OSError, json.JSONDecodeError):
         return False
 
     return profile == _runtime_profile_payload()
@@ -256,7 +234,7 @@ def _write_runtime_profile(dest_root: str) -> None:
 def _prune_runtime_root(dest_root: str) -> None:
     for rel_path in (
         "python.pdb",
-        "python312.pdb",
+        f"{_TARGET_RUNTIME.windows_library_stem}.pdb",
         "pythonw.pdb",
         os.path.join("Lib", "test"),
         os.path.join("Lib", "idlelib"),
@@ -275,10 +253,7 @@ def _prune_runtime_root(dest_root: str) -> None:
                 dirs.remove(dirname)
         for filename in files:
             if filename.lower().endswith(_RUNTIME_PRUNE_FILE_SUFFIXES):
-                try:
-                    os.remove(os.path.join(current_root, filename))
-                except OSError as _exc:
-                    logging.getLogger(__name__).debug("[Suppressed] %s: %s", type(_exc).__name__, _exc)
+                os.remove(os.path.join(current_root, filename))
 
 
 def _ensure_pip(python_exe: str) -> None:
@@ -310,7 +285,6 @@ def _ensure_builder_packages(root: str) -> None:
         "--no-input",
         "--prefer-binary",
         "--no-compile",
-        "--no-cache-dir",
         "--upgrade",
         *_RUNTIME_PACKAGES,
     ], timeout=1800)
@@ -356,7 +330,10 @@ def _create_runtime_bundle(dest_root: str) -> None:
 
 
 def _archive_cache_path(cache_root: str) -> str:
-    return os.path.join(cache_root, runtime_archive_for_machine().name)
+    return os.path.join(
+        cache_root,
+        runtime_archive_for_machine(runtime=_TARGET_RUNTIME).name,
+    )
 
 
 def _extract_full_runtime(dest_root: str, *, archive_cache_root: str | None = None) -> None:
@@ -364,7 +341,7 @@ def _extract_full_runtime(dest_root: str, *, archive_cache_root: str | None = No
     os.makedirs(parent, exist_ok=True)
     cache_root = os.path.abspath(archive_cache_root) if archive_cache_root else parent
     os.makedirs(cache_root, exist_ok=True)
-    archive = runtime_archive_for_machine()
+    archive = runtime_archive_for_machine(runtime=_TARGET_RUNTIME)
     archive_path = _archive_cache_path(cache_root)
     if os.path.isfile(archive_path):
         try:
@@ -381,20 +358,24 @@ def _extract_full_runtime(dest_root: str, *, archive_cache_root: str | None = No
         os.replace(temporary, archive_path)
 
     extract_runtime_archive(
-        archive_path, dest_root, expected_sha256=archive.sha256
+        archive_path,
+        dest_root,
+        expected_sha256=archive.sha256,
+        runtime=_TARGET_RUNTIME,
     )
 
     python_exe = _find_python_in_root(dest_root)
-    if not python_exe or not _is_python312(python_exe) or _is_embedded_root(dest_root):
+    if not python_exe or not _is_target_python(python_exe) or _is_embedded_root(dest_root):
         raise SystemExit(
-            "Python 3.12 archive extraction completed, but a valid private runtime was not found afterwards."
+            f"Python {_TARGET_VERSION} archive extraction completed, but a valid private runtime was not found afterwards."
         )
 
 
-def _stage_clean_runtime_fallback(dest_root: str) -> None:
-    os.makedirs(_BOOTSTRAP_ROOT, exist_ok=True)
-    bootstrap_dir = tempfile.mkdtemp(prefix="bundle-", dir=_BOOTSTRAP_ROOT)
-    bootstrap_root = os.path.join(bootstrap_dir, "python312")
+def _stage_runtime_from_archive(dest_root: str) -> None:
+    bootstrap_parent = _bootstrap_root()
+    os.makedirs(bootstrap_parent, exist_ok=True)
+    bootstrap_dir = tempfile.mkdtemp(prefix="bundle-", dir=bootstrap_parent)
+    bootstrap_root = os.path.join(bootstrap_dir, _TARGET_DIRECTORY)
     archive_cache_root = os.path.dirname(dest_root)
 
     try:
@@ -412,7 +393,7 @@ def _is_usable_full_runtime(root: str) -> bool:
     python_exe = _find_python_in_root(root)
     return bool(
         python_exe
-        and _is_python312(python_exe)
+        and _is_target_python(python_exe)
         and not _is_embedded_root(root)
         and _has_dev_support(root)
         and _has_modules(python_exe, *_RUNTIME_MODULES)
@@ -432,16 +413,23 @@ def _candidate_python_paths() -> list[str]:
             candidates.append(found)
 
     if sys.platform == "win32":
-        local_app_data = os.environ.get("LOCALAPPDATA")
         program_files = os.environ.get("ProgramFiles")
 
+        candidates.append(
+            os.path.join(
+                get_hub_shared_data_dir(),
+                "Runtimes",
+                _TARGET_DIRECTORY,
+                "python.exe",
+            )
+        )
+        local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
-            candidates.append(os.path.join(local_app_data, "InfernuxHub", "runtime", "python312", "python.exe"))
-            candidates.append(os.path.join(local_app_data, "Programs", "Python", "Python312", "python.exe"))
+            candidates.append(os.path.join(local_app_data, "Programs", "Python", f"Python{_TARGET_RUNTIME.major}{_TARGET_RUNTIME.minor}", "python.exe"))
         if program_files:
-            candidates.append(os.path.join(program_files, "Python312", "python.exe"))
+            candidates.append(os.path.join(program_files, f"Python{_TARGET_RUNTIME.major}{_TARGET_RUNTIME.minor}", "python.exe"))
 
-        py_launcher = _run(["py", "-3.12", "-c", "import sys; print(sys.executable)"])
+        py_launcher = _run(["py", f"-{_TARGET_VERSION}", "-c", "import sys; print(sys.executable)"])
         if py_launcher.returncode == 0:
             value = (py_launcher.stdout or "").strip().splitlines()
             if value:
@@ -449,16 +437,16 @@ def _candidate_python_paths() -> list[str]:
     elif sys.platform == "darwin":
         # macOS: Homebrew, python.org framework, and common paths
         candidates.extend([
-            "/usr/local/bin/python3.12",
-            "/opt/homebrew/bin/python3.12",
-            os.path.expanduser("~/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"),
-            "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12",
+            f"/usr/local/bin/python{_TARGET_VERSION}",
+            f"/opt/homebrew/bin/python{_TARGET_VERSION}",
+            os.path.expanduser(f"~/Library/Frameworks/Python.framework/Versions/{_TARGET_VERSION}/bin/python{_TARGET_VERSION}"),
+            f"/Library/Frameworks/Python.framework/Versions/{_TARGET_VERSION}/bin/python{_TARGET_VERSION}",
         ])
     else:
         # Linux
         candidates.extend([
-            "/usr/bin/python3.12",
-            "/usr/local/bin/python3.12",
+            f"/usr/bin/python{_TARGET_VERSION}",
+            f"/usr/local/bin/python{_TARGET_VERSION}",
         ])
 
     current_python = sys.executable
@@ -477,10 +465,10 @@ def _candidate_python_paths() -> list[str]:
 
 
 def main() -> int:
-    if sys.version_info[:2] != (3, 12):
+    if sys.version_info[:2] != (_TARGET_RUNTIME.major, _TARGET_RUNTIME.minor):
         current = os.path.normcase(os.path.abspath(sys.executable))
         for candidate in _candidate_python_paths():
-            if not _is_python312(candidate):
+            if not _is_target_python(candidate):
                 continue
             if os.path.normcase(os.path.abspath(candidate)) == current:
                 continue
@@ -490,7 +478,7 @@ def main() -> int:
             )
             return completed.returncode
         raise SystemExit(
-            f"This staging script must run under Python 3.12, but got {sys.version.split()[0]} from {sys.executable}."
+            f"This staging script must run under Python {_TARGET_VERSION}, but got {sys.version.split()[0]} from {sys.executable}."
         )
 
     parser = argparse.ArgumentParser()
@@ -499,17 +487,17 @@ def main() -> int:
 
     dest_root = os.path.abspath(args.dest_root)
     bundle_path = _runtime_bundle_path(dest_root)
-    remove_legacy_installer_artifacts(os.path.dirname(dest_root))
+    prune_runtime_staging_cache(os.path.dirname(dest_root))
 
     existing = _find_python_in_root(dest_root)
-    if existing and _is_python312(existing):
+    if existing and _is_target_python(existing):
         if (
             _is_usable_full_runtime(dest_root)
-            and is_current_private_runtime_root(dest_root)
+            and is_current_private_runtime_root(dest_root, runtime=_TARGET_RUNTIME)
             and _profile_matches(dest_root)
             and os.path.isfile(bundle_path)
         ):
-            print(f"Bundled private Python 3.12 already present: {existing}")
+            print(f"Bundled private Python {_TARGET_VERSION} already present: {existing}")
             return 0
 
         _remove_tree(dest_root)
@@ -526,17 +514,17 @@ def main() -> int:
     if os.path.isdir(dest_root):
         _remove_tree(dest_root)
 
-    print("Runtime cache missing; generating a new bundled Python 3.12 package...")
-    _stage_clean_runtime_fallback(dest_root)
+    print(f"Runtime cache missing; generating a new bundled Python {_TARGET_VERSION} package...")
+    _stage_runtime_from_archive(dest_root)
     _write_runtime_profile(dest_root)
     _create_runtime_bundle(dest_root)
     staged = _find_python_in_root(dest_root)
     if staged and _is_usable_full_runtime(dest_root):
-        print(f"Bundled Python 3.12 staged from an isolated archive: {dest_root}")
+        print(f"Bundled Python {_TARGET_VERSION} staged from an isolated archive: {dest_root}")
         return 0
 
     raise SystemExit(
-        "Unable to prepare a usable bundled Python 3.12 runtime under out/package/runtime/python312."
+        f"Unable to prepare a usable bundled Python {_TARGET_VERSION} runtime in the preset staging tree."
     )
 
 

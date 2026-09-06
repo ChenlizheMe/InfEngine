@@ -179,23 +179,19 @@ class AnimationClip:
         """
         if not self.frames:
             return ""
-        texture_path = ""
         guid = str(self.authoring_texture_guid or "").strip()
-        if guid and guid_paths is not None:
+        if not guid:
+            raise ValueError(
+                "animation clip frames require an authoring Sprite texture GUID"
+            )
+        if guid_paths is not None:
             texture_path = str(guid_paths.get(guid) or "").strip()
-        if guid and not texture_path:
-            try:
-                from Infernux.core.assets import AssetManager
+        else:
+            from Infernux.core.assets import AssetManager
 
-                database = getattr(AssetManager, "_asset_database", None)
-                if database is not None:
-                    texture_path = str(
-                        database.get_path_from_guid(guid) or ""
-                    ).strip()
-            except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
-                texture_path = ""
-        if not texture_path:
-            texture_path = str(self.authoring_texture_path or "").strip()
+            texture_path = str(
+                AssetManager.require_asset_database().get_path_from_guid(guid) or ""
+            ).strip()
         if texture_path and not os.path.isabs(texture_path) and project_root:
             texture_path = os.path.join(project_root, texture_path)
         texture_path = lexical_path(texture_path) if texture_path else ""

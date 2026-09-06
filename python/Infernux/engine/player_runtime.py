@@ -31,7 +31,8 @@ class PlayerRuntimeSession:
         self._native_engine = native_engine
         if scheduler is None:
             from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
-            scheduler = RuntimeExecutionScheduler(name="player")
+
+            scheduler = RuntimeExecutionScheduler(name="player", native_bridge=True)
         self._execution_scheduler = scheduler
         self._scene_service = scene_service or PlayerSceneService(
             asset_database=asset_database,
@@ -126,7 +127,6 @@ class PlayerRuntimeSession:
             "_scene_backup",
             "_scene_dirty_backup",
             "_resources_manager",
-            "_script_compiler",
             "_selection_manager",
             "_undo_manager",
             "_preview_service",
@@ -164,7 +164,6 @@ class PlayerRuntimeSession:
             Debug.log_error("Player activation rejected: runtime contract is not configured")
             return False
         from Infernux.lib import SceneManager
-        from Infernux.renderstack.render_stack import RenderStack
 
         scene = SceneManager.instance().get_active_scene()
         if scene is None:
@@ -172,7 +171,12 @@ class PlayerRuntimeSession:
             return False
         Time._reset()
         self._last_frame_time = time.time()
-        RenderStack._active_instance = None
+        from Infernux.lib import _Infernux as native_module
+
+        if getattr(native_module, "__runtime_profile__", "desktop") != "web-player":
+            from Infernux.renderstack.render_stack import RenderStack
+
+            RenderStack._active_instance = None
         from Infernux.scene import SceneManager as RuntimeSceneManager
 
         # Install the packaged scene owner before native ``play()`` dispatches
@@ -191,7 +195,6 @@ class PlayerRuntimeSession:
             self._scene_service_installed = False
             raise
         self._state = "playing"
-        Debug.log_internal("Player runtime session activated")
         return True
 
     def tick(self, external_delta_time: Optional[float] = None) -> float:

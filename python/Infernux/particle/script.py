@@ -23,7 +23,7 @@ from Infernux.graph import (
 )
 from Infernux.graph.expression_ir import ExpressionCompileError, ExpressionCompiler
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
-from Infernux.graph.ramp import Curve, CurveKey, Gradient, GradientKey
+from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
 
 from .asset import (
     EmitterSettings,
@@ -572,7 +572,7 @@ class ParticleScriptCompiler:
             )
 
         def parameter_default(value):
-            if isinstance(value, (Curve, Gradient, AssetReference)):
+            if isinstance(value, (AnimationCurve, Gradient, AssetReference)):
                 return value.to_dict()
             if isinstance(value, tuple):
                 return list(value)
@@ -2046,7 +2046,9 @@ class ParticleScriptCompiler:
                     node,
                     f"{node.func.attr} requires authored keys and one sample input",
                 )
-            expected_type = Curve if node.func.attr == "sample_curve" else Gradient
+            expected_type = (
+                AnimationCurve if node.func.attr == "sample_curve" else Gradient
+            )
             literal_constructor = (
                 isinstance(node.args[0], ast.Call)
                 and isinstance(node.args[0].func, ast.Name)
@@ -2401,8 +2403,8 @@ class ParticleScriptCompiler:
             ),
             "AssetReference": ("guid", "path_hint"),
             "VectorField": (),
-            "CurveKey": ("time", "value", "in_tangent", "out_tangent"),
-            "Curve": ("keys", "pre_wrap", "post_wrap"),
+            "Keyframe": ("time", "value", "in_tangent", "out_tangent"),
+            "AnimationCurve": ("keys", "pre_wrap", "post_wrap"),
             "GradientKey": ("time", "color"),
             "Gradient": ("keys", "mode"),
             "EventField": ("stable_id", "name", "value_type", "default", "space"),
@@ -2434,8 +2436,8 @@ class ParticleScriptCompiler:
             "EmitterShape": EmitterShape,
             "AssetReference": AssetReference,
             "VectorField": VectorField,
-            "CurveKey": CurveKey,
-            "Curve": Curve,
+            "Keyframe": Keyframe,
+            "AnimationCurve": AnimationCurve,
             "GradientKey": GradientKey,
             "Gradient": Gradient,
             "EventField": EventField,
@@ -2467,8 +2469,8 @@ class ParticleScriptCompiler:
             "EmitterShape",
             "AssetReference",
             "VectorField",
-            "CurveKey",
-            "Curve",
+            "Keyframe",
+            "AnimationCurve",
             "GradientKey",
             "Gradient",
             "EventField",
@@ -2623,8 +2625,8 @@ class ParticleScriptCompiler:
 
 __all__ = [
     "AssetReference",
-    "Curve",
-    "CurveKey",
+    "AnimationCurve",
+    "Keyframe",
     "EventField",
     "EventType",
     "InitContext",

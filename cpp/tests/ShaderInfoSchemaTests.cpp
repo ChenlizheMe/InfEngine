@@ -195,36 +195,37 @@ void surface(out SurfaceData s) {
         misplacedUnsupportedDescriptor.errors.begin(), misplacedUnsupportedDescriptor.errors.end(),
         [](const std::string &error) { return error.find("only valid in ShadingModelInfo") != std::string::npos; }));
 
-    const std::string legacyCapabilityShadingModelSource = R"(
+    const std::string invalidCapabilityShadingModelSource = R"(
 ShadingModelInfo {
-    Name "Tests/LegacyCapability"
+    Name "Tests/InvalidCapability"
     Capabilities [Deferred]
 }
 void shading(in SurfaceData s, out vec4 color) {
     color = vec4(s.albedo, s.alpha);
 }
 )";
-    const auto legacyCapabilityDescriptor =
-        compiler.ParseShaderSource(legacyCapabilityShadingModelSource, "LegacyCapability.shadingmodel");
-    assert(!legacyCapabilityDescriptor.errors.empty());
+    const auto invalidCapabilityDescriptor =
+        compiler.ParseShaderSource(invalidCapabilityShadingModelSource, "InvalidCapability.shadingmodel");
+    assert(!invalidCapabilityDescriptor.errors.empty());
     assert(std::any_of(
-        legacyCapabilityDescriptor.errors.begin(), legacyCapabilityDescriptor.errors.end(),
+        invalidCapabilityDescriptor.errors.begin(), invalidCapabilityDescriptor.errors.end(),
         [](const std::string &error) { return error.find("does not accept Capabilities") != std::string::npos; }));
 
-    const std::string legacyShadingModelSource = R"(
+    const std::string invalidEntryShadingModelSource = R"(
 ShadingModelInfo {
-    Name "Tests/LegacyEntries"
+    Name "Tests/InvalidEntries"
     Entry Forward evaluateForward
 }
 void evaluateForward(in SurfaceData s, out vec4 color) {
     color = vec4(s.albedo, s.alpha);
 }
 )";
-    const auto legacyDescriptor = compiler.ParseShaderSource(legacyShadingModelSource, "LegacyEntries.shadingmodel");
-    assert(!legacyDescriptor.errors.empty());
-    assert(std::any_of(legacyDescriptor.errors.begin(), legacyDescriptor.errors.end(), [](const std::string &error) {
-        return error.find("Entry declarations were removed") != std::string::npos;
-    }));
+    const auto invalidEntryDescriptor =
+        compiler.ParseShaderSource(invalidEntryShadingModelSource, "InvalidEntries.shadingmodel");
+    assert(!invalidEntryDescriptor.errors.empty());
+    assert(
+        std::any_of(invalidEntryDescriptor.errors.begin(), invalidEntryDescriptor.errors.end(),
+                    [](const std::string &error) { return error.find("does not accept Entry") != std::string::npos; }));
 
     const std::string standalonePassSource = R"(
 #version 450
@@ -259,6 +260,11 @@ void main() {
     assert(standaloneInfo.pushConstants->fields.size() == 2);
     assert(!infernux::FindShaderLayoutDeclaration(standalonePassSource).has_value());
     RequireCompiles(compiler, standalonePassSource, "StandalonePass.frag");
+    const auto crossPlatformGlsl = compiler.PrepareAuthoredStageGlsl(standalonePassSource, "StandalonePass.frag");
+    assert(!crossPlatformGlsl.empty());
+    assert(crossPlatformGlsl.find("ShaderInfo") == std::string::npos);
+    assert(crossPlatformGlsl.find("layout(location = 0) in vec2 inputUv") != std::string::npos);
+    assert(crossPlatformGlsl.find("layout(location = 0) out vec4 outputColor") != std::string::npos);
 
     const std::string linkedSurfaceStandalone = R"(
 #version 450
@@ -337,12 +343,6 @@ VertexOutput vertex(inout VertexInput v) {
                                  shaderRoot + "/particle_six_way_smoke.frag");
     RequireLinkedProgramCompiles(compiler, shaderRoot + "/spectral_ocean.vert", shaderRoot + "/spectral_ocean.frag");
 
-    const std::string removedAnnotationSource =
-        "#version 450\n" + std::string(1, '@') + "shader_id: Removed\nvoid main() { }\n";
-    const infernux::ShaderDescriptor removedAnnotationDescriptor =
-        compiler.ParseShaderSource(removedAnnotationSource, "Removed.frag");
-    assert(!removedAnnotationDescriptor.errors.empty());
-
     const infernux::ShaderDescriptor gridDescriptor =
         compiler.ParseShaderSource(ReadText(std::string(INFERNUX_TEST_SHADER_ROOT) + "/grid.frag"), "grid.frag");
     assert(gridDescriptor.surfaceOptions.surfaceType == "transparent");
@@ -420,7 +420,7 @@ void surface(out SurfaceData s) {
     RequireCompiles(compiler, fragmentSource, "StructuredUnlit.frag");
 
     const auto invalid =
-        infernux::ParseShaderInfo("ShaderInfo { Version 2 Properties { Float x = 1.0 Float x = 2.0 } }");
+        infernux::ParseShaderInfo("ShaderInfo { UnexpectedField 2 Properties { Float x = 1.0 Float x = 2.0 } }");
     assert(!invalid.IsValid());
     assert(invalid.diagnostics.size() >= 2);
 
@@ -445,12 +445,6 @@ void main() { outColor = vec4(1.0); }
     assert(layoutLocation->line == 4);
     const auto layoutDescriptor = compiler.ParseShaderSource(forbiddenLayout, "NoLayout.frag");
     assert(!layoutDescriptor.errors.empty());
-
-    const auto mixedDescriptor =
-        compiler.ParseShaderSource("ShaderInfo { Name \"Tests/Mixed\" }\n" + std::string(1, '@') +
-                                       "queue: 2100\nvoid surface(out SurfaceData s) {}\n",
-                                   "Mixed.frag");
-    assert(!mixedDescriptor.errors.empty());
 
     std::cout << "ShaderInfo schema tests passed\n";
     return 0;

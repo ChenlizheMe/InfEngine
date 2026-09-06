@@ -30,6 +30,18 @@ from Infernux.engine.build_settings import (
     load_build_settings,
 )
 from Infernux.engine.build_cancellation import BuildCancelled
+from Infernux.engine.build import (
+    BuildCancellationToken,
+    BuildConfiguration,
+    BuildProfile,
+    BuildRequest,
+    BuildService,
+    BuildUnavailableError,
+    build_progress_fraction,
+    current_host_player_target,
+    exporter_registry,
+    platform_support_catalog,
+)
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.game_builder import (
     BuildOutputDirectoryError,
@@ -45,6 +57,7 @@ from Infernux.engine.interaction import (
     normalize_build_settings,
 )
 from .editor_panel import EditorPanel
+from .dpi import scaled_editor_metric
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 from ._dialogs import pick_folder_dialog, pick_file_dialog
@@ -60,7 +73,7 @@ _ICON_EXTS = {".png", ".jpg", ".jpeg", ".ico"}
 
 _DISPLAY_MODES_KEYS = ["build.fullscreen_borderless", "build.windowed"]
 _DISPLAY_MODE_KEYS = ["fullscreen_borderless", "windowed"]
-
+_ANDROID_ARTIFACTS = ["apk", "aab"]
 
 # ---------------------------------------------------------------------------
 # Drag-drop type & style constants
@@ -69,6 +82,14 @@ _DISPLAY_MODE_KEYS = ["fullscreen_borderless", "windowed"]
 DRAG_DROP_SCENE = "SCENE_FILE"
 DRAG_DROP_REORDER = "BUILD_REORDER"
 _DRAG_TARGET_COLOR = Theme.DRAG_DROP_TARGET
+
+
+def _metric(ctx, value: float) -> float:
+    return scaled_editor_metric(ctx, value)
+
+
+def _metric_pair(ctx, value) -> tuple[float, float]:
+    return (_metric(ctx, value[0]), _metric(ctx, value[1]))
 
 
 def _bind_build_settings_panel(panel: object) -> PanelCommandAdapter:
@@ -89,7 +110,9 @@ def _bind_build_settings_panel(panel: object) -> PanelCommandAdapter:
             ),
             "build.start_and_run": BoundPanelCommand(
                 lambda _context: panel.command_start_build(run_after=True),
-                lambda _context: panel.can_start_build(),
+                lambda _context: (
+                    panel.can_start_build() and panel.can_run_after_build()
+                ),
             ),
             "build.cancel": BoundPanelCommand(
                 lambda _context: panel.command_cancel_build(),
@@ -122,10 +145,12 @@ class BuildSettingsPanel(EditorPanel):
 
     def __init__(self):
         super().__init__(title="Build Settings", window_id="build_settings")
+        self._build_target: str = ""
+        self._android_artifact: str = "apk"
         self._game_name: str = ""
         self._scenes: List[str] = []
         self._output_dir: str = ""
-        self._icon_path: str = ""
+        self._icon_guid: str = ""
         self._display_mode_idx: int = 0  # 0=fullscreen, 1=windowed
         self._window_width: int = 1280
         self._window_height: int = 720
@@ -144,6 +169,8 @@ class BuildSettingsPanel(EditorPanel):
         self._build_error: Optional[str] = None
         self._build_output_dir: Optional[str] = None
         self._cancel_event: threading.Event = threading.Event()
+        self._build_cancellation: BuildCancellationToken | None = None
+        self._active_build_target: str = ""
 
     def _initial_size(self) -> tuple[float, float]:
         return 980.0, 720.0
@@ -192,6 +219,58 @@ class BuildSettingsPanel(EditorPanel):
     def get_scene_list(self) -> List[str]:
         return list(self._scenes)
 
+    def _available_build_targets(self):
+        targets = exporter_registry.targets()
+        desktop = current_host_player_target(targets)
+        desktop_id = str(desktop.id) if desktop is not None else ""
+        return tuple(
+            sorted(
+                targets,
+                key=lambda item: (
+                    str(item.id) != desktop_id,
+                    item.platform,
+                    item.display_name.casefold(),
+                ),
+            )
+        )
+
+    def _resolved_build_target(self):
+        targets = self._available_build_targets()
+        selected = str(getattr(self, "_build_target", "") or "")
+        for target in targets:
+            if target.id == selected:
+                return target
+        # A persisted non-empty target is intentional. If its platform plugin
+        # is unavailable, keep the selection visible instead of silently
+        # changing the project to the current host target.
+        if selected:
+            return None
+        desktop = current_host_player_target(targets)
+        if desktop is not None:
+            for target in targets:
+                if target.id == desktop.id:
+                    return target
+        return targets[0] if targets else None
+
+    def _synchronize_build_target(self, *, persist: bool) -> object | None:
+        target = self._resolved_build_target()
+        if str(getattr(self, "_build_target", "") or ""):
+            return target
+        identifier = str(target.id) if target is not None else ""
+        if identifier == getattr(self, "_build_target", ""):
+            return target
+        self._build_target = identifier
+        if persist and getattr(self, "_settings_controller", None) is not None:
+            self._save()
+        return target
+
+    def _is_desktop_target(self, target_id: str | None = None) -> bool:
+        desktop = current_host_player_target(exporter_registry.targets())
+        identifier = str(
+            target_id if target_id is not None else getattr(self, "_build_target", "")
+        )
+        return desktop is not None and identifier == desktop.id
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -208,29 +287,29 @@ class BuildSettingsPanel(EditorPanel):
         self._apply_build_settings(document["build"])
 
     def _apply_build_settings(self, data: dict) -> None:
-        self._game_name = data.get("game_name", "")
-        self._scenes = list(data.get("scenes", []))
-        self._output_dir = data.get("output_dir", "")
-        self._icon_path = data.get("icon_path", "")
-        mode_key = data.get("display_mode", "fullscreen_borderless")
-        self._display_mode_idx = (
-            _DISPLAY_MODE_KEYS.index(mode_key)
-            if mode_key in _DISPLAY_MODE_KEYS else 0
-        )
-        self._window_width = data.get("window_width", 1280)
-        self._window_height = data.get("window_height", 720)
-        self._window_resizable = data.get("window_resizable", True)
-        self._debug_mode = data.get("debug_mode", False)
-        self._lto = data.get("lto", True)
-        self._enable_jit = data.get("enable_jit", False)
-        self._splash_items = list(data.get("splash_items", []))
+        self._build_target = data["build_target"]
+        self._android_artifact = data["android_artifact"]
+        self._game_name = data["game_name"]
+        self._scenes = list(data["scenes"])
+        self._output_dir = data["output_dir"]
+        self._icon_guid = data["icon_guid"]
+        self._display_mode_idx = _DISPLAY_MODE_KEYS.index(data["display_mode"])
+        self._window_width = data["window_width"]
+        self._window_height = data["window_height"]
+        self._window_resizable = data["window_resizable"]
+        self._debug_mode = data["debug_mode"]
+        self._lto = data["lto"]
+        self._enable_jit = data["enable_jit"]
+        self._splash_items = list(data["splash_items"])
 
     def _capture_build_settings(self) -> dict:
         return normalize_build_settings({
+            "build_target": self._build_target,
+            "android_artifact": self._android_artifact,
             "game_name": self._game_name,
             "scenes": self._scenes,
             "output_dir": self._output_dir,
-            "icon_path": self._icon_path,
+            "icon_guid": self._icon_guid,
             "display_mode": _DISPLAY_MODE_KEYS[self._display_mode_idx],
             "window_width": self._window_width,
             "window_height": self._window_height,
@@ -289,46 +368,62 @@ class BuildSettingsPanel(EditorPanel):
         )
         return bool(BuildPreflightProgressService.instance().is_active)
 
-    def _footer_reserve_height(self) -> float:
+    def _footer_reserve_height(self, ctx) -> float:
         if self._building:
-            return 56.0 if self._is_preflight_active() else 96.0
+            value = 56.0 if self._is_preflight_active() else 96.0
+            return _metric(ctx, value)
         if self._build_error:
-            return 176.0
+            return _metric(ctx, 176.0)
         if self._build_cancelled or self._build_output_dir:
-            return 72.0
-        return 52.0
+            return _metric(ctx, 72.0)
+        return _metric(ctx, 52.0)
 
     def _render_wrapped_message(self, ctx, message: str, *, color=None, height: Optional[float] = None) -> None:
         if color is not None:
             ctx.push_style_color(ImGuiCol.Text, *color)
-        writer = getattr(ctx, "text_wrapped", None)
-        if height is not None:
-            if ctx.begin_child("##build_status_message", 0, float(height), True):
-                if callable(writer):
-                    writer(str(message))
-                else:
-                    ctx.label(str(message))
-            ctx.end_child()
-        elif callable(writer):
-            writer(str(message))
-        else:
-            ctx.label(str(message))
-        if color is not None:
-            ctx.pop_style_color(1)
+        try:
+            writer = getattr(ctx, "text_wrapped", None)
+            if height is not None:
+                visible = ctx.begin_child(
+                    "##build_status_message", 0, _metric(ctx, height), True
+                )
+                try:
+                    if visible:
+                        if callable(writer):
+                            writer(str(message))
+                        else:
+                            ctx.label(str(message))
+                finally:
+                    ctx.end_child()
+            elif callable(writer):
+                writer(str(message))
+            else:
+                ctx.label(str(message))
+        finally:
+            if color is not None:
+                ctx.pop_style_color(1)
 
     def _render_action_row(self, ctx, buttons) -> None:
-        gap = 8.0
-        widths = [float(width) for _label, _callback, width, _semantic_id, _enabled in buttons]
+        gap = _metric(ctx, 8.0)
+        widths = [
+            _metric(ctx, width)
+            for _label, _callback, width, _semantic_id, _enabled in buttons
+        ]
         total = sum(widths) + gap * max(0, len(buttons) - 1)
         avail = float(ctx.get_content_region_avail_width())
         get_x = getattr(ctx, "get_cursor_pos_x", None)
         set_x = getattr(ctx, "set_cursor_pos_x", None)
         if callable(get_x) and callable(set_x) and avail > total:
             set_x(float(get_x()) + avail - total)
-        for index, (label, callback, width, semantic_id, enabled) in enumerate(buttons):
+        for index, (label, callback, _width, semantic_id, enabled) in enumerate(buttons):
             if index:
                 ctx.same_line(0, gap)
-            ctx.button(label, callback, width=float(width), height=30)
+            ctx.button(
+                label,
+                callback,
+                width=widths[index],
+                height=_metric(ctx, 30.0),
+            )
             ctx.record_semantic_item(
                 "button",
                 str(label).split("##", 1)[0].strip(),
@@ -337,32 +432,182 @@ class BuildSettingsPanel(EditorPanel):
             )
 
     def _render_body(self, ctx):
-        ctx.dummy(0.0, 4.0)
-        child_h = max(0, ctx.get_content_region_avail_height() - self._footer_reserve_height())
+        ctx.dummy(0.0, _metric(ctx, 4.0))
+        child_h = max(
+            0, ctx.get_content_region_avail_height() - self._footer_reserve_height(ctx)
+        )
         # The worker can complete between BeginDisabled and EndDisabled.
         # Keep the pair governed by one immutable decision for this frame.
         building_this_frame = self._building
          
         ctx.push_style_color(ImGuiCol.ChildBg, 0.0, 0.0, 0.0, 0.0)
         ctx.push_style_var_float(ImGuiStyleVar.ChildBorderSize, 0.0)
-        if building_this_frame:
-            ctx.begin_disabled(True)
-        if ctx.begin_child("##build_body", 0, child_h, False):
-            self._render_output_section(ctx)
-            ctx.separator()
-            self._render_display_section(ctx)
-            ctx.separator()
-            self._render_splash_section(ctx)
-            ctx.separator()
-            self._render_scene_section(ctx)
-        ctx.end_child()
-        if building_this_frame:
-            ctx.end_disabled()
-        ctx.pop_style_var(1)
-        ctx.pop_style_color(1)
+        disabled = False
+        try:
+            if building_this_frame:
+                ctx.begin_disabled(True)
+                disabled = True
+            visible = ctx.begin_child("##build_body", 0, child_h, False)
+            try:
+                if visible:
+                    self._render_target_section(ctx)
+                    ctx.separator()
+                    self._render_output_section(ctx)
+                    ctx.separator()
+                    self._render_display_section(ctx)
+                    ctx.separator()
+                    self._render_splash_section(ctx)
+                    ctx.separator()
+                    self._render_scene_section(ctx)
+            finally:
+                ctx.end_child()
+        finally:
+            if disabled:
+                ctx.end_disabled()
+            ctx.pop_style_var(1)
+            ctx.pop_style_color(1)
 
         ctx.separator()
         self._render_build_controls(ctx)
+
+    def _render_target_section(self, ctx):
+        targets = self._available_build_targets()
+        target = self._synchronize_build_target(persist=True)
+        target_by_id = {str(item.id): item for item in targets}
+        support_by_id = {
+            item.target_id: item
+            for item in platform_support_catalog(get_project_root())
+            if not item.registered
+        }
+        target_ids = [str(item.id) for item in targets]
+        target_ids.extend(
+            identifier
+            for identifier in support_by_id
+            if identifier not in target_by_id
+        )
+        selected_id = str(getattr(self, "_build_target", "") or "")
+        if selected_id and selected_id not in target_ids:
+            target_ids.append(selected_id)
+        ctx.label(t("build.target"))
+        if not target_ids:
+            ctx.record_semantic_item(
+                "status",
+                t("build.target"),
+                False,
+                "build_settings.target",
+                string_value="",
+            )
+            ctx.label(t("build.no_targets"))
+            return
+
+        if not selected_id:
+            selected_id = str(target.id) if target is not None else target_ids[0]
+            self._build_target = selected_id
+            self._save()
+        selected_index = target_ids.index(selected_id)
+        labels = []
+        for identifier in target_ids:
+            installed_target = target_by_id.get(identifier)
+            if installed_target is not None:
+                labels.append(installed_target.display_name)
+                continue
+            support = support_by_id.get(identifier)
+            display = identifier.replace("-", " ").strip().title()
+            if support is not None:
+                display = f"{display} — {t('build.plugin_required_short')}"
+            else:
+                display = f"{display} — {t('build.target_unavailable_short')}"
+            labels.append(display)
+        next_index = ctx.combo("##build_target", selected_index, labels)
+        next_index = max(0, min(len(target_ids) - 1, int(next_index)))
+        next_id = target_ids[next_index]
+        ctx.record_semantic_item(
+            "combo",
+            t("build.target"),
+            True,
+            "build_settings.target",
+            string_value=next_id,
+        )
+        if next_id != self._build_target:
+            self._build_target = next_id
+            self._save()
+
+        selected = target_by_id.get(next_id)
+        selected_support = support_by_id.get(next_id)
+        if selected_support is not None:
+            ctx.dummy(0.0, _metric(ctx, 4.0))
+            message_key = (
+                "build.plugin_disabled"
+                if selected_support.installed and not selected_support.enabled
+                else "build.plugin_required"
+            )
+            ctx.text_wrapped(
+                t(message_key).format(
+                    reference=selected_support.package_reference,
+                )
+            )
+            ctx.record_semantic_item(
+                "status",
+                t("build.target"),
+                False,
+                "build_settings.target_support",
+                string_value=selected_support.package_reference,
+            )
+            reference = selected_support.package_reference
+            ctx.dummy(0.0, _metric(ctx, 4.0))
+            ctx.button(
+                t("build.open_plugins") + "##build_open_platform_plugin",
+                lambda value=reference: self._open_platform_plugin(value),
+                width=_metric(ctx, 132.0),
+                height=_metric(ctx, 28.0),
+            )
+            ctx.record_semantic_item(
+                "button",
+                t("build.open_plugins"),
+                getattr(self, "_window_manager", None) is not None,
+                "build_settings.target_support.open_plugins",
+                string_value=reference,
+            )
+
+        selected_platform = (
+            str(selected.platform)
+            if selected is not None
+            else next_id.split("-", 1)[0]
+        )
+        if selected_platform == "android":
+            ctx.same_line(0, _metric(ctx, 20.0))
+            ctx.label(t("build.android_artifact"))
+            ctx.same_line(0, _metric(ctx, 8.0))
+            artifact_index = _ANDROID_ARTIFACTS.index(self._android_artifact)
+            next_artifact_index = ctx.combo(
+                "##android_artifact",
+                artifact_index,
+                ["APK", "AAB"],
+            )
+            next_artifact = _ANDROID_ARTIFACTS[
+                max(0, min(len(_ANDROID_ARTIFACTS) - 1, int(next_artifact_index)))
+            ]
+            ctx.record_semantic_item(
+                "combo",
+                t("build.android_artifact"),
+                True,
+                "build_settings.android_artifact",
+                string_value=next_artifact,
+            )
+            if next_artifact != self._android_artifact:
+                self._android_artifact = next_artifact
+                self._save()
+
+    def _open_platform_plugin(self, reference: str) -> bool:
+        manager = getattr(self, "_window_manager", None)
+        if manager is None:
+            return False
+        panel = manager.open_window_from_user(
+            "plugins",
+            reason="build_platform_plugin_navigation",
+        )
+        select = getattr(panel, "select_reference", None)
+        return bool(callable(select) and select(reference))
 
     # ------------------------------------------------------------------
     # OUTPUT DIRECTORY
@@ -372,7 +617,7 @@ class BuildSettingsPanel(EditorPanel):
         ctx.label(t("build.game_name"))
         root = get_project_root()
         placeholder = os.path.basename(root) if root else "MyGame"
-        ctx.set_next_item_width(300)
+        ctx.set_next_item_width(_metric(ctx, 300.0))
         new_name = ctx.text_input("##game_name", self._game_name, 256)
         ctx.record_semantic_item(
             "text_input",
@@ -384,7 +629,7 @@ class BuildSettingsPanel(EditorPanel):
         if new_name != self._game_name:
             self._game_name = new_name
             self._save()
-        ctx.same_line(0, 20)
+        ctx.same_line(0, _metric(ctx, 20.0))
         new_debug = ctx.checkbox(t("build.debug_mode") + "##debug_mode", self._debug_mode)
         ctx.record_semantic_item(
             "checkbox",
@@ -396,7 +641,7 @@ class BuildSettingsPanel(EditorPanel):
         if new_debug != self._debug_mode:
             self._debug_mode = new_debug
             self._save()
-        ctx.same_line(0, 20)
+        ctx.same_line(0, _metric(ctx, 20.0))
         new_lto = ctx.checkbox(t("build.lto") + "##lto", self._lto)
         ctx.record_semantic_item(
             "checkbox", t("build.lto"), True, "build_settings.lto", bool_value=new_lto
@@ -404,7 +649,7 @@ class BuildSettingsPanel(EditorPanel):
         if new_lto != self._lto:
             self._lto = new_lto
             self._save()
-        ctx.same_line(0, 20)
+        ctx.same_line(0, _metric(ctx, 20.0))
         new_jit = ctx.checkbox(t("build.enable_jit") + "##enable_jit", self._enable_jit)
         ctx.record_semantic_item(
             "checkbox",
@@ -423,7 +668,9 @@ class BuildSettingsPanel(EditorPanel):
             ctx.pop_style_color(1)
 
         ctx.label(t("build.output_directory"))
-        ctx.set_next_item_width(ctx.get_content_region_avail_width() - 84)
+        ctx.set_next_item_width(
+            ctx.get_content_region_avail_width() - _metric(ctx, 84.0)
+        )
         new_val = ctx.text_input("##output_dir", self._output_dir, 512)
         ctx.record_semantic_item(
             "text_input",
@@ -437,19 +684,28 @@ class BuildSettingsPanel(EditorPanel):
             self._save()
         ctx.same_line()
         browse_output_label = t("build.browse")
-        ctx.button(browse_output_label + "##browse_out", self._browse_output_dir, width=80)
+        ctx.button(
+            browse_output_label + "##browse_out",
+            self._browse_output_dir,
+            width=_metric(ctx, 80.0),
+        )
         ctx.record_semantic_item(
             "button", browse_output_label, True, "build_settings.output_dir.browse"
         )
         ctx.push_style_color(ImGuiCol.Text, 0.5, 0.5, 0.5, 1.0)
-        ctx.label(t("build.output_directory_hint").format(marker=GameBuilder.OUTPUT_MARKER_FILENAME))
+        ctx.label(t("build.output_directory_hint"))
         ctx.pop_style_color(1)
 
         ctx.label(t("build.icon"))
-        clear_btn_w = 80 if self._icon_path else 0
-        icon_input_w = ctx.get_content_region_avail_width() - 84 - (clear_btn_w + (4 if clear_btn_w else 0))
-        ctx.set_next_item_width(max(120, icon_input_w))
-        new_icon = ctx.text_input("##build_icon", self._icon_path, 512)
+        icon_path = self._asset_path_for_guid(self._icon_guid)
+        clear_btn_w = _metric(ctx, 80.0) if self._icon_guid else 0.0
+        icon_input_w = (
+            ctx.get_content_region_avail_width()
+            - _metric(ctx, 84.0)
+            - (clear_btn_w + (_metric(ctx, 4.0) if clear_btn_w else 0.0))
+        )
+        ctx.set_next_item_width(max(_metric(ctx, 120.0), icon_input_w))
+        new_icon = ctx.text_input("##build_icon", icon_path, 512)
         ctx.record_semantic_item(
             "text_input",
             t("build.icon"),
@@ -457,19 +713,29 @@ class BuildSettingsPanel(EditorPanel):
             "build_settings.icon",
             string_value=new_icon,
         )
-        if new_icon != self._icon_path:
-            self._icon_path = new_icon
-            self._save()
+        if new_icon != icon_path:
+            if new_icon:
+                self._accept_icon_path(new_icon)
+            else:
+                self._clear_icon_path()
         ctx.same_line()
         browse_icon_label = t("build.browse")
-        ctx.button(browse_icon_label + "##browse_icon", self._browse_icon_path, width=80)
+        ctx.button(
+            browse_icon_label + "##browse_icon",
+            self._browse_icon_path,
+            width=_metric(ctx, 80.0),
+        )
         ctx.record_semantic_item(
             "button", browse_icon_label, True, "build_settings.icon.browse"
         )
-        if self._icon_path:
-            ctx.same_line(0, 4)
+        if self._icon_guid:
+            ctx.same_line(0, _metric(ctx, 4.0))
             clear_icon_label = t("build.clear_icon")
-            ctx.button(clear_icon_label + "##clear_icon", self._clear_icon_path, width=80)
+            ctx.button(
+                clear_icon_label + "##clear_icon",
+                self._clear_icon_path,
+                width=_metric(ctx, 80.0),
+            )
             ctx.record_semantic_item(
                 "button", clear_icon_label, True, "build_settings.icon.clear"
             )
@@ -513,14 +779,38 @@ class BuildSettingsPanel(EditorPanel):
         self._output_dir = str(path)
         self._save()
 
+    def _asset_path_for_guid(self, guid: str) -> str:
+        if not guid:
+            return ""
+        return str(self.services.asset_database.get_path_from_guid(guid) or "")
+
+    def _guid_for_project_asset(self, path: str) -> str:
+        project_root = get_project_root()
+        if not project_root:
+            raise RuntimeError("No project root found")
+        source = resolved_path(path)
+        assets_root = os.path.join(project_root, "Assets")
+        if not is_path_within(source, assets_root, allow_root=False):
+            raise ValueError(
+                "Build branding must be imported under the project Assets directory"
+            )
+        guid = str(
+            self.services.asset_database.get_guid_from_path(source) or ""
+        ).strip()
+        if not guid:
+            raise ValueError(
+                "Build branding asset has not been imported into the Asset Database"
+            )
+        return guid
+
     def _accept_icon_path(self, path: str) -> None:
-        self._icon_path = str(path)
+        self._icon_guid = self._guid_for_project_asset(path)
         self._save()
 
     def _clear_icon_path(self):
-        if not self._icon_path:
+        if not self._icon_guid:
             return
-        self._icon_path = ""
+        self._icon_guid = ""
         self._save()
 
     # ------------------------------------------------------------------
@@ -544,7 +834,12 @@ class BuildSettingsPanel(EditorPanel):
 
         if self._display_mode_idx == 1:  # Windowed
             ctx.label(t("build.window_size"))
-            new_w = ctx.input_int(t("build.width") + "##win_w", self._window_width, 16, 160)
+            new_w = ctx.input_int(
+                t("build.width") + "##win_w",
+                self._window_width,
+                16,
+                _metric(ctx, 160.0),
+            )
             ctx.record_semantic_item(
                 "int_input",
                 t("build.width"),
@@ -556,7 +851,12 @@ class BuildSettingsPanel(EditorPanel):
                 self._window_width = max(320, min(7680, new_w))
                 self._save()
             ctx.same_line()
-            new_h = ctx.input_int(t("build.height") + "##win_h", self._window_height, 16, 160)
+            new_h = ctx.input_int(
+                t("build.height") + "##win_h",
+                self._window_height,
+                16,
+                _metric(ctx, 160.0),
+            )
             ctx.record_semantic_item(
                 "int_input",
                 t("build.height"),
@@ -588,56 +888,58 @@ class BuildSettingsPanel(EditorPanel):
 
     def _render_splash_section(self, ctx):
         ctx.label(t("build.splash_sequence"))
-        ctx.button(t("build.add_splash") + "##add_splash", self._browse_splash_file, width=200)
+        ctx.button(
+            t("build.add_splash") + "##add_splash",
+            self._browse_splash_file,
+            width=_metric(ctx, 200.0),
+        )
 
         remove_idx: Optional[int] = None
 
         for i, item in enumerate(self._splash_items):
-            ctx.push_id(i + 10000)
-            ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.BUILD_SETTINGS_ROW_SPC)
-
-            fname = os.path.basename(item.get("path", "<none>"))
+            source_path = self._asset_path_for_guid(item.get("asset_guid", ""))
+            fname = os.path.basename(source_path) if source_path else "<missing>"
             item_type = item.get("type", "image")
             badge = "[IMG]" if item_type == "image" else "[VID]"
-            source_exists = os.path.isfile(item.get("path", ""))
+            source_exists = os.path.isfile(source_path)
 
             # ── Row 1: name ──
             if not source_exists:
                 ctx.push_style_color(ImGuiCol.Text, *Theme.ERROR_TEXT)
             ctx.label(f"  {i + 1}. {badge}  {fname}")
             if not source_exists:
-                ctx.same_line(0, 8)
+                ctx.same_line(0, _metric(ctx, 8.0))
                 ctx.label(t("build.source_missing"))
                 ctx.pop_style_color(1)
             if ctx.is_item_hovered():
-                ctx.set_tooltip(item.get("path", ""))
+                ctx.set_tooltip(source_path)
 
             # ── Row 2: numeric fields ──
             if item_type == "image":
                 ctx.label(f"      {t('build.duration')} ({t('build.seconds_short')})")
-                ctx.same_line(0, 8)
-                ctx.set_next_item_width(120)
+                ctx.same_line(0, _metric(ctx, 8.0))
+                ctx.set_next_item_width(_metric(ctx, 120.0))
                 new_dur = ctx.input_float(f"##dur{i}", item.get("duration", 3.0), 0.1, 1.0)
                 if new_dur != item.get("duration", 3.0):
                     item["duration"] = max(0.1, new_dur)
                     self._save()
-                ctx.same_line(0, 24)
+                ctx.same_line(0, _metric(ctx, 24.0))
             else:
                 ctx.label("      ")
                 ctx.same_line(0, 0)
 
             ctx.label(f"{t('build.fade_in')} ({t('build.seconds_short')})")
-            ctx.same_line(0, 8)
-            ctx.set_next_item_width(120)
+            ctx.same_line(0, _metric(ctx, 8.0))
+            ctx.set_next_item_width(_metric(ctx, 120.0))
             new_fi = ctx.input_float(f"##fi{i}", item.get("fade_in", 0.5), 0.1, 0.5)
             if new_fi != item.get("fade_in", 0.5):
                 item["fade_in"] = max(0.0, new_fi)
                 self._save()
 
-            ctx.same_line(0, 24)
+            ctx.same_line(0, _metric(ctx, 24.0))
             ctx.label(f"{t('build.fade_out')} ({t('build.seconds_short')})")
-            ctx.same_line(0, 8)
-            ctx.set_next_item_width(120)
+            ctx.same_line(0, _metric(ctx, 8.0))
+            ctx.set_next_item_width(_metric(ctx, 120.0))
             new_fo = ctx.input_float(f"##fo{i}", item.get("fade_out", 0.5), 0.1, 0.5)
             if new_fo != item.get("fade_out", 0.5):
                 item["fade_out"] = max(0.0, new_fo)
@@ -646,12 +948,18 @@ class BuildSettingsPanel(EditorPanel):
             # ── Row 3: action buttons ──
             ctx.label(" ")
             
-            btn_w = 64
-            btn_spc = 4
+            btn_w = _metric(ctx, 64.0)
+            btn_spc = _metric(ctx, 4.0)
             num_btns = 1 + int(i > 0) + int(i < len(self._splash_items) - 1)
-            btn_area = num_btns * btn_w + (num_btns - 1) * btn_spc + 24
+            btn_area = (
+                num_btns * btn_w
+                + (num_btns - 1) * btn_spc
+                + _metric(ctx, 24.0)
+            )
             
-            ctx.same_line(max(ctx.get_window_width() - btn_area, 200))
+            ctx.same_line(
+                max(ctx.get_window_width() - btn_area, _metric(ctx, 200.0))
+            )
             
             if i > 0:
                 def _up(idx=i):
@@ -677,9 +985,6 @@ class BuildSettingsPanel(EditorPanel):
             ctx.button(t("build.remove") + f"##sp_{i}", _rm, width=btn_w)
 
             ctx.separator()
-
-            ctx.pop_style_var(1)
-            ctx.pop_id()
 
         if remove_idx is not None:
             del self._splash_items[remove_idx]
@@ -714,7 +1019,9 @@ class BuildSettingsPanel(EditorPanel):
         threading.Thread(target=_do, daemon=True).start()
 
     def _accept_splash_item(self, item: dict) -> None:
-        self._splash_items.append(copy.deepcopy(item))
+        current = copy.deepcopy(item)
+        current["asset_guid"] = self._guid_for_project_asset(current.pop("path"))
+        self._splash_items.append(current)
         self._save()
 
     # ------------------------------------------------------------------
@@ -749,8 +1056,6 @@ class BuildSettingsPanel(EditorPanel):
         swap_pair: Optional[tuple] = None
 
         for i, scene_path in enumerate(self._scenes):
-            ctx.push_id(i)
-
             name = os.path.splitext(os.path.basename(scene_path))[0]
             root = get_project_root() or ""
             absolute_scene = resolved_path(
@@ -764,10 +1069,8 @@ class BuildSettingsPanel(EditorPanel):
                 # Windows cannot compute a relative path across drive letters.
                 rel = absolute_scene
 
-            ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, *Theme.BUILD_SETTINGS_ROW_SPC)
-            
             # Use a fixed row height so selectable and buttons align
-            row_h = 24
+            row_h = _metric(ctx, 24.0)
             ctx.selectable(f"  {i}    {name}    ({rel})##row", False, 16, 0, row_h)
             ctx.record_semantic_item(
                 "selectable",
@@ -793,12 +1096,18 @@ class BuildSettingsPanel(EditorPanel):
                     self._add_scene(str(payload))
             IGUI.multi_drop_target(ctx, (DRAG_DROP_REORDER, DRAG_DROP_SCENE), _on_drop)
 
-            btn_w = 64
-            btn_spc = 4
+            btn_w = _metric(ctx, 64.0)
+            btn_spc = _metric(ctx, 4.0)
             num_btns = 1 + int(i > 0) + int(i < len(self._scenes) - 1)
-            btn_area = num_btns * btn_w + (num_btns - 1) * btn_spc + 24
+            btn_area = (
+                num_btns * btn_w
+                + (num_btns - 1) * btn_spc
+                + _metric(ctx, 24.0)
+            )
             
-            ctx.same_line(max(ctx.get_window_width() - btn_area, 200))
+            ctx.same_line(
+                max(ctx.get_window_width() - btn_area, _metric(ctx, 200.0))
+            )
             if i > 0:
                 def _up(idx=i):
                     self._scenes[idx - 1], self._scenes[idx] = self._scenes[idx], self._scenes[idx - 1]
@@ -826,9 +1135,6 @@ class BuildSettingsPanel(EditorPanel):
             ctx.record_semantic_item(
                 "button", t("build.remove"), True, f"build_settings.scene.{i}.remove"
             )
-
-            ctx.pop_style_var(1)
-            ctx.pop_id()
 
         if remove_idx is not None:
             del self._scenes[remove_idx]
@@ -881,7 +1187,7 @@ class BuildSettingsPanel(EditorPanel):
                     numeric_value=float(self._build_progress),
                 )
                 self._render_wrapped_message(ctx, progress_message)
-                ctx.progress_bar(self._build_progress, -1.0, 20.0, "")
+                ctx.progress_bar(self._build_progress, -1.0, _metric(ctx, 20.0), "")
             else:
                 self._render_wrapped_message(ctx, progress_message)
             cancel_label = t("build.cancel")
@@ -996,29 +1302,44 @@ class BuildSettingsPanel(EditorPanel):
                 "status", "Ready", False, "build_settings.status", string_value="ready"
             )
             can_build = self.can_start_build()
-
-            if not can_build:
-                ctx.push_style_color(ImGuiCol.Button, *Theme.BTN_DISABLED)
-                ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.BTN_DISABLED)
-                ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.BTN_DISABLED)
+            can_build_and_run = can_build and self.can_run_after_build()
 
             # Align build buttons to the right
-            ctx.same_line(max(ctx.get_window_width() - 360, 200))
-
-            ctx.button("  " + t("build.build") + "  ",
-                        lambda: self._execute_build_command("build.start") if can_build else None,
-                        width=140, height=36)
-            ctx.record_semantic_item("button", t("build.build"), can_build, "build_settings.build")
-            ctx.same_line(0, 16)
-            ctx.button("  " + t("build.build_and_run") + "  ",
-                        lambda: self._execute_build_command("build.start_and_run") if can_build else None,
-                        width=160, height=36)
-            ctx.record_semantic_item(
-                "button", t("build.build_and_run"), can_build, "build_settings.build_and_run"
+            ctx.same_line(
+                max(
+                    ctx.get_window_width() - _metric(ctx, 360.0),
+                    _metric(ctx, 200.0),
+                )
             )
 
             if not can_build:
-                ctx.pop_style_color(3)
+                ctx.begin_disabled(True)
+            ctx.button(
+                "  " + t("build.build") + "  ",
+                lambda: self._execute_build_command("build.start"),
+                width=_metric(ctx, 140.0),
+                height=_metric(ctx, 36.0),
+            )
+            ctx.record_semantic_item("button", t("build.build"), can_build, "build_settings.build")
+            if not can_build:
+                ctx.end_disabled()
+            ctx.same_line(0, _metric(ctx, 16.0))
+            if not can_build_and_run:
+                ctx.begin_disabled(True)
+            ctx.button(
+                "  " + t("build.build_and_run") + "  ",
+                lambda: self._execute_build_command("build.start_and_run"),
+                width=_metric(ctx, 160.0),
+                height=_metric(ctx, 36.0),
+            )
+            ctx.record_semantic_item(
+                "button",
+                t("build.build_and_run"),
+                can_build_and_run,
+                "build_settings.build_and_run",
+            )
+            if not can_build_and_run:
+                ctx.end_disabled()
 
     def _dismiss_build_error(self):
         self._build_error = None
@@ -1032,25 +1353,6 @@ class BuildSettingsPanel(EditorPanel):
     # ------------------------------------------------------------------
     # Build execution
     # ------------------------------------------------------------------
-
-    def _make_builder(self):
-        from Infernux.engine.game_builder import GameBuilder
-        project_root = get_project_root()
-        game_name = self._game_name.strip() or os.path.basename(project_root)
-        return GameBuilder(
-            project_root,
-            self._output_dir,
-            game_name=game_name,
-            icon_path=self._icon_path.strip() or None,
-            display_mode=_DISPLAY_MODE_KEYS[self._display_mode_idx],
-            window_width=self._window_width,
-            window_height=self._window_height,
-            window_resizable=self._window_resizable,
-            splash_items=self._splash_items,
-            debug_mode=self._debug_mode,
-            lto=self._lto,
-            enable_jit=self._enable_jit,
-        )
 
     def _execute_build_command(self, command_id: str) -> bool:
         from Infernux.engine.interaction import CommandSource
@@ -1079,13 +1381,27 @@ class BuildSettingsPanel(EditorPanel):
             preflight.cancel()
             return True
         self._cancel_event.set()
+        cancellation = getattr(self, "_build_cancellation", None)
+        if cancellation is not None:
+            cancellation.cancel()
         return True
 
     def can_start_build(self) -> bool:
-        return bool(not self._building and self._scenes and self._output_dir)
+        return bool(
+            not self._building
+            and self._scenes
+            and self._output_dir
+            and self._resolved_build_target() is not None
+        )
+
+    def can_run_after_build(self) -> bool:
+        target = self._resolved_build_target()
+        return bool(target is not None and self._is_desktop_target(str(target.id)))
 
     def command_start_build(self, *, run_after: bool) -> bool:
         if not self.can_start_build():
+            return False
+        if run_after and not self.can_run_after_build():
             return False
         return self._do_build(run_after=bool(run_after))
 
@@ -1103,10 +1419,7 @@ class BuildSettingsPanel(EditorPanel):
                 entries=", ".join(exc.entries[:5]) + (", ..." if len(exc.entries) > 5 else "")
             )
 
-        return t("build.output_directory_error_not_empty").format(
-            path=exc.path,
-            marker=exc.marker_filename,
-        ) + found_line
+        return t("build.output_directory_error_not_empty").format(path=exc.path) + found_line
 
     def _show_output_directory_error(self, exc: BuildOutputDirectoryError) -> None:
         message = self._format_output_directory_error(exc)
@@ -1144,14 +1457,9 @@ class BuildSettingsPanel(EditorPanel):
 
         return str(publish_player_asset_catalog(project_root, database)["path"])
 
-    def _bind_published_player_catalog(self, catalog):
-        """Freeze the preflight AssetIndex even if the live file vanished.
+    def _published_player_catalog_entries(self, catalog) -> list[dict]:
+        """Return the exact AssetIndex snapshot published by editor preflight."""
 
-        Document transactions treat ``Library/AssetIndex.json`` as a derived
-        artifact and delete it after source writes. Preflight can therefore
-        publish a valid catalog that is gone by the time the worker starts.
-        """
-        builder = self._make_builder()
         entries = None
         index_path = ""
         if isinstance(catalog, dict):
@@ -1174,9 +1482,83 @@ class BuildSettingsPanel(EditorPanel):
                 )
             from Infernux.engine.runtime_artifact_catalog import load_asset_index
 
-            entries = load_asset_index(builder.project_path)
-        builder.freeze_asset_index_entries(entries)
-        return builder
+            project_root = get_project_root()
+            if not project_root:
+                raise RuntimeError("No project root found")
+            entries = load_asset_index(project_root)
+        return [dict(item) for item in entries]
+
+    def _make_build_request(self, catalog, target_id: str) -> BuildRequest:
+        entries = self._published_player_catalog_entries(catalog)
+        cancellation = BuildCancellationToken()
+        self._build_cancellation = cancellation
+        configuration = (
+            BuildConfiguration.DEVELOPMENT
+            if self._debug_mode
+            else BuildConfiguration.RELEASE
+        )
+        return BuildRequest(
+            get_project_root(),
+            target_id,
+            self._output_dir,
+            BuildProfile(
+                configuration=configuration,
+                debug_symbols=self._debug_mode,
+                compress_resources=not self._debug_mode,
+                options={
+                    "android_artifact": self._android_artifact,
+                    "build_settings": self._capture_build_settings(),
+                },
+            ),
+            asset_catalog_entries=entries,
+            cancellation=cancellation,
+            progress=self._on_platform_build_progress,
+        )
+
+    def _on_platform_build_progress(self, progress) -> None:
+        self._build_message = progress.message or "Building player..."
+        self._build_progress = max(
+            self._build_progress,
+            build_progress_fraction(progress),
+        )
+        from Infernux.engine.ui.engine_status import EngineStatus
+
+        EngineStatus.set(
+            self._build_message,
+            -1.0,
+            kind="activity",
+            source="build",
+            priority=20,
+        )
+        if self._cancel_event.is_set():
+            cancellation = self._build_cancellation
+            if cancellation is not None:
+                cancellation.cancel()
+            raise BuildCancelled("Build cancelled")
+
+    @staticmethod
+    def _build_failure_message(result) -> str:
+        lines = [
+            f"[{item.code}] {item.message}"
+            for item in result.diagnostics
+            if item.message
+        ]
+        if not lines:
+            lines.append("The platform exporter did not produce a Player artifact.")
+        if result.logs:
+            lines.extend(("", "Last build output:", *result.logs[-12:]))
+        return "\n".join(lines)
+
+    def _launch_desktop_result(self, result) -> None:
+        import subprocess
+
+        output = str(result.manifest.get("output_dir", self._output_dir))
+        game_name = self._game_name.strip() or os.path.basename(get_project_root())
+        executable = game_name + (".exe" if sys.platform == "win32" else "")
+        launcher = os.path.join(output, executable)
+        if not os.path.isfile(launcher):
+            raise RuntimeError(f"Built Player launcher is missing: {launcher}")
+        subprocess.Popen([launcher], cwd=output)
 
     def _begin_asset_catalog_for_build(self):
         """Begin durable writes without blocking the build button callback."""
@@ -1243,6 +1625,14 @@ class BuildSettingsPanel(EditorPanel):
     def _do_build(self, *, run_after: bool) -> bool:
         if self._building:
             return False
+        target = self._synchronize_build_target(persist=True)
+        if target is None:
+            self._build_error = "No Player build target is currently available"
+            return False
+        target_id = str(target.id)
+        if run_after and not self._is_desktop_target(target_id):
+            self._build_error = "Build And Run is available only for the current desktop target"
+            return False
         self._building = True
         self._build_progress = 0.0
         self._build_message = "Starting build..."
@@ -1250,6 +1640,8 @@ class BuildSettingsPanel(EditorPanel):
         self._build_error = None
         self._build_output_dir = None
         self._cancel_event.clear()
+        self._build_cancellation = None
+        self._active_build_target = target_id
         from Infernux.engine.ui.engine_status import EngineStatus
         EngineStatus.set(
             self._build_message,
@@ -1273,6 +1665,8 @@ class BuildSettingsPanel(EditorPanel):
 
         def _fail_preflight(exc: Exception) -> bool:
             self._building = False
+            self._build_cancellation = None
+            self._active_build_target = ""
             if isinstance(exc, BuildOutputDirectoryError):
                 self._show_output_directory_error(exc)
             else:
@@ -1287,32 +1681,32 @@ class BuildSettingsPanel(EditorPanel):
             )
             return False
 
-        def _start_worker(builder):
+        def _start_worker(request: BuildRequest):
             def _run():
                 try:
-                    result = builder.build(
-                        on_progress=self._on_build_progress,
-                        cancel_event=self._cancel_event,
-                    )
-                    self._build_output_dir = result
-
+                    service = BuildService(exporter_registry)
+                    plan = service.create_plan(request)
+                    result = service.execute(request, plan)
+                    if not result.success:
+                        self._build_error = self._build_failure_message(result)
+                        return
+                    self._build_output_dir = request.output_dir
                     if run_after:
-                        import subprocess
-                        exe_name = f"{builder.project_name}.exe"
-                        launcher = os.path.join(result, exe_name)
-                        if os.path.isfile(launcher):
-                            subprocess.Popen([launcher], cwd=result)
+                        self._launch_desktop_result(result)
                 except BuildCancelled:
                     self._build_cancelled = True
+                except BuildUnavailableError as exc:
+                    self._build_error = "\n".join(
+                        f"[{item.code}] {item.message}"
+                        for item in exc.diagnostics
+                    )
                 except BuildOutputDirectoryError as exc:
                     self._show_output_directory_error(exc)
                 except Exception as exc:
-                    log_path = os.path.join(builder.project_path, "Logs", "build.log")
-                    if os.path.isfile(log_path):
-                        self._build_error = f"{exc}\n\nSee: {log_path}"
-                    else:
-                        self._build_error = str(exc)
+                    self._build_error = str(exc)
                 finally:
+                    self._build_cancellation = None
+                    self._active_build_target = ""
                     self._building = False
                     if self._build_cancelled:
                         EngineStatus.flash(
@@ -1344,11 +1738,10 @@ class BuildSettingsPanel(EditorPanel):
 
         def _prepare_and_start(catalog):
             try:
-                builder = self._bind_published_player_catalog(catalog)
-                builder._validate_output_directory()
+                request = self._make_build_request(catalog, target_id)
             except Exception as exc:
                 return _fail_preflight(exc)
-            _start_worker(builder)
+            _start_worker(request)
             return True
 
         # A modal is deliberately presented before catalog work begins.  It
@@ -1361,6 +1754,8 @@ class BuildSettingsPanel(EditorPanel):
         def _complete_preflight(ok: bool, result: object, message: str) -> None:
             if not ok:
                 self._building = False
+                self._build_cancellation = None
+                self._active_build_target = ""
                 self._build_cancelled = message == "Build preparation cancelled"
                 if not self._build_cancelled:
                     self._build_error = message or "Build preparation failed"
@@ -1376,6 +1771,7 @@ class BuildSettingsPanel(EditorPanel):
             complete=_complete_preflight,
         ):
             self._building = False
+            self._active_build_target = ""
             self._build_error = "Another editor transaction is already running"
             EngineStatus.flash(self._build_error, 0.0, duration=2.5, kind="warning")
             return False
@@ -1405,4 +1801,3 @@ class BuildSettingsPanel(EditorPanel):
                 return
         self._scenes.append(stored_path)
         self._save()
-        Debug.log_internal(f"Added scene to build list: {os.path.basename(path)}")
