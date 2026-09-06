@@ -70,6 +70,26 @@ Uninstall follows GUID ownership: moving or editing a file does not prevent remo
 
 The import panel supports per-file selection. Reopening a package with the same version and full GUID member list lets you add previously unchecked files without uninstalling it. Existing user edits, ownership, and enabled state are preserved; Python dependencies are not reinstalled. A different version or member list remains a package replacement and is not silently applied. Conflicting destination GUIDs are reported, and failed writes roll back only the new additions, preserving the existing installation.
 
+## Explicit version updates
+
+For an installed GitHub package, open **Versions**, choose **Check versions**, then
+select a compatible release and **Update to selected version**. Checking and
+downloading do not change the installed version. Release notes belong to the
+selected version; older compatible versions can also be selected explicitly.
+
+Updates reuse the installation transaction rather than uninstalling the package.
+Existing GUIDs, enabled state, user-added files, customized importer settings and
+user-moved assets are preserved. A selective import stays selective; newly added
+package members are included. Package authors must retain existing asset GUIDs
+between releases. Publisher renames move assets that remain at their original
+locations; user-moved assets keep their locations.
+
+Local edits to content being replaced or removed require explicit consent. If the
+original cached archive has been cleared, the manager cannot prove that existing
+content is unmodified and asks before replacement. Shared asset conflicts cannot
+be forced. Failed file/registry publication restores the previous installation.
+Local author packages continue to use editing and refresh, not remote replacement.
+
 ## Plugin pages
 
 Only markdown or text under `plugin_pages/` becomes Plugins-window content. Root README and license files are repository documentation and are not read as plugin pages. Chinese content inserts `.zh-CN` before the extension, such as `guide.zh-CN.md`. Images use relative paths and stay under the package root.

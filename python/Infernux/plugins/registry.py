@@ -265,6 +265,15 @@ class PluginRegistry:
             "control": dict(control),
         }
         document = self.load()
+        names = {requirement["name"] for requirement in normalized_python_requirements}
+        # The manager has released dropped requirements before replacing this
+        # installed owner. Other packages and their baseline versions stay intact.
+        for dependency in document["python_dependencies"]:
+            if str(dependency["name"]) not in names:
+                dependency["owners"] = [owner for owner in dependency.get("owners", [])
+                                        if str(owner.get("reference", "")).casefold() != reference.casefold()]
+        document["python_dependencies"] = [dependency for dependency in document["python_dependencies"]
+                                           if dependency.get("owners")]
         _register_python_dependency_owner(
             document,
             reference,
@@ -308,6 +317,18 @@ class PluginRegistry:
             for entry in document["installed"]
             if str(entry.get("reference", "")).casefold() != reference.casefold()
         ]
+        previous = next((entry for entry in document["installed"]
+                         if str(entry.get("reference", "")).casefold() == reference.casefold()), None)
+        if previous:
+            retained = {str(file["guid"]).casefold() for file in item["files"]}
+            for old in previous["files"]:
+                guid = str(old["guid"]).casefold()
+                if not bool(old.get("owned", True)) or guid in retained:
+                    continue
+                replacement = next((file for package in installed for file in package["files"]
+                                    if str(file["guid"]).casefold() == guid), None)
+                if replacement is not None:
+                    replacement["owned"] = True
         installed.append(item)
         document["installed"] = sorted(
             installed, key=lambda entry: str(entry.get("reference", "")).casefold()

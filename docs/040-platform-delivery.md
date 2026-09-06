@@ -29,12 +29,12 @@ and a green, mergeable engine PR. Publishing exporter-only plugins is not enough
 
 ## 3. Explicit plugin updates
 
-- [ ] Discover compatible releases and show installed/available versions and notes.
-- [ ] Let the user choose a version and update without manual uninstall.
-- [ ] Keep the project pinned until the user explicitly changes its version.
-- [ ] Preserve GUID identity, enabled state and user-added files.
-- [ ] Detect conflicting local edits at update time and require an explicit choice.
-- [ ] Local author packages retain their live-refresh behavior, not remote replacement.
+- [x] Discover compatible releases and show installed/available versions and notes.
+- [x] Let the user choose a version and update without manual uninstall.
+- [x] Keep the project pinned until the user explicitly changes its version.
+- [x] Preserve GUID identity, enabled state and user-added files.
+- [x] Detect conflicting local edits at update time and require an explicit choice.
+- [x] Local author packages retain their live-refresh behavior, not remote replacement.
 
 ## 4. Independently refreshed official catalog
 
@@ -92,3 +92,27 @@ Installed plugins have reload/uninstall actions but no version update operation.
 
 These are intermediate changes. Platform payload migration, update publication/UI,
 catalog refresh, complete release artifacts and final acceptance remain open.
+
+### 2026-09-06: explicit in-place plugin updates
+
+- Added the installed package Versions tab, compatible version selection, release
+  notes, background discovery/download and explicit local-edit consent.
+- Reused the existing installation transaction for updates; no uninstall/reinstall
+  sequence, new archive format or continuous content verification was introduced.
+- Preserved GUIDs, user-moved assets, enabled state, selected members, local added
+  files and customized importer settings. Publisher renames follow the new layout
+  when the user has not moved the corresponding asset.
+- Shared assets cannot be forcibly overwritten. Removed shared assets transfer
+  ownership to a remaining package; dropped Python requirements relinquish only
+  the updating package's ownership.
+- Tested failed publication restoration, derived bytecode cleanup, exact-tag
+  staging without pin changes, and real binary archives with the shared cache.
+- Broad plugin/UI/public-namespace regression: 319 passed, 6 platform skips.
+  Follow-up update and dependency-conflict coverage: 160 passed, 5 skips.
+  Windows, Android and Web package lifecycle upgrade/downgrade tests passed on
+  Windows; the Linux host lifecycle case was skipped on this host.
+- Updated English/Chinese package documentation; strict Wiki build passed.
+
+Section 3 implementation is present. Interactive editor acceptance and the final
+source-free platform deliveries are still part of section 5; this is not a claim
+that the overall goal or public runtime releases are complete.

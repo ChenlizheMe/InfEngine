@@ -405,7 +405,7 @@ def test_platform_package_registers_and_removes_its_build_targets(
         assert packaged.returncode == 0, packaged.stdout + packaged.stderr
         first_exporter = exporter_registry.resolve(target_ids[0])[0]
         original_record = manager.registry.installed_record(reference)
-        with pytest.raises(RuntimeError, match="uninstall it before reinstalling"):
+        with pytest.raises(RuntimeError, match="select an explicit package update"):
             manager.install_package(str(next_package), install_dependencies=False)
         assert exporter_registry.resolve(target_ids[0])[0] is first_exporter
         assert manager.registry.installed_record(reference) == original_record
@@ -414,13 +414,9 @@ def test_platform_package_registers_and_removes_its_build_targets(
         author_file.write_text("local author content", encoding="utf-8")
         previous_exporter = first_exporter
         for artifact, revision in ((next_package, "next-version"), (package, None)):
-            manager.uninstall(reference)
-            for target_id in target_ids:
-                with pytest.raises(KeyError, match="Unknown build target"):
-                    exporter_registry.resolve(target_id)
-            assert author_file.read_text(encoding="utf-8") == "local author content"
-            replaced = manager.install_package(str(artifact), install_dependencies=False)
+            replaced = manager.install_package(str(artifact), install_dependencies=False, update=True)
             assert replaced.loaded and not replaced.error
+            assert manager.registry.installed_record(reference)["control"]["guid"] == original_record["control"]["guid"]
             for target_id in target_ids:
                 current_exporter, target = exporter_registry.resolve(target_id)
                 assert target.id == target_id

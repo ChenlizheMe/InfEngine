@@ -9,7 +9,7 @@ from .content import (
     resolve_plugin_page_asset,
     split_markdown_images,
 )
-from .manager import PackageConflictError, PluginManager, PluginState
+from .manager import PackageConflictError, PackageUpdateConflict, PluginManager, PluginState
 from .cache import SharedPackageCache, package_cache_root
 from .package import (
     InxPackage,
@@ -26,6 +26,7 @@ __all__ = [
     "InxPreload",
     "PLUGIN_PAGES_DIRECTORY",
     "PackageConflictError",
+    "PackageUpdateConflict",
     "SharedPackageCache",
     "PreloadContext",
     "PluginManager",

@@ -46,6 +46,9 @@ class PluginPanel(EditorPanel):
         self._selected_reference = ""
         self._scope_index = 0
         self._sort_index = 2
+        from .plugin_versions import PluginVersionsView
+
+        self._versions = PluginVersionsView()
 
     def _initial_size(self) -> tuple[float, float]:
         return 1180.0, 740.0
@@ -469,6 +472,9 @@ class PluginPanel(EditorPanel):
                     self._render_metadata(ctx, row)
                     self._render_diagnostics(ctx, row, state)
                     ctx.end_tab_item()
+            if row.get("_installed") and ctx.begin_tab_item(t("plugins.versions.tab")):
+                self._versions.render(ctx, manager, row)
+                ctx.end_tab_item()
             ctx.end_tab_bar()
 
     def _render_markdown_page(self, ctx, manager, row, page, content: str) -> None:

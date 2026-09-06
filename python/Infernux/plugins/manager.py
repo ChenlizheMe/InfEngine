@@ -14,7 +14,7 @@ import sys
 import threading
 import uuid
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import unquote, urlsplit
@@ -117,6 +117,14 @@ def _scaled_progress(
 
 class PackageConflictError(RuntimeError):
     """Raised when installation would overwrite a different durable asset."""
+
+
+class PackageUpdateConflict(PackageConflictError):
+    """Local edits requiring explicit consent before package replacement."""
+
+    def __init__(self, paths: Iterable[str]) -> None:
+        self.paths = tuple(sorted(set(paths)))
+        super().__init__("Plugin update would replace local edits: " + ", ".join(self.paths))
 
 
 @dataclass(slots=True)
@@ -400,6 +408,8 @@ class PluginManager:
         install_dependencies: bool = True,
         source: Mapping[str, object] | None = None,
         progress: _InstallProgress | None = None,
+        update: bool = False,
+        overwrite_modified: bool = False,
     ) -> PluginState:
         _report_progress(progress, "inspect_package", 0.36)
         package_path = resolved_path(package_path)
@@ -417,7 +427,12 @@ class PluginManager:
         if key in self._installing:
             raise RuntimeError(f"Circular plugin dependency: {reference}")
         current = self.registry.installed_record(reference)
-        if current is not None:
+        if update:
+            if current is None:
+                raise KeyError(f"Plugin is not installed: {reference}")
+            if threading.current_thread() is not threading.main_thread():
+                raise RuntimeError("Plugin update publication must run on the editor thread")
+        if current is not None and not update:
             if _same_install(current, preview):
                 return self.reload(reference)
             control = current.get("control", {})
@@ -433,21 +448,42 @@ class PluginManager:
                     return self._extend_package_install(current, preview, selected, progress)
             raise RuntimeError(
                 f"Plugin is already installed with different content: {reference}; "
-                "uninstall it before reinstalling"
+                "select an explicit package update"
+            )
+        removed: list[str] = []
+        if update:
+            if selected is not None:
+                raise ValueError("An update preserves the existing package selection")
+            planned, control, removed = self._plan_update(
+                current, preview, overwrite_modified=overwrite_modified,
             )
         installed_before = {
             str(item.get("reference", "")).casefold()
             for item in self.registry.installed()
         }
         pip_effect: _PipInstallEffect | None = None
+        python_baseline: dict[str, str] | None = None
+        stopped = False
+        committed = False
         self._installing.add(key)
         try:
+            if update:
+                failures = self.preloads.unload_package(reference)
+                if failures:
+                    raise RuntimeError("Plugin lifecycle could not be stopped; restart required: "
+                                       + "; ".join(state.error for state in failures))
+                stopped = True
+                self._retire_package_runtime_scripts(current)
+                if install_dependencies and current.get("python_requirements"):
+                    python_baseline = self._python_environment_snapshot(
+                        self._project_python_executable(),
+                    )
             cache_path, cache_relative = self._cache_package(
                 package_path,
                 reference,
                 str(preview.metadata.get("version", "")),
             )
-            resolved_source = dict(source or {})
+            resolved_source = dict(source or (current.get("source", {}) if update else {}))
             resolved_source.setdefault("type", "local")
             resolved_source.setdefault("location", package_path)
             resolved_source["cache_location"] = cache_relative
@@ -459,6 +495,18 @@ class PluginManager:
                     preview,
                     progress=_scaled_progress(progress, 0.57, 0.66),
                 )
+                if pip_effect:
+                    other_requirements = [
+                        str(requirement)
+                        for dependency in self.registry.load()["python_dependencies"]
+                        for owner in dependency["owners"]
+                        if str(owner["reference"]).casefold() != key
+                        for requirement in owner["requirements"]
+                    ]
+                    if not _requirements_satisfied(other_requirements, pip_effect.after):
+                        raise PackageConflictError(
+                            "Plugin Python requirements conflict with another installed package"
+                        )
                 dependencies.extend(requirement_dependencies)
                 dependencies = list(
                     dict.fromkeys(
@@ -467,16 +515,33 @@ class PluginManager:
                         if str(value).casefold() != key
                     )
                 )
+                if update:
+                    self._release_python_dependencies(
+                        reference,
+                        keep_names={item["name"] for item in pip_effect.requirements}
+                        if pip_effect else set(),
+                    )
+            elif update:
+                dependencies = list(current.get("dependencies", ()))
             _report_progress(progress, "plan_assets", 0.68)
-            planned, control = self._plan_install(preview, selected)
+            if not update:
+                planned, control = self._plan_install(preview, selected)
             transaction = _InstallTransaction(self.project_root)
             registry_before = self.registry.load()
             registry_changed = False
             try:
                 _report_progress(progress, "write_assets", 0.76)
+                for path in removed:
+                    for bytecode in _script_bytecode_paths(path):
+                        transaction.remove(bytecode)
+                    transaction.remove(path)
+                    transaction.remove(path + ".meta")
                 for item in planned:
                     if not item.owned:
                         continue
+                    if update:
+                        for bytecode in _script_bytecode_paths(item.destination):
+                            transaction.remove(bytecode)
                     transaction.write(item.destination, item.payload)
                     transaction.write(item.destination + ".meta", item.meta_payload)
                 control_payload = (
@@ -514,9 +579,12 @@ class PluginManager:
                     package_path=cache_path,
                     source=resolved_source,
                     dependencies=dependencies,
+                    enabled=bool(current.get("enabled", True)) if update else True,
                     transaction_id=transaction.id,
                     python_requirements=(
-                        pip_effect.requirements if pip_effect else ()
+                        pip_effect.requirements if pip_effect else
+                        current.get("python_requirements", ())
+                        if update and not install_dependencies else ()
                     ),
                     python_changes=(pip_effect.changes if pip_effect else ()),
                     python_install=(
@@ -529,12 +597,13 @@ class PluginManager:
                     ),
                 )
                 transaction.commit()
+                committed = True
             except BaseException:
                 transaction.rollback()
                 if registry_changed:
                     self.registry.save(registry_before)
-                self._rollback_pip_effect(pip_effect)
                 raise
+            self._prune_package_directories(removed)
             self._acknowledge_installed_scripts(planned)
             if threading.current_thread() is threading.main_thread():
                 _report_progress(progress, "refresh_assets", 0.90)
@@ -550,7 +619,13 @@ class PluginManager:
             _report_progress(progress, "complete", 1.0)
             return state
         except BaseException as install_error:
+            if committed:
+                raise
             self._rollback_pip_effect(pip_effect)
+            if python_baseline is not None:
+                self._restore_python_environment(
+                    python_baseline, executable=self._project_python_executable(),
+                )
             rollback_errors = self._rollback_new_plugin_dependencies(
                 installed_before,
                 excluding=reference,
@@ -560,6 +635,9 @@ class PluginManager:
                     f"Plugin install failed and dependency rollback was incomplete for "
                     f"{reference}: {'; '.join(rollback_errors)}"
                 ) from install_error
+            if stopped:
+                self._publish_package_runtime_scripts(reference)
+                self.reload(reference)
             raise
         finally:
             self._installing.discard(key)
@@ -750,6 +828,15 @@ class PluginManager:
     def available_releases(self, reference: str) -> tuple[dict[str, object], ...]:
         """Read versions from a package's source without changing its project pin."""
 
+        location = self.release_repository(reference)
+        if not location:
+            return ()
+        from .github_releases import list_github_releases
+
+        return list_github_releases(location, expected_reference=reference)
+
+    def release_repository(self, reference: str) -> str:
+        """The installed publisher wins over catalog discovery and local caches."""
         record = self.registry.installed_record(reference) or self.registry.find(reference)
         if record is None:
             raise KeyError(f"Plugin reference was not found: {reference}")
@@ -761,10 +848,44 @@ class PluginManager:
             # Their explicit repository still identifies the original publisher.
             location = str(source["repository"])
         else:
-            return ()
-        from .github_releases import list_github_releases
+            return ""
+        return location
 
-        return list_github_releases(location, expected_reference=reference)
+    def download_update(
+        self, reference: str, release_tag: str, *, progress: _InstallProgress | None = None,
+    ) -> dict[str, object]:
+        """Stage an explicitly selected release without changing any project pin."""
+        if self.registry.installed_record(reference) is None:
+            raise KeyError(f"Plugin is not installed: {reference}")
+        if not release_tag.strip():
+            raise ValueError("Plugin updates require an explicit release tag")
+        repository = self.release_repository(reference)
+        if not repository:
+            raise ValueError("Local author packages are not replaced by remote updates")
+        from .github_releases import resolve_github_release
+
+        with self._package_cache().workspace("update") as workspace:
+            release = resolve_github_release(
+                repository, workspace, expected_reference=reference,
+                release_tag=release_tag, progress=progress,
+            )
+            assert release is not None  # An exact tag requires the release protocol.
+            path, _relative = self._cache_package(
+                release.path, reference, str(release.source["version"]),
+            )
+            source = {**release.source, "type": "github", "location": repository,
+                      "repository": repository, "acquisition": "github-release"}
+            return {"reference": reference, "path": path, "source": source}
+
+    def update_reference(
+        self, reference: str, release_tag: str, *, overwrite_modified: bool = False,
+        progress: _InstallProgress | None = None,
+    ) -> PluginState:
+        release = self.download_update(reference, release_tag, progress=progress)
+        return self.install_package(
+            str(release["path"]), source=release["source"], update=True,
+            overwrite_modified=overwrite_modified, progress=progress,
+        )
 
     def cached_reference_path(self, reference: str) -> str:
         record = self.registry.find(reference)
@@ -1192,13 +1313,14 @@ class PluginManager:
             )
 
     def _release_python_dependencies(
-        self, reference: str
+        self, reference: str, *, keep_names: set[str] | None = None,
     ) -> dict[str, str] | None:
         plan = self.registry.python_release_plan(reference)
         actionable = [
             item
             for item in plan
-            if item.get("remaining_owners") or bool(item.get("managed", False))
+            if (item.get("remaining_owners") or bool(item.get("managed", False)))
+            and str(item.get("name", "")) not in (keep_names or set())
         ]
         if not actionable:
             return None
@@ -1693,6 +1815,122 @@ class PluginManager:
                 )
         return str(matched["reference"]) if matched is not None else None
 
+    def _plan_update(
+        self, current: Mapping[str, object], preview: InxPackagePreview, *,
+        overwrite_modified: bool,
+    ) -> tuple[list[_PlannedFile], dict[str, object], list[str]]:
+        """Compare only at the update boundary; reuse the normal GUID routing."""
+        reference = str(current["reference"])
+        previous_path = str(current.get("package_path", ""))
+        previous = InxPackage.inspect(previous_path) if os.path.isfile(previous_path) else None
+        old_files = {str(item["guid"]).casefold(): item for item in current["files"]}
+        old_contents = {
+            str(item["guid"]).casefold(): item for item in previous.file_records
+        } if previous else {}
+        old_logical = {str(item["logical_path"]): str(item["guid"]).casefold()
+                       for item in current["files"]}
+        for item in preview.file_records:
+            logical = str(item["logical_path"])
+            if logical in old_logical and old_logical[logical] != str(item["guid"]).casefold():
+                raise PackageConflictError(f"Updated asset must retain its GUID: {logical}")
+        # A selective import stays selective; newly introduced members are included.
+        omitted = set(old_contents) - set(old_files)
+        selected = [str(item["logical_path"]) for item in preview.file_records
+                    if str(item["guid"]).casefold() not in omitted]
+        planned, control = self._plan_install(preview, selected)
+        if str(control["guid"]).casefold() != str(current["control"]["guid"]).casefold():
+            raise PackageConflictError("An update must preserve the package control GUID")
+        conflicts: list[str] = []
+
+        def check_edit(path: str, baseline: bytes | None, incoming: bytes | None) -> None:
+            actual = Path(path).read_bytes() if os.path.isfile(path) else None
+            if actual != incoming and (baseline is None or actual != baseline):
+                conflicts.append(portable_path(relative_path(path, self.project_root)))
+
+        def baseline_payload(guid: str) -> bytes | None:
+            record = old_contents.get(guid)
+            return read_entry(previous_path, str(record["archive_path"])) if record else None
+
+        def settings(payload: bytes) -> dict[str, object]:
+            document = json.loads(payload)
+            document["metadata"].pop("content_hash", None)
+            return document
+
+        def local_meta(path: str, guid: str) -> tuple[bytes | None, bool]:
+            meta_path = Path(path + ".meta")
+            if not meta_path.is_file():
+                return None, False
+            payload = meta_path.read_bytes()
+            record = old_contents.get(guid)
+            baseline = read_entry(previous_path, str(record["meta_archive_path"])) if record else None
+            return payload, baseline is None or settings(payload) != settings(baseline)
+
+        replacements: list[_PlannedFile] = []
+        removed: list[str] = []
+        for item in planned:
+            guid = item.guid.casefold()
+            old = old_files.get(guid)
+            if old is None:
+                if not item.owned and Path(item.destination).read_bytes() != item.payload:
+                    raise PackageConflictError(f"Shared asset has different content: {item.destination}")
+                replacements.append(item)
+                continue
+            shared = self.registry.users_for_guid(guid, excluding=reference)
+            owned = bool(old.get("owned", True))
+            if shared or not owned:
+                if not os.path.isfile(item.destination) or Path(item.destination).read_bytes() != item.payload:
+                    raise PackageConflictError(f"Cannot replace a shared asset: {item.destination}")
+                # Retain ownership without writing through another package's asset.
+                replacements.append(replace(item, owned=owned,
+                    meta_payload=Path(item.destination + ".meta").read_bytes()))
+                continue
+            check_edit(item.destination, baseline_payload(guid), item.payload)
+            existing_meta, modified_meta = local_meta(item.destination, guid)
+            meta_payload = current_meta_bytes(
+                item.guid, item.payload,
+                existing=existing_meta if modified_meta else item.meta_payload,
+            )
+            old_destination = os.path.join(self.project_root, package_destination(
+                reference, str(old["logical_path"]), project_root=self.project_root,
+            ))
+            if str(old["logical_path"]) != item.logical_path and same_path(item.destination, old_destination):
+                # Follow publisher renames unless the user already moved this GUID.
+                destination_relative = package_destination(
+                    reference, item.logical_path, project_root=self.project_root,
+                )
+                destination = resolved_path(os.path.join(self.project_root, destination_relative))
+                if os.path.exists(destination):
+                    raise PackageConflictError(f"Updated destination is occupied: {destination}")
+                removed.append(item.destination)
+                item = replace(item, destination=destination,
+                               destination_relative=portable_path(destination_relative))
+            replacements.append(replace(item, owned=True, meta_payload=meta_payload))
+
+        new_guids = {item.guid.casefold() for item in replacements}
+        guid_index = self._guid_index()
+        for guid, old in old_files.items():
+            if guid in new_guids or not bool(old.get("owned", True)):
+                continue
+            if self.registry.users_for_guid(guid, excluding=reference):
+                # The other package must inherit ownership when we stop using it.
+                continue
+            path = guid_index.get(guid)
+            if path:
+                check_edit(path, baseline_payload(guid), None)
+                if local_meta(path, guid)[1]:
+                    conflicts.append(portable_path(relative_path(path + ".meta", self.project_root)))
+                removed.append(path)
+        control_path = str(control["absolute_path"])
+        old_control = (json.dumps(previous.metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8") if previous else None
+        new_control = (json.dumps(preview.metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        check_edit(control_path, old_control, new_control)
+        if not bool(current["control"].get("owned", True)):
+            raise PackageConflictError("Cannot replace a shared package control file")
+        control["owned"] = True
+        if conflicts and not overwrite_modified:
+            raise PackageUpdateConflict(conflicts)
+        return replacements, control, removed
+
     def _plan_install(
         self, preview: InxPackagePreview, selected: Iterable[str] | None
     ) -> tuple[list[_PlannedFile], dict[str, object]]:
@@ -1790,7 +2028,7 @@ class PluginManager:
                     path = resolved_path(
                         os.path.join(self.project_root, *hint.split("/"))
                     )
-                    if os.path.isfile(path):
+                    if os.path.isfile(path) and _meta_guid(path).casefold() == guid:
                         result[guid] = path
             return result
         except ValueError as exc:
@@ -1856,6 +2094,8 @@ class PluginManager:
         record = self.registry.installed_record(reference)
         if record is None:
             raise KeyError(f"Plugin is not installed: {reference}")
+        if not bool(record.get("enabled", True)):
+            return
         from Infernux.engine.resources_manager import ResourcesManager
 
         manager = ResourcesManager.instance()
