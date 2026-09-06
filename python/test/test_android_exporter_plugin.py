@@ -472,11 +472,18 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "Infernux Player" in strings
     assert "if (mScreenKeyboardShown)" in activity
     assert "registerOnBackInvokedCallback" in activity
-    assert "OnBackInvokedDispatcher.PRIORITY_DEFAULT" in activity
+    assert "OnBackInvokedDispatcher.PRIORITY_OVERLAY" in activity
     assert "this::dispatchInfernuxBack" in activity
     assert "sendCommand(COMMAND_TEXTEDIT_HIDE, null)" in activity
     assert "onNativeKeyDown(KeyEvent.KEYCODE_BACK)" in activity
     assert "onNativeKeyUp(KeyEvent.KEYCODE_BACK)" in activity
+    back_handler = activity.split("private void dispatchInfernuxBack()", 1)[1].split(
+        "private File prepareVersionedAssets", 1
+    )[0]
+    assert back_handler.index("if (mScreenKeyboardShown)") < back_handler.index(
+        "onNativeKeyDown(KeyEvent.KEYCODE_BACK)"
+    )
+    assert "onNativeKeyboardFocusLost();\n            return;" in back_handler
     assert "super.onBackPressed()" not in activity
     assert "setOnApplyWindowInsetsListener" in activity
     assert "setWindowInsetsAnimationCallback" in activity
