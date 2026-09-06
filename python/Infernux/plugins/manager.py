@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import uuid
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -42,6 +42,7 @@ from .content import (
     localized_intro as select_plugin_intro,
     read_plugin_pages,
     resolve_plugin_page_asset,
+    split_markdown_images,
 )
 from .cache import SharedPackageCache
 from .package import (
@@ -219,6 +220,8 @@ class PluginManager:
         self._resource_manager = None
         self._installing: set[str] = set()
         self._deferred_catalog_changes: set[str] = set()
+        self._page_workspaces = ExitStack()
+        self._cached_page_roots: dict[tuple[str, int, int], str] = {}
 
     def _package_cache(self) -> SharedPackageCache:
         return SharedPackageCache(
@@ -285,6 +288,8 @@ class PluginManager:
         return manager
 
     def shutdown(self) -> None:
+        self._page_workspaces.close()
+        self._cached_page_roots.clear()
         if self._resource_manager is not None:
             self._resource_manager.unregister_script_catalog_callback(
                 self._on_script_catalog_changed
@@ -333,6 +338,44 @@ class PluginManager:
             self._rebuild_states()
         return loaded
 
+    def _content_root(self, reference: str) -> str:
+        if self.registry.installed_record(reference) is not None:
+            return package_control_root(self.project_root, reference)
+        archive = self.cached_reference_path(reference)
+        if not archive:
+            return package_control_root(self.project_root, reference)
+        stat = os.stat(archive)
+        key = (archive, stat.st_mtime_ns, stat.st_size)
+        if key in self._cached_page_roots:
+            return self._cached_page_roots[key]
+
+        # Preview documents only: never install or execute a downloaded plugin.
+        preview = InxPackage.inspect(archive)
+        root = self._page_workspaces.enter_context(self._package_cache().workspace("pages"))
+        files = {str(item["logical_path"]): item for item in preview.file_records}
+
+        def materialize(logical: str) -> None:
+            destination = Path(root, *logical.split("/"))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(read_entry(archive, str(files[logical]["archive_path"])))
+
+        for logical in files:
+            if logical.startswith("plugin_pages/"):
+                materialize(logical)
+        for page in read_plugin_pages(root, list(preview.metadata["pages"])):
+            for block in split_markdown_images(page["content"]):
+                if block["kind"] != "image":
+                    continue
+                image = resolve_plugin_page_asset(
+                    root, page["path"], block["source"], require_file=False
+                )
+                if image:
+                    logical = Path(image).relative_to(root).as_posix()
+                    if logical in files and not os.path.isfile(image):
+                        materialize(logical)
+        self._cached_page_roots[key] = root
+        return root
+
     def content_pages(
         self,
         record: Mapping[str, object],
@@ -350,7 +393,7 @@ class PluginManager:
         else:
             selected_locale = locale
         try:
-            control_root = package_control_root(self.project_root, reference)
+            control_root = self._content_root(reference)
             descriptors = record.get("pages", [])
             if not descriptors:
                 descriptors = list(discover_plugin_pages(control_root))
@@ -384,7 +427,7 @@ class PluginManager:
     ) -> str:
         reference = str(record.get("reference", ""))
         try:
-            control_root = package_control_root(self.project_root, reference)
+            control_root = self._content_root(reference)
             path = resolve_plugin_page_asset(
                 control_root, str(page.get("path", "")), source
             )
@@ -392,6 +435,8 @@ class PluginManager:
                 return path
         except ValueError:
             pass
+        if self.registry.installed_record(reference) is None:
+            return ""
         content_root = os.path.join(self.project_root, "Assets", "Plugins")
         try:
             return resolve_plugin_page_asset(

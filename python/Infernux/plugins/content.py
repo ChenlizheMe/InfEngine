@@ -286,7 +286,9 @@ def parse_markdown_blocks(value: str) -> tuple[dict[str, object], ...]:
     return tuple(blocks)
 
 
-def resolve_plugin_page_asset(plugin_root: str, page_path: str, source: str) -> str:
+def resolve_plugin_page_asset(
+    plugin_root: str, page_path: str, source: str, *, require_file: bool = True
+) -> str:
     """Resolve a local Markdown asset while confining it to the plugin root."""
     value = str(source).strip()
     parsed = urlsplit(value)
@@ -299,7 +301,9 @@ def resolve_plugin_page_asset(plugin_root: str, page_path: str, source: str) -> 
         return ""
     base = "" if root_relative else portable_path(str(Path(page_path).parent))
     candidate = resolved_path(os.path.join(plugin_root, *(part for part in f"{base}/{relative}".split("/") if part)))
-    if not is_path_within(candidate, plugin_root, allow_root=False) or not os.path.isfile(candidate):
+    if not is_path_within(candidate, plugin_root, allow_root=False):
+        return ""
+    if require_file and not os.path.isfile(candidate):
         return ""
     return candidate
 

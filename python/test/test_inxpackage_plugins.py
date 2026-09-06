@@ -1872,6 +1872,9 @@ def test_official_release_downloads_to_project_cache_then_imports(
         assert registry_entry["source"]["acquisition"] == "github-release"
         assert registry_entry["source"]["release_tag"] == "v0.4.0"
         assert registry_entry["source"]["cache_scope"] == "hub"
+        assert registry_entry["source"]["official"] is True
+        assert registry_entry["category"] == "Platform"
+        assert registry_entry["targets"] == ["released-test"]
 
         installed = manager.install_reference(
             "vendor/released-platform",
@@ -3475,6 +3478,54 @@ def test_only_plugin_pages_are_displayed_and_resolve_relative_images(tmp_path):
     assert Path(manager.content_asset_path(record, pages[0], image["source"])).is_file()
     assert (project / "Assets/Plugins/README.md").is_file()
     assert (project / "Assets/Plugins/LICENSE").is_file()
+
+
+def test_downloaded_plugin_pages_are_available_before_import(tmp_path, monkeypatch):
+    source = _source(tmp_path / "source", "vendor/preview")
+    pages_root = source / "plugin_pages"
+    pages_root.mkdir()
+    (source / "images").mkdir()
+    (source / "images" / "preview.png").write_bytes(b"preview-image")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "payload.bin").write_bytes(b"do-not-extract")
+    (pages_root / "guide.md").write_text(
+        "# Guide\n![Preview](../images/preview.png)\n", encoding="utf-8"
+    )
+    (pages_root / "guide.zh-CN.md").write_text("# 指南\n", encoding="utf-8")
+    package = _export(source, tmp_path / "preview.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    monkeypatch.setattr(manager, "cached_reference_path", lambda reference: str(package))
+    record = manager.registry.add_package(
+        "vendor/preview", source={"type": "local", "location": str(package)},
+        pages=InxPackage.inspect(str(package)).metadata["pages"],
+    )
+    try:
+        english = manager.content_pages(record, locale="en")
+        chinese = manager.content_pages(record, locale="zh")
+        assert english[0]["content"].startswith("# Guide")
+        assert chinese[0]["content"] == "# 指南\n"
+        image = Path(manager.content_asset_path(record, english[0], "../images/preview.png"))
+        assert image.read_bytes() == b"preview-image"
+        root = image.parent.parent
+        assert not (root / "runtime").exists()
+        assert manager.registry.installed() == ()
+        assert not (project / "Packages/vendor/preview").exists()
+        assert not manager.content_asset_path(record, english[0], "../../../outside.png")
+        assert not manager.content_asset_path(record, english[0], "https://example.com/image.png")
+        assert manager.content_pages(record, locale="en") == english
+        assert len(manager._cached_page_roots) == 1
+
+        # Import switches to authored project docs; uninstall restores archive docs.
+        manager.install_package(str(package), install_dependencies=False)
+        authored = project / "Packages/vendor/preview/plugin_pages/guide.md"
+        authored.write_text("# Local edits\n", encoding="utf-8")
+        assert manager.content_pages(record, locale="en")[0]["content"] == "# Local edits\n"
+        manager.uninstall("vendor/preview")
+        assert manager.content_pages(record, locale="en") == english
+    finally:
+        manager.shutdown()
+    assert not root.exists()
 
 
 def test_plugin_content_uses_one_strict_zh_cn_suffix_layout(tmp_path):

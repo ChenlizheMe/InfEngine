@@ -545,3 +545,25 @@ that the overall goal or public runtime releases are complete.
   all three existing acceptance-project installations, and reused all five entries
   without the wheel catalog. Eleven focused refresh/migration tests passed.
 - Broader plugin, UI, namespace and localization regression: 331 passed, 6 skips.
+
+### 2026-09-06: downloaded documentation and sample cleanup
+
+- Removed the test-only `infernux/multiplatform_probe` dependency from the desktop
+  `InfernuxMultiPlatform040` project and its Windows acceptance copy. The visible
+  TXT button now reads `Assets/Data/message.txt` through the engine's existing
+  `Application.asset_path()` API. The original package and edited files were
+  backed up outside both projects. Package-resource fixtures remain test-only.
+- Corrected the acceptance setup that replaced Android's official catalog entry
+  with installation provenance, losing its badge, category and build targets.
+  Normal official downloads already preserve this metadata; a regression now
+  checks it explicitly.
+- Downloaded, uninstalled packages now expose localized introduction pages and
+  referenced images from a process-owned documentation workspace. Preview does
+  not import a plugin, execute its scripts, extract its runtime or bypass Hub
+  dependency gating; its temporary files are removed on manager shutdown.
+- Windows source-editor acceptance displayed Android's official badge, Chinese
+  platform documentation and illustration before import, with five plugin rows
+  and no resource-probe package. The project TXT resolved successfully.
+- Plugin regression: 140 passed, 5 skipped. This source change still requires
+  rebuilt distribution artifacts; earlier release-candidate binaries do not
+  contain the documentation-preview fix.
