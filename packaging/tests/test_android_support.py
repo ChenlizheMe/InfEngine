@@ -71,6 +71,18 @@ def test_release_kit_resolves_gradle_from_the_installed_launcher(tmp_path):
     assert Path(result.stdout.strip()) == gradle_home.resolve()
 
 
+def test_android_python_producer_selects_java_before_sdk_setup():
+    workflow = (PACKAGING_DIR.parent / ".github/workflows/platform-plugin-release.yml").read_text(
+        encoding="utf-8"
+    )
+    producer = workflow.split("  build-android-python-support:", 1)[1].split(
+        "  publish-android-support:", 1
+    )[0]
+    assert producer.index("actions/setup-java@v4") < producer.index("android-actions/setup-android@v3")
+    assert 'java-version: "17"' in producer
+    assert 'python-version: "3.13"' in producer
+
+
 def _create_support(root: Path) -> None:
     sdk = root / "sdk"
     for directory in (
