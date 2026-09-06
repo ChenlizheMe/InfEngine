@@ -63,7 +63,7 @@ jobs:
           conda activate infernux
           $installer = Join-Path $env:RUNNER_TEMP 'vulkan-runtime.exe'
           Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/VulkanRT-$env:VULKAN_SDK_VERSION-Installer.exe" -OutFile $installer
-          $process = Start-Process -Wait -PassThru -WindowStyle Hidden -FilePath $installer -ArgumentList '/s'
+          $process = Start-Process -Wait -PassThru -WindowStyle Hidden -FilePath $installer -ArgumentList '/auto'
           if ($process.ExitCode -ne 0) { throw "Vulkan Runtime installation failed: $($process.ExitCode)" }
 
       - name: Install build and test dependencies

@@ -118,7 +118,8 @@ Installed plugins have reload/uninstall actions but no version update operation.
   complete-package and installed-build acceptance retain their native payloads.
 - Android release CI now selects JDK 17 before SDK setup instead of using the
   Ubuntu runner's default JDK 11. Windows runtime installation uses the vendor's
-  lowercase `/s` switch with a five-minute step limit. These installer checks run
+  `/auto` switch (confirmed in the pinned installer's argument parser) with a
+  five-minute step limit. These installer checks run
   only in CI; no local Vulkan installation is part of acceptance.
 - The complete Linux plugin workflow passed. Main PR Linux desktop/Player,
   Android Player and Web Player/browser checks passed at `bc5cdfd6`; both Windows
