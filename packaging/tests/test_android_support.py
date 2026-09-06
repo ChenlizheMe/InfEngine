@@ -26,6 +26,11 @@ if str(PACKAGING_DIR) not in sys.path:
 import android_support
 
 
+@pytest.fixture(autouse=True)
+def isolated_hub_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(android_support, "get_hub_shared_data_dir", lambda: str(tmp_path / "shared"))
+
+
 @pytest.mark.parametrize("tag", ["", "v0.4.0"])
 def test_kit_workflow_resolves_verification_ref_or_explicit_release(tmp_path, tag):
     pwsh = shutil.which("pwsh")
@@ -306,7 +311,11 @@ def test_channel_download_rejects_incomplete_or_changed_content(tmp_path, monkey
                        match=f"received {len(received)}/{len(expected)} bytes"):
         manager.install()
     assert (manager.root / android_support.MANIFEST_NAME).read_bytes() == manifest
-    assert not list(tmp_path.glob("android-support-*.inxkit"))
+    partials = list((tmp_path / "shared").rglob("*.part"))
+    if len(received) < len(expected):
+        assert len(partials) == 1 and partials[0].read_bytes() == received
+    else:
+        assert partials == []
 
 
 def test_channel_download_uses_contiguous_ranges_and_one_complete_digest(tmp_path, monkeypatch):
@@ -337,7 +346,7 @@ def test_channel_download_uses_contiguous_ranges_and_one_complete_digest(tmp_pat
     assert requests == ["bytes=0-33554431", f"bytes=33554432-{len(content) - 1}"]
     assert progress[-1] == (len(content), len(content))
     assert all(a[0] < b[0] for a, b in zip(progress, progress[1:]))
-    assert not list(tmp_path.glob("android-support-*.inxkit"))
+    assert not list((tmp_path / "shared").rglob("*.part"))
 
 
 @pytest.mark.parametrize("status, content_range", [(200, None), (206, "bytes 1-4/5")])
@@ -352,7 +361,49 @@ def test_channel_download_rejects_ignored_or_wrong_ranges(tmp_path, monkeypatch,
     with pytest.raises(android_support.AndroidSupportError, match="invalid download range"):
         manager.install()
     assert not manager.root.exists()
-    assert not list(tmp_path.glob("android-support-*.inxkit"))
+    assert all(path.stat().st_size == 0 for path in (tmp_path / "shared").rglob("*.part"))
+
+
+def test_explicit_install_retry_resumes_interrupted_release(tmp_path, monkeypatch):
+    content = b"prefix and remaining bytes"
+    manager = android_support.AndroidSupportManager(tmp_path / "managed")
+    monkeypatch.setattr(manager, "_release_asset", lambda: (
+        "https://example.invalid/android.inxkit", hashlib.sha256(content).hexdigest(), len(content)))
+    requests = []
+
+    class InterruptedResponse(io.BytesIO):
+        status = 206
+        headers = {"Content-Range": f"bytes 0-{len(content) - 1}/{len(content)}"}
+
+        def read(self, count=-1):
+            if self.tell() == 6:
+                raise TimeoutError("connection interrupted")
+            return super().read(count)
+
+    def open_range(request, **kwargs):
+        requests.append(request.get_header("Range"))
+        if len(requests) == 1:
+            return InterruptedResponse(content[:6])
+        response = io.BytesIO(content[6:])
+        response.status = 206
+        response.headers = {"Content-Range": f"bytes 6-{len(content) - 1}/{len(content)}"}
+        return response
+
+    def install_archive(path):
+        assert Path(path).read_bytes() == content
+        return "installed"
+
+    monkeypatch.setattr(android_support.urllib.request, "urlopen", open_range)
+    monkeypatch.setattr(manager, "install_archive", install_archive)
+    with pytest.raises(TimeoutError, match="interrupted"):
+        manager.install()
+    assert len(requests) == 1
+    partials = list((tmp_path / "shared/Cache/Downloads/Android").glob("*.part"))
+    assert len(partials) == 1 and partials[0].read_bytes() == content[:6]
+    assert not manager.root.exists()
+    assert manager.install() == "installed"
+    assert requests == [f"bytes=0-{len(content) - 1}", f"bytes=6-{len(content) - 1}"]
+    assert not partials[0].exists()
 
 
 def test_release_asset_requires_a_github_sha256_digest(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -83,6 +83,23 @@ Installed plugins have reload/uninstall actions but no version update operation.
 
 ## Iteration log
 
+### 2026-09-06: explicit download continuation and current catalog acceptance
+
+- A Windows range transfer ended on DNS resolution failure. Interrupted kit
+  downloads now remain only in `Shared/Cache/Downloads/Android`, keyed by the
+  publisher-provided artifact digest. A subsequent user-initiated installation
+  reads that prefix and requests the remaining bytes. There is no automatic
+  retry, alternate source or per-range hash; the complete file is checked before
+  installation. Bad complete content is removed, and successful installation
+  removes its download cache file.
+- Regression verifies an interrupted transfer performs no implicit retry, then
+  resumes from the exact retained offset when installation is explicitly invoked
+  again. Hub suite: 332 passed, 3 skipped. Windows is exercising the new path;
+  the already-running Linux transfer was not restarted to pick up this change.
+- The installed editor successfully refreshed the current independent catalog,
+  including Android v0.2.2, while preserving the exact lock bytes and all six
+  installed package records. This supersedes the earlier failed refresh attempt.
+
 ### 2026-09-06: frozen Linux Hub dependency and remaining plugin lifecycle checks
 
 - Desktop, Player, browser and kit workflows passed at `3612c0a9`.

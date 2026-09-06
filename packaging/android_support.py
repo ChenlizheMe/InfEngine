@@ -14,7 +14,6 @@ import platform
 import re
 import shutil
 import stat
-import tempfile
 import urllib.request
 import uuid
 import zipfile
@@ -324,57 +323,63 @@ class AndroidSupportManager:
         on_progress: Callable[[int, int], None] | None = None,
     ) -> str:
         url, expected_sha256, expected_size = self._release_asset()
-        self.root.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(
-            prefix="android-support-", suffix=".inxkit", dir=self.root.parent
+        temporary = (
+            Path(get_hub_shared_data_dir()) / "Cache/Downloads/Android"
+            / f"{expected_sha256}.inxkit.part"
         )
-        os.close(fd)
-        try:
-            digest = hashlib.sha256()
-            downloaded = 0
-            # Bound each connection for GB-sized channel assets. Integrity is
-            # checked once for the complete file; failed ranges are not retried.
-            with open(temporary, "wb") as stream:
-                while downloaded < expected_size:
-                    end = min(downloaded + 32 * 1024 * 1024, expected_size) - 1
-                    request = urllib.request.Request(
-                        url,
-                        headers={
-                            "Accept": "application/octet-stream",
-                            "User-Agent": "Infernux-Hub/1.0",
-                            "Range": f"bytes={downloaded}-{end}",
-                        },
-                    )
-                    with urllib.request.urlopen(request, timeout=120) as response:
-                        expected_range = f"bytes {downloaded}-{end}/{expected_size}"
-                        if (
-                            response.status != 206
-                            or response.headers.get("Content-Range") != expected_range
-                        ):
-                            raise AndroidSupportError(
-                                "Android compatibility server returned an invalid download range"
-                            )
-                        while downloaded <= end:
-                            block = response.read(min(1024 * 1024, end + 1 - downloaded))
-                            if not block:
-                                raise AndroidSupportError(
-                                    "Incomplete Android compatibility download: "
-                                    f"received {downloaded}/{expected_size} bytes"
-                                )
-                            stream.write(block)
-                            digest.update(block)
-                            downloaded += len(block)
-                            if on_progress is not None:
-                                on_progress(downloaded, expected_size)
-            actual_sha256 = digest.hexdigest()
-            if actual_sha256 != expected_sha256:
-                raise AndroidSupportError(
-                    "Downloaded Android compatibility archive does not match its release digest: "
-                    f"received {downloaded}/{expected_size} bytes; SHA-256 {actual_sha256}"
+        temporary.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        downloaded = 0
+        # Keep interrupted downloads in Hub's clearable cache. A user-initiated
+        # retry resumes the same release; no connection or source is retried here.
+        with temporary.open("a+b") as stream:
+            stream.seek(0)
+            while block := stream.read(1024 * 1024):
+                digest.update(block)
+                downloaded += len(block)
+            if on_progress is not None:
+                on_progress(downloaded, expected_size)
+            while downloaded < expected_size:
+                end = min(downloaded + 32 * 1024 * 1024, expected_size) - 1
+                request = urllib.request.Request(
+                    url,
+                    headers={
+                        "Accept": "application/octet-stream",
+                        "User-Agent": "Infernux-Hub/1.0",
+                        "Range": f"bytes={downloaded}-{end}",
+                    },
                 )
-            return self.install_archive(temporary)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
+                with urllib.request.urlopen(request, timeout=120) as response:
+                    expected_range = f"bytes {downloaded}-{end}/{expected_size}"
+                    if (
+                        response.status != 206
+                        or response.headers.get("Content-Range") != expected_range
+                    ):
+                        raise AndroidSupportError(
+                            "Android compatibility server returned an invalid download range"
+                        )
+                    while downloaded <= end:
+                        block = response.read(min(1024 * 1024, end + 1 - downloaded))
+                        if not block:
+                            raise AndroidSupportError(
+                                "Incomplete Android compatibility download: "
+                                f"received {downloaded}/{expected_size} bytes"
+                            )
+                        stream.write(block)
+                        digest.update(block)
+                        downloaded += len(block)
+                        if on_progress is not None:
+                            on_progress(downloaded, expected_size)
+        actual_sha256 = digest.hexdigest()
+        if actual_sha256 != expected_sha256:
+            temporary.unlink()
+            raise AndroidSupportError(
+                "Downloaded Android compatibility archive does not match its release digest: "
+                f"received {downloaded}/{expected_size} bytes; SHA-256 {actual_sha256}"
+            )
+        result = self.install_archive(temporary)
+        temporary.unlink()
+        return result
 
     def install_archive(self, archive: str | os.PathLike[str]) -> str:
         source = Path(archive).expanduser().resolve()
