@@ -774,13 +774,15 @@ class Engine():
         self._process_owned_exit = True
 
     def _shutdown_plugins_for_exit(self) -> None:
-        """Unload plugins only when the surrounding Python process survives."""
+        """Unload this engine's plugins when the surrounding process survives."""
         if self._process_owned_exit:
             return
         from Infernux.plugins import PluginManager
 
         plugin_manager = PluginManager.instance()
-        if plugin_manager is not None:
+        # A temporary headless asset-cook host does not own the caller's
+        # exporter registry or plugin modules.
+        if plugin_manager is not None and plugin_manager.engine is self:
             plugin_manager.shutdown()
     
     def exit(self):

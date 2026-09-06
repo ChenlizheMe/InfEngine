@@ -83,6 +83,26 @@ Installed plugins have reload/uninstall actions but no version update operation.
 
 ## Iteration log
 
+### 2026-09-06: installed Web export and cook-host ownership
+
+- Completed Windows shader tools through the plugin CMake target: glslang
+  2,230,272 bytes and Tint 6,111,744 bytes. Abseil now uses the same static MSVC
+  runtime as Tint, fixing the actual Windows linker mismatch.
+- Built and installed the complete local Web v0.2.0 `.inxpkg`, with the generic
+  browser runtime and both host toolsets. The isolated MultiPlatform040 copy had
+  an obsolete development-format v0.1 archive; uninstall/reinstall there does not
+  constitute public v0.1-to-v0.2 update acceptance or modify the original project.
+- Installed-only Web export passed in 27.685 seconds. Both Python and native
+  engine origins are under Conda site-packages; no engine compilation occurred.
+  Output contains the immutable runtime plus an 18,325,376-byte project `.inxpkg`,
+  not loose Assets/Library directories. Browser/TXT interaction remains open.
+- That real export exposed a temporary cook host shutting down the caller's
+  plugin manager. Engine exit now unloads only its own manager. Eight focused
+  shutdown/preflight tests passed. Rebuilt and installed the updated wheel.
+- Full Python regression before that ownership fix: 5,339 passed, 11 skipped.
+  Also fixed explicit UTF-8 reads in the CMake workflow tests: Windows CI's
+  locale-dependent decoding had failed on workflow comments. Six tests passed.
+
 ### 2026-09-06: complete public Linux payload and Web runtime separation
 
 - Published Linux v0.2.0 with a 152,677,056-byte `.inxpkg` and its compatible-release

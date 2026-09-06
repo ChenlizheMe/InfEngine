@@ -104,13 +104,13 @@ def test_runtime_pack_cmake_does_not_write_bytecode_into_its_source(tmp_path):
 def test_release_workflows_publish_platform_payloads_through_cmake(host, toolchain):
     import json
 
-    presets = json.loads((ROOT / f"cmake/presets/{host.title()}.json").read_text())
+    presets = json.loads((ROOT / f"cmake/presets/{host.title()}.json").read_text(encoding="utf-8"))
     name = f"{host}-{toolchain}-player"
     player = next(p for p in presets['buildPresets'] if p['name'] == name)
     assert player['targets'] == ['prebuild_player_runtime']
     assert player['configurePreset'] == f'{host}-{toolchain}-release'
-    workflows = json.loads((ROOT / 'cmake/presets/Workflows.json').read_text())
+    workflows = json.loads((ROOT / 'cmake/presets/Workflows.json').read_text(encoding="utf-8"))
     release = next(p for p in workflows['workflowPresets'] if p['name'] == f'{host}-release')
     assert {'type': 'build', 'name': name} in release['steps']
-    acceptance = (ROOT / '.github/workflows/platform-player.yml').read_text()
+    acceptance = (ROOT / '.github/workflows/platform-player.yml').read_text(encoding="utf-8")
     assert f'cmake --build --preset {name}' in acceptance
