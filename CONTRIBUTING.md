@@ -59,6 +59,12 @@ automation is indexed in `scripts/README.md`; website-only tools remain under
 
 The right validation depends on what you changed:
 
+Start with the maintained [critical-workflow regression guide](TESTING.md).
+It maps user workflows to their owning tests, exact commands, CI jobs, and
+native/GPU prerequisites. Changes to a listed workflow must add or update a
+regression in its owning suite; update the matrix when ownership changes.
+Report unexpected skips as missing validation, not as a pass.
+
 - Python API or tooling changes: run targeted Python tests or static validation.
 - Native runtime changes: build the relevant CMake targets and describe runtime checks.
 - Docs and website changes: regenerate generated docs when the API surface changed.

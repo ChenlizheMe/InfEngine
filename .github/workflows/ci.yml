@@ -16,6 +16,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  portable-hub:
+    name: Portable Hub regressions (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-22.04]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install portable test dependencies
+        run: python -m pip install pytest PySide6 packaging
+      # Keep this focused list synchronized with TESTING.md.
+      - name: Test critical Hub workflows without a native engine
+        run: >-
+          python -m pytest
+          packaging/tests/test_hub_project_workflow.py
+          packaging/tests/test_project_python_runtime.py
+          packaging/tests/test_hub_new_project_python_binding.py
+          packaging/tests/test_hub_launch_state.py
+          packaging/tests/test_project_runtime_strictness.py
+          packaging/tests/test_regression_guide.py
+          -q -ra --junitxml out/test-results/portable-hub.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: portable-hub-${{ matrix.os }}
+          path: out/test-results/portable-hub.xml
+          if-no-files-found: warn
+
   windows-desktop:
     runs-on: windows-2022
     timeout-minutes: 120

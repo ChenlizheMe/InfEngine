@@ -1,0 +1,13 @@
+[
+  {
+    "slug": "plugin-authoring",
+    "number": 1,
+    "title_en": "Build your first plugin",
+    "title_zh": "制作你的第一个插件",
+    "summary_en": "Package a Python component and a text resource, add bilingual plugin pages, and publish an installable GitHub release.",
+    "summary_zh": "打包 Python 组件与文本资源，添加双语插件介绍页，并通过 GitHub Release 分发。",
+    "tags": ["basics", "python", "editor"],
+    "labels_en": ["Basics", "Python", "Editor"],
+    "labels_zh": ["基础", "Python", "编辑器"]
+  }
+]

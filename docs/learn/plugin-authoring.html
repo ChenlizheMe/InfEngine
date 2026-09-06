@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Package a Python component and a text resource, add bilingual plugin pages, and publish an installable GitHub release.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/learn/plugin-authoring.html">
+    <title>Build your first plugin · Infernux Learn</title>
+    <link rel="icon" type="image/png" href="../assets/logo.png">
+    <link rel="stylesheet" href="../css/fonts.css?v=1">
+    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/docs-search.css?v=3">
+    <link rel="stylesheet" href="../css/mission.css?v=2">
+    <link rel="stylesheet" href="../css/learn.css?v=6">
+    <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.0</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
+            <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
+            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-right"><button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
+        </div></nav>
+    </header>
+
+    <main class="page-shell learn-page" id="main-content"><div class="container"><article class="learn-article">
+        <nav class="learn-article-nav" aria-label="Learning chapter navigation"><a href="plugins.html"><span data-page-language="en">Build and share plugins</span><span data-page-language="zh" lang="zh-CN" hidden>制作与分享插件</span></a><span class="learn-chapter-position"><span data-page-language="en">Plugin course · 1/1</span><span data-page-language="zh" lang="zh-CN" hidden>插件课程 · 1/1</span></span><a href="plugin-authoring.md"><span data-page-language="en">Markdown source</span><span data-page-language="zh" lang="zh-CN" hidden>Markdown 源文档</span></a></nav>
+
+        <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Plugins · Chapter 1</span></p>
+<h1 id="build-your-first-plugin">Build your first plugin</h1>
+<p>This chapter turns a component and a text file into a reusable <code>.inxpkg</code>. You
+need Infernux 0.4.0 to test it. Packaging the repository itself only needs Python:
+the official packer uses the standard library, without importing the engine.</p>
+<div class="learn-article-toc"><strong>In this chapter</strong><a href="#layout">Choose a layout</a><a href="#component">Write a component</a><a href="#pages">Add documentation</a><a href="#package">Package and install</a><a href="#release">Publish and update</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-first-component.webp" alt="A Python component attached to a GameObject with lifecycle output in the Console" loading="lazy" decoding="async">
+  <figcaption>Plugin components use the same GameObject, Inspector and lifecycle model as project components. We will verify our packaged component through the Console.</figcaption>
+</figure>
+
+<h2 id="layout">Choose a layout</h2>
+<p>Start from the <a href="https://github.com/ChenlizheMe/infernux_plugin_template">official plugin template</a>.
+Keep its standalone <code>package.py</code> and release workflow. Replace the example
+payload with the following files; do not keep sample code you are not shipping.</p>
+<div class="highlight"><pre><span></span><code>hello-plugin/
+  README.md                         # GitHub documentation only
+  package.py                        # standalone packer from the template
+  .github/workflows/                # release automation
+  package/                          # only this directory enters .inxpkg
+    inx_package.json
+    runtime/
+      hello_resource.py
+      data/message.txt
+    plugin_pages/
+      guide.md
+      guide.zh-CN.md
+</code></pre></div>
+
+<p>Use lowercase, snake_case Python filenames. Set <code>package/inx_package.json</code> to:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"reference"</span><span class="p">:</span><span class="w"> </span><span class="s2">"my_studio/hello_plugin"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Hello Plugin"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"version"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0.1.0"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"engine"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&gt;=0.4,&lt;0.5"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"intro"</span><span class="p">:</span><span class="w"> </span><span class="s2">"A component that reads its packaged text resource."</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Choose your own unique reference before publishing. Do not change it between
+updates. The manifest does not need <code>requirements</code> or <code>dependencies</code> keys.
+This example has no third-party dependencies.</p>
+<p>Prefer local authoring? Create <code>Packages/hello_plugin/</code> inside a project and put
+the <strong>contents of <code>package/</code></strong> directly there. There is no second wrapper. A
+manifest is optional: exporting this folder as <code>hello_plugin.inxpkg</code> generates
+the default name and reference <code>hello_plugin</code>. With an explicit manifest, its
+identity wins. A manifest under <code>Assets/</code> is not discovered as a plugin.</p>
+<h2 id="component">Write the component and resource</h2>
+<p>Put <code>Hello from my plugin!</code> in <code>runtime/data/message.txt</code>. Then create
+<code>runtime/hello_resource.py</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloResource</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Application</span><span class="o">.</span><span class="n">package_path</span><span class="p">(</span>
+            <span class="s2">"my_studio/hello_plugin"</span><span class="p">,</span> <span class="s2">"runtime/data/message.txt"</span>
+        <span class="p">)</span>
+        <span class="n">message</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">path</span><span class="p">)</span><span class="o">.</span><span class="n">read_text</span><span class="p">(</span><span class="n">encoding</span><span class="o">=</span><span class="s2">"utf-8"</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+</code></pre></div>
+
+<p>The reference in this example matches the <strong>installed</strong> package. While authoring
+directly in <code>Packages/hello_plugin/</code>, use <code>hello_plugin</code> as the lookup reference:
+local Player identity follows the actual project directory, not a future
+distribution reference. To use the example unchanged locally, create
+<code>Packages/my_studio/hello_plugin/</code> and include the explicit manifest above.</p>
+<p><code>package_path</code> returns a readable filesystem path in the Editor and Player. Raw
+runtime directories keep their relative layout, so JSON can refer to a sibling
+TXT and external libraries can find adjacent resources. Do not build paths from
+the current working directory or a preload script's <code>__file__</code>. The general
+<code>Application.asset_path("Assets/Data/message.txt")</code> API also resolves authored
+asset paths through the Player's cooked GUID catalog.</p>
+<p>This is not permission to execute every file everywhere: a Windows DLL cannot
+run on Linux, and a browser cannot launch a native EXE or Java process. Supply
+target-compatible libraries and state supported platforms in your documentation.
+Use <code>Application.persistent_data_path()</code> for writes, not packaged content.</p>
+<p>For package-local Python imports, use explicit relative imports and normal
+<code>__init__.py</code> files where needed. For startup hooks, subclass <code>InxPreload</code>; inside
+<code>preload(context)</code>, <code>context.package_path("runtime/data/message.txt")</code> resolves
+the same content without hard-coding the reference. See the
+<a href="../wiki/site/en/plugin-package-content.html">plugin API guide</a> for lifecycle details.</p>
+<h2 id="pages">Separate runtime, editor and documentation</h2>
+<table>
+<thead>
+<tr>
+<th>Payload</th>
+<th>Installed location</th>
+<th>Included in a Player?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>runtime/</code></td>
+<td><code>Packages/&lt;reference&gt;/runtime/</code></td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>editor/</code></td>
+<td><code>Packages/&lt;reference&gt;/editor/</code></td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>plugin_pages/</code></td>
+<td><code>Packages/&lt;reference&gt;/plugin_pages/</code></td>
+<td>No</td>
+</tr>
+<tr>
+<td>Ordinary assets, such as <code>materials/</code></td>
+<td><code>Assets/Plugins/materials/</code></td>
+<td>Through the asset pipeline</td>
+</tr>
+</tbody>
+</table>
+<p>Keep files needed verbatim by a runtime, such as JARs, DLLs, Wasm or nested data
+directories, under <code>runtime/</code>. Put Editor-only helpers under <code>editor/</code>. A plugin
+is not restricted to Python: your build can use Java, C++, Rust or another tool.
+Build configuration and intermediate output stay outside <code>package/</code>; the build
+places only distributable payloads inside it.</p>
+<p>Write a short installation and usage guide in <code>plugin_pages/guide.md</code>, and its
+Chinese translation in <code>guide.zh-CN.md</code>. Images use relative paths and must be
+inside the package. The repository's README is for GitHub; it is not a plugin
+panel page. Keep existing <code>.meta</code> files when editing, renaming or releasing
+assets: they preserve identity across imports and updates. <code>Packages/</code> scripts
+and assets participate in normal refresh, including newly authored components.</p>
+<h2 id="package">Package and verify in a fresh project</h2>
+<p>With the current official template, run these commands at the repository root:</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>package.py<span class="w"> </span>build<span class="w"> </span>dist/hello_plugin.inxpkg
+python<span class="w"> </span>package.py<span class="w"> </span>verify<span class="w"> </span>dist/hello_plugin.inxpkg
+</code></pre></div>
+
+<p>This produces the native InxPack container, not a renamed ZIP. Only <code>package/</code>
+is packed; the outer README, CMake/Gradle files and <code>dist/</code> are excluded.</p>
+<ol>
+<li>Open a separate test project in the Editor and open <strong>Plugins</strong>.</li>
+<li>Choose <strong>Add plugin</strong>, select the <code>.inxpkg</code>, review its contents and import it.</li>
+<li>Confirm <strong>Hello Plugin</strong> shows its introduction page in the selected language.</li>
+<li>Add <code>HelloResource</code> to an active GameObject, save the scene and enter Play.</li>
+<li>The Console must show <code>Hello from my plugin!</code> without an import or path error.</li>
+<li>Export a game through an installed platform plugin. Run it and confirm the
+   same message is read. Check the packaged <code>Content.inxpkg</code>, not a loose project
+   <code>Assets/</code> tree. This is binary content packaging, not irreversible encryption.</li>
+</ol>
+<p>For local authoring, select the package root folder in the Project/File Manager
+and use <strong>Export InxPackage</strong>. Export the folder itself, not only its runtime
+script, so the resource and optional metadata remain part of the package.</p>
+<h2 id="release">Publish and update</h2>
+<p>Keep the template's release workflow, set the manifest version, commit the
+payload and <code>.meta</code> files, then push the matching tag (for example <code>v0.1.0</code>).
+The workflow publishes an <code>.inxpkg</code> and release metadata. Check its success and
+download the release into a fresh project before announcing it. Users can add
+the repository URL through the plugin panel; publishing a repository does not
+automatically add it to the engine's official catalog.</p>
+<p>For an update, retain the reference and existing GUIDs, increment the version,
+and publish another matching release. Users explicitly choose a compatible
+release on <strong>Versions</strong>. <strong>Refresh catalog</strong> updates discovery only, not installed
+versions. Test updating an existing project as well as a fresh installation;
+local edits must not be silently overwritten.</p>
+<p>For larger examples, browse the <a href="https://github.com/ChenlizheMe/infernux_mcp">MCP</a>,
+<a href="https://github.com/ChenlizheMe/infernux_windows">Windows</a>,
+<a href="https://github.com/ChenlizheMe/infernux_linux">Linux</a>,
+<a href="https://github.com/ChenlizheMe/infernux_android">Android</a> and
+<a href="https://github.com/ChenlizheMe/infernux_web">Web</a> repositories. Platform plugins
+ship precompiled Players; installing one does not ask game authors to run CMake.
+Android additionally requires <strong>Android support</strong> installed through Hub.</p></div>
+        <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">插件 · 第 1 章</span></p>
+<h1 id="_1">制作你的第一个插件</h1>
+<p>这一章把一个组件和一份文本资源做成可复用的 <code>.inxpkg</code>。测试需要 Infernux 0.4.0，
+但打包仓库本身只需要 Python：官方打包脚本仅使用标准库，不导入引擎。</p>
+<div class="learn-article-toc"><strong>本章内容</strong><a href="#zh-layout">选择目录结构</a><a href="#zh-component">编写组件</a><a href="#zh-pages">添加文档</a><a href="#zh-package">打包与安装</a><a href="#zh-release">发布与更新</a></div>
+
+<figure class="learn-figure">
+  <img src="../assets/learn/gameplay-first-component.webp" alt="Python 组件挂在 GameObject 上，并在 Console 中输出生命周期信息" loading="lazy" decoding="async">
+  <figcaption>插件组件与项目组件使用相同的 GameObject、Inspector 和生命周期。这次通过 Console 验证打包后的组件。</figcaption>
+</figure>
+
+<h2 id="zh-layout">选择目录结构</h2>
+<p>从<a href="https://github.com/ChenlizheMe/infernux_plugin_template">官方插件模板</a>开始，保留独立的
+<code>package.py</code> 和发布工作流，把示例内容替换为下面这些文件，不要留下不准备分发的模板代码。</p>
+<div class="highlight"><pre><span></span><code>hello-plugin/
+  README.md                         # 只用于 GitHub
+  package.py                        # 模板自带的独立打包脚本
+  .github/workflows/                # 发布流程
+  package/                          # 只有这里进入 .inxpkg
+    inx_package.json
+    runtime/
+      hello_resource.py
+      data/message.txt
+    plugin_pages/
+      guide.md
+      guide.zh-CN.md
+</code></pre></div>
+
+<p>Python 文件名采用小写 snake_case。将 <code>package/inx_package.json</code> 改为：</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"reference"</span><span class="p">:</span><span class="w"> </span><span class="s2">"my_studio/hello_plugin"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Hello Plugin"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"version"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0.1.0"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"engine"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&gt;=0.4,&lt;0.5"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"intro"</span><span class="p">:</span><span class="w"> </span><span class="s2">"读取插件内文本资源的示例组件。"</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>正式发布前换成自己的唯一 reference，后续更新不要更换它。这个例子没有第三方依赖，
+JSON 中也不需要 <code>requirements</code> 或 <code>dependencies</code> 字段。</p>
+<p>如果直接在项目里开发，就建立 <code>Packages/hello_plugin/</code>，把上面 <strong>package 里面的内容</strong>
+直接放进去，不要再套一层。此时 manifest 可以不写：导出为 <code>hello_plugin.inxpkg</code> 时，
+默认 name 和 reference 都来自文件名 <code>hello_plugin</code>；写了 manifest 则按它的值来。
+放在 <code>Assets/</code> 里面的 manifest 不会被当成插件自动加载。</p>
+<h2 id="zh-component">编写组件与资源</h2>
+<p>在 <code>runtime/data/message.txt</code> 中写入 <code>Hello from my plugin!</code>，然后创建
+<code>runtime/hello_resource.py</code>：</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloResource</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Application</span><span class="o">.</span><span class="n">package_path</span><span class="p">(</span>
+            <span class="s2">"my_studio/hello_plugin"</span><span class="p">,</span> <span class="s2">"runtime/data/message.txt"</span>
+        <span class="p">)</span>
+        <span class="n">message</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">path</span><span class="p">)</span><span class="o">.</span><span class="n">read_text</span><span class="p">(</span><span class="n">encoding</span><span class="o">=</span><span class="s2">"utf-8"</span><span class="p">)</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="n">message</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+</code></pre></div>
+
+<p>例子里的 reference 对应<strong>安装后的插件</strong>。直接在 <code>Packages/hello_plugin/</code> 开发时，
+查询用 <code>hello_plugin</code>：本地 Player 的包身份跟随实际目录，而不是将来分发用的 reference。
+要原样使用这段代码进行本地开发，可以建立 <code>Packages/my_studio/hello_plugin/</code>，并写入上面的显式 manifest。</p>
+<p><code>package_path</code> 在编辑器和 Player 中都返回可读取的文件路径。原始资源目录保留相对结构，
+因此 JSON 可以引用旁边的 TXT，外部库也可以找到相邻文件。不要拼接当前工作目录，
+也不要根据 preload 脚本的 <code>__file__</code> 猜资源位置。通用接口
+<code>Application.asset_path("Assets/Data/message.txt")</code> 则通过 Player 的 GUID 索引查找项目资产。</p>
+<p>找到文件不代表任意平台都能执行它：Windows DLL 不能直接在 Linux 使用，浏览器也不能启动
+本地 EXE 或 Java 进程。需要提供目标兼容的库，并在文档中说明支持范围。要写入数据时使用
+<code>Application.persistent_data_path()</code>，不要修改包内资源。</p>
+<p>包内 Python 模块之间使用显式相对导入，必要时添加正常的 <code>__init__.py</code>。需要启动钩子时继承
+<code>InxPreload</code>；在 <code>preload(context)</code> 里用 <code>context.package_path("runtime/data/message.txt")</code>
+读取同一份资源，就不需要硬编码 reference。生命周期细节见<a href="../wiki/site/zh/plugin-package-content.html">插件 API 指南</a>。</p>
+<h2 id="zh-pages">区分运行时、编辑器与文档</h2>
+<table>
+<thead>
+<tr>
+<th>包内内容</th>
+<th>安装位置</th>
+<th>是否进入 Player</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>runtime/</code></td>
+<td><code>Packages/&lt;reference&gt;/runtime/</code></td>
+<td>是</td>
+</tr>
+<tr>
+<td><code>editor/</code></td>
+<td><code>Packages/&lt;reference&gt;/editor/</code></td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>plugin_pages/</code></td>
+<td><code>Packages/&lt;reference&gt;/plugin_pages/</code></td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>materials/</code> 等普通资产</td>
+<td><code>Assets/Plugins/materials/</code></td>
+<td>走正常资产管线</td>
+</tr>
+</tbody>
+</table>
+<p>需要保留原始字节的 JAR、DLL、Wasm 或嵌套数据目录放在 <code>runtime/</code>，仅用于编辑器的工具放在
+<code>editor/</code>。插件不限定开发语言，外层可以用 Java、C++、Rust 或其他工具构建；构建配置和
+中间文件留在 <code>package/</code> 外面，只有准备分发的最终产物进入其中。</p>
+<p>在 <code>plugin_pages/guide.md</code> 写安装和使用说明，在 <code>guide.zh-CN.md</code> 写中文版本。
+图片使用相对路径，并且必须放在包内。仓库 README 只供 GitHub 使用，不会成为插件面板的页面。
+编辑、改名或发新版本时保留已有 <code>.meta</code>，它们维持资产在导入和更新过程中的身份。
+<code>Packages/</code> 的脚本和资产参与正常刷新，新写的组件也一样。</p>
+<h2 id="zh-package">打包并在新项目中验证</h2>
+<p>使用当前官方模板，在仓库根目录执行：</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>package.py<span class="w"> </span>build<span class="w"> </span>dist/hello_plugin.inxpkg
+python<span class="w"> </span>package.py<span class="w"> </span>verify<span class="w"> </span>dist/hello_plugin.inxpkg
+</code></pre></div>
+
+<p>这会生成真正的 InxPack 容器，不是改后缀的 ZIP。只打包 <code>package/</code>，外层 README、
+CMake/Gradle 配置和 <code>dist/</code> 都不会混进去。</p>
+<ol>
+<li>在编辑器中打开另一个测试项目，打开<strong>插件</strong>窗口。</li>
+<li>点击<strong>添加插件</strong>，选择 <code>.inxpkg</code>，检查包内内容后导入。</li>
+<li>确认 <strong>Hello Plugin</strong> 的介绍页能按当前语言显示。</li>
+<li>给一个激活的 GameObject 添加 <code>HelloResource</code>，保存场景，进入 Play。</li>
+<li>Console 应出现 <code>Hello from my plugin!</code>，且没有导入或路径错误。</li>
+<li>用已安装的平台插件导出游戏，运行后确认仍能读取同样的文本。发布目录应该是
+   <code>Content.inxpkg</code> 等封包，而不是散开的项目 <code>Assets/</code> 树。这是二进制资产封包，不是不可逆加密。</li>
+</ol>
+<p>本地开发时，在 Project/File Manager 中选中包的根文件夹，使用 <strong>Export InxPackage</strong>。
+导出整个文件夹，不要只选脚本，否则文本资源与可选的元信息可能没有一起进入包。</p>
+<h2 id="zh-release">发布与更新</h2>
+<p>保留模板中的发布工作流，设置 manifest 版本，提交内容及 <code>.meta</code> 文件，再推送对应 tag
+（例如 <code>v0.1.0</code>）。工作流会发布 <code>.inxpkg</code> 和 release 元信息。确认工作流成功，并在新项目中
+下载测试后再对外发布。用户可以在插件面板粘贴仓库地址；公开仓库并不意味着自动进入官方列表。</p>
+<p>更新时保留 reference 和已有 GUID，增加版本号，再发布对应版本。用户在<strong>版本</strong>页显式选择
+兼容 Release；<strong>刷新官方列表</strong>只更新发现目录，不自动升级安装内容。除了全新安装，也要验证
+旧项目升级，本地修改不能被无声覆盖。</p>
+<p>更完整的示例可以参考 <a href="https://github.com/ChenlizheMe/infernux_mcp">MCP</a>、
+<a href="https://github.com/ChenlizheMe/infernux_windows">Windows</a>、
+<a href="https://github.com/ChenlizheMe/infernux_linux">Linux</a>、
+<a href="https://github.com/ChenlizheMe/infernux_android">Android</a> 和
+<a href="https://github.com/ChenlizheMe/infernux_web">Web</a> 仓库。平台插件携带预编译 Player，
+普通游戏作者安装后不需要运行 CMake；Android 另外要求先在 Hub 安装<strong>安卓支持</strong>。</p></div>
+
+        <nav class="learn-course-pager" aria-label="Previous and next chapters">
+            <div data-page-language="en"><span aria-hidden="true"></span><span class="learn-course-home">Chapter 1 of 1</span><span aria-hidden="true"></span></div>
+            <div data-page-language="zh" lang="zh-CN" hidden><span aria-hidden="true"></span><span class="learn-course-home">第 1 章，共 1 章</span><span aria-hidden="true"></span></div>
+        </nav>
+    </article></div></main>
+
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <script src="../js/i18n-learn.js?v=1"></script>
+    <script src="../js/i18n.js?v=19"></script>
+    <script src="../js/main.js?v=15"></script>
+    <script src="../js/docs-search.js?v=6"></script>
+    <script src="../js/bilingual-page.js?v=1"></script>
+</body>
+</html>

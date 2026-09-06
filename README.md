@@ -99,6 +99,12 @@ Player content stays in `Content.inxpkg` instead of exposing an unpacked `Assets
 
 [Plugin guide](https://infernux-engine.com/wiki/site/en/plugin-package-content.html)
 
+Official plugin repositories (source, documentation, and `.inxpkg` releases):
+
+- [Windows](https://github.com/ChenlizheMe/infernux_windows) · [Linux](https://github.com/ChenlizheMe/infernux_linux) · [Android](https://github.com/ChenlizheMe/infernux_android) · [Web](https://github.com/ChenlizheMe/infernux_web)
+- [MCP editor integration](https://github.com/ChenlizheMe/infernux_mcp)
+- [Plugin template](https://github.com/ChenlizheMe/infernux_plugin_template) · [Build your first plugin](https://infernux-engine.com/learn/plugin-authoring.html)
+
 ## Get started
 
 Download the published Windows x64 installer from [GitHub Releases](https://github.com/ChenlizheMe/Infernux/releases/latest) and let InfernuxHub manage engine versions.

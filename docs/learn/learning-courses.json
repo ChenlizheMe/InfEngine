@@ -32,5 +32,22 @@
     "promise_zh": "从一个材质走向可编程渲染管线",
     "detail_en": "Start with the path from Material to pixel. Continue through reusable lighting and effects, then finish by authoring a complete pipeline. Low-level RenderGraph work stays in the final chapter.",
     "detail_zh": "先理解一个材质怎样变成像素，再进入可复用光照与 Effect，最后独立编写完整渲染管线。底层 RenderGraph 留在最后一章。"
+  },
+  {
+    "id": "plugins",
+    "slug": "plugins",
+    "manifest": "plugins-course.json",
+    "title_en": "Build and share plugins",
+    "title_zh": "制作与分享插件",
+    "short_en": "Plugin course",
+    "short_zh": "插件课程",
+    "summary_en": "Turn a reusable component and its resources into an installable InxPackage, from local authoring to a GitHub release.",
+    "summary_zh": "把可复用组件和资源做成可安装的 InxPackage，从本地开发走到 GitHub 发布。",
+    "level_en": "Beginner",
+    "level_zh": "入门",
+    "promise_en": "One component, one text resource, one installable package",
+    "promise_zh": "一个组件、一份文本资源、一个可安装的包",
+    "detail_en": "Use the official standalone template, keep authoring tools outside the payload, separate Editor and Player content, and verify the package in a fresh project.",
+    "detail_zh": "使用官方独立模板，让作者工具留在包外，区分编辑器和 Player 内容，并在全新项目中验证插件。"
   }
 ]

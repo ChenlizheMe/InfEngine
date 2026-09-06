@@ -97,6 +97,12 @@ Player 内容保留在 `Content.inxpkg` 中，不再直接展开 `Assets/` 和 `
 
 [插件说明](https://infernux-engine.com/wiki/site/zh/plugin-package-content.html)
 
+官方插件仓库（源码、使用文档及 `.inxpkg` 制品）：
+
+- [Windows](https://github.com/ChenlizheMe/infernux_windows) · [Linux](https://github.com/ChenlizheMe/infernux_linux) · [Android](https://github.com/ChenlizheMe/infernux_android) · [Web](https://github.com/ChenlizheMe/infernux_web)
+- [MCP 编辑器集成](https://github.com/ChenlizheMe/infernux_mcp)
+- [插件模板](https://github.com/ChenlizheMe/infernux_plugin_template) · [制作你的第一个插件](https://infernux-engine.com/learn/plugin-authoring.html)
+
 ## 开始用
 
 从 [GitHub Releases](https://github.com/ChenlizheMe/Infernux/releases/latest) 下载已发布的 Windows x64 安装器，让 InfernuxHub 管理引擎版本。
