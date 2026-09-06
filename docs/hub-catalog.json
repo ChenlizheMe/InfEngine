@@ -17,7 +17,7 @@
           "update": {
             "name": "InfernuxHub-0.4.0-windows-x64-full.zip",
             "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHub-0.4.0-windows-x64-full.zip",
-            "size": 32763767
+            "size": 32728951
           },
           "manifest": {
             "name": "InfernuxHub-windows-x64-manifest.json",
@@ -32,7 +32,7 @@
           "update": {
             "name": "InfernuxHub-0.4.0-linux-x64-full.zip",
             "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHub-0.4.0-linux-x64-full.zip",
-            "size": 59788818
+            "size": 53326108
           },
           "manifest": {
             "name": "InfernuxHub-linux-x64-manifest.json",
