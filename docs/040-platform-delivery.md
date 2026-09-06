@@ -85,6 +85,16 @@ Installed plugins have reload/uninstall actions but no version update operation.
 
 ### 2026-09-06: complete Web release and Android symbol separation
 
+- Both Android CPython/NumPy ABIs subsequently passed cold CI in run
+  `34028153505`. Host kit assembly then exposed Windows batch-command resolution
+  and Linux NDK case-sensitive header names. SDK setup now uses PowerShell on both
+  hosts; kit member identity follows the build host's filesystem case rules.
+  Windows setup tests: 12 passed, 1 skipped; WSL/Linux: 11 passed, 2 skipped.
+  These fixes still require complete kit assembly and channel-install acceptance.
+- Updated the checked-in official catalog and independent channel to the actual
+  public v0.2.0 platform releases and their own repositories. Android v0.2.1 is
+  not advertised before publication. Catalog/update regression: 173 passed,
+  5 skipped; focused catalog regression: 11 passed.
 - Web workflow `34025867647` passed its runtime and both host shader-tool builds.
   Installed its exact CI package into the isolated MultiPlatform040 project;
   installed-only Release export passed in 19.106 seconds. An actual Edge WebGPU

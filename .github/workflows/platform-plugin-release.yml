@@ -148,14 +148,15 @@ jobs:
           validate-wrappers: false
 
       - name: Install the pinned Android build SDK
-        shell: bash
+        shell: pwsh
         run: |
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "cmake;3.30.5" \
+          sdkmanager `
+            "platform-tools" `
+            "platforms;android-36" `
+            "build-tools;36.0.0" `
+            "cmake;3.30.5" `
             "ndk;29.0.14206865"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - uses: actions/download-artifact@v4
         with:

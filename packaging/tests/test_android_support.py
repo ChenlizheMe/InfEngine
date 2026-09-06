@@ -5,6 +5,7 @@ import configparser
 import json
 import os
 import re
+import runpy
 import shutil
 import stat
 import subprocess
@@ -105,6 +106,31 @@ def test_numpy_cross_file_uses_the_selected_target_python(tmp_path, abi):
     assert ast.literal_eval(config["constants"]["python_runtime"]) == str(library.resolve())
     for language in ("c", "cpp"):
         assert config["built-in options"][f"{language}_link_args"] == "[python_runtime]"
+
+
+def test_kit_file_identity_matches_the_build_host(tmp_path):
+    script = PACKAGING_DIR.parent / "scripts/setup/package_android_support.py"
+    files = runpy.run_path(str(script))["_files"]
+    (tmp_path / "header.h").write_text("/* NDK header */", encoding="utf-8")
+    roots = (("sdk/xt_CONNMARK", tmp_path), ("sdk/xt_connmark", tmp_path))
+    if os.name == "nt":
+        with pytest.raises(RuntimeError, match="Duplicate"):
+            tuple(files(roots))
+    else:
+        assert len(tuple(files(roots))) == 2
+    with pytest.raises(RuntimeError, match="Duplicate"):
+        tuple(files((roots[0], roots[0])))
+
+
+def test_sdk_setup_uses_a_shell_that_resolves_windows_batch_commands():
+    workflow = (PACKAGING_DIR.parent / ".github/workflows/platform-plugin-release.yml").read_text(
+        encoding="utf-8"
+    )
+    install = workflow.split("- name: Install the pinned Android build SDK", 1)[1].split(
+        "- uses:", 1
+    )[0]
+    assert "shell: pwsh" in install
+    assert "if ($LASTEXITCODE -ne 0)" in install
 
 
 def _create_support(root: Path) -> None:

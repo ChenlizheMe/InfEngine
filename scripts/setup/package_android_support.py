@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import stat
 import sys
 import zipfile
@@ -80,10 +81,10 @@ def _files(roots: tuple[tuple[str, Path], ...]):
                 continue
             relative = source.relative_to(source_root).as_posix()
             archive_path = f"{prefix}/{relative}"
-            folded = archive_path.casefold()
-            if folded in seen:
+            path_key = os.path.normcase(archive_path)
+            if path_key in seen:
                 raise RuntimeError(f"Duplicate Android compatibility path: {archive_path}")
-            seen.add(folded)
+            seen.add(path_key)
             yield archive_path, source
 
 
