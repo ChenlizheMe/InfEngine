@@ -2224,6 +2224,61 @@ def test_runtime_pack_hit_does_not_prepare_compiler_or_install_requirements(tmp_
     assert builder.build() == "restored"
 
 
+@pytest.mark.parametrize("force_rebuild", [False, True])
+def test_consumer_player_never_compiles_on_a_runtime_pack_miss(
+    tmp_path, monkeypatch, force_rebuild
+):
+    entry = tmp_path / "boot.py"
+    entry.write_text("pass\n", encoding="utf-8")
+    builder = NuitkaBuilder(
+        str(entry), str(tmp_path / "output"),
+        build_cache_root=str(tmp_path / "cache"),
+        runtime_pack_cache=True, player_module=True,
+    )
+    monkeypatch.setattr(builder, "_runtime_pack_fingerprint", lambda command: "missing")
+    monkeypatch.setattr(builder, "_runtime_pack_compatibility_key", lambda: "compatible")
+    monkeypatch.setattr(builder, "_restore_runtime_pack", lambda *args, **kwargs: None)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Consumer export must not prepare or invoke a compiler")
+
+    for method in ("_check_nuitka", "_run_nuitka"):
+        monkeypatch.setattr(builder, method, unexpected)
+    monkeypatch.setattr(nuitka_builder_module, "_has_msvc_toolchain", unexpected)
+    monkeypatch.setattr(nuitka_builder_module.shutil, "which", unexpected)
+    with pytest.raises(RuntimeError, match="game export does not compile the engine"):
+        builder.build(force_runtime_rebuild=force_rebuild)
+
+
+def test_release_engineering_explicitly_compiles_player_payload(tmp_path, monkeypatch):
+    entry = tmp_path / "boot.py"
+    entry.write_text("pass\n", encoding="utf-8")
+    builder = NuitkaBuilder(
+        str(entry), str(tmp_path / "output"),
+        build_cache_root=str(tmp_path / "cache"),
+        runtime_pack_cache=True, player_module=True, packaged_runtime_lookup=False,
+    )
+    compiled = []
+    monkeypatch.setattr(builder, "_runtime_pack_fingerprint", lambda command: "build-input")
+    monkeypatch.setattr(builder, "_runtime_pack_compatibility_key", lambda: "compatible")
+    monkeypatch.setattr(builder, "_restore_runtime_pack", lambda *args, **kwargs: None)
+    monkeypatch.setattr(builder, "_check_nuitka", lambda: None)
+
+    def compile_payload(*args):
+        compiled.append(True)
+        return str(tmp_path / "player.dist")
+
+    monkeypatch.setattr(builder, "_run_nuitka", compile_payload)
+    for method in (
+        "_inject_native_libs", "_inject_engine_python_runtime",
+        "_inject_python_runtime_stdlib", "_inject_python_bootstrap_runtime",
+        "_store_runtime_pack",
+    ):
+        monkeypatch.setattr(builder, method, lambda *args, **kwargs: None)
+    assert builder.build() == str(tmp_path / "player.dist")
+    assert compiled == [True]
+
+
 def test_debug_and_release_share_the_compiled_player_entry(tmp_path, monkeypatch):
     project = _make_project(tmp_path)
     entries = []

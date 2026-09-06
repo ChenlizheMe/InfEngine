@@ -307,29 +307,40 @@ def download_github_source(
     return GitHubSourceSnapshot(str(checkout), commit)
 
 
-def resolve_github_release(
+def _github_release_candidates(
     location: str,
-    destination_root: str,
     *,
     expected_reference: str = "",
-    progress: _Progress | None = None,
-) -> GitHubReleasePackage | None:
-    """Return the highest compatible stable protocol release, or ``None``.
-
-    ``None`` means the repository has no Infernux release protocol at all and
-    may use the explicit source-snapshot fallback. An invalid or incompatible
-    protocol release raises and never falls through to repository HEAD.
-    """
+    release_tag: str = "",
+) -> list[tuple[Version, dict[str, object], Mapping[str, object], Mapping[str, object]]] | None:
+    """Read compatible release metadata without downloading plugin payloads."""
 
     owner, repository = _repository_coordinates(location)
-    api_url = f"https://api.github.com/repos/{owner}/{repository}/releases?per_page=100"
-    payload = _request_bytes(api_url, accept="application/vnd.github+json")
-    try:
-        releases = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("GitHub releases response is invalid JSON") from exc
-    if not isinstance(releases, list):
-        raise RuntimeError("GitHub releases response is not a list")
+    api_root = f"https://api.github.com/repos/{owner}/{repository}/releases"
+    releases = []
+    page = 1
+    while True:
+        api_url = (
+            f"{api_root}/tags/{quote(release_tag, safe='')}"
+            if release_tag else
+            f"{api_root}?per_page=100" + (f"&page={page}" if page > 1 else "")
+        )
+        payload = _request_bytes(api_url, accept="application/vnd.github+json")
+        try:
+            document = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("GitHub releases response is invalid JSON") from exc
+        if release_tag:
+            if not isinstance(document, Mapping) or document.get("tag_name") != release_tag:
+                raise RuntimeError("GitHub release response does not match the selected tag")
+            releases.append(document)
+            break
+        if not isinstance(document, list):
+            raise RuntimeError("GitHub releases response is not a list")
+        releases.extend(document)
+        if len(document) < 100:
+            break
+        page += 1
 
     protocol_seen = False
     candidates: list[
@@ -386,12 +397,55 @@ def resolve_github_release(
             )
 
     if not protocol_seen:
+        if release_tag:
+            raise RuntimeError(f"Selected release has no Infernux plugin manifest: {release_tag}")
         return None
     if not candidates:
         detail = "; ".join(errors) or "no compatible stable release"
         raise RuntimeError(f"No compatible Infernux plugin release: {detail}")
 
-    version, selected, asset, release = max(candidates, key=lambda item: item[0])
+    return sorted(candidates, key=lambda item: item[0], reverse=True)
+
+
+def list_github_releases(
+    location: str, *, expected_reference: str = ""
+) -> tuple[dict[str, object], ...]:
+    """List compatible stable versions and notes without changing an installation."""
+
+    candidates = _github_release_candidates(location, expected_reference=expected_reference)
+    return tuple(
+        {
+            "reference": selected["reference"],
+            "version": str(version),
+            "engine": selected["engine"],
+            "release_tag": str(release["tag_name"]),
+            "release_url": str(release.get("html_url", "")),
+            "notes": str(release.get("body") or ""),
+        }
+        for version, selected, _asset, release in candidates or ()
+    )
+
+
+def resolve_github_release(
+    location: str,
+    destination_root: str,
+    *,
+    expected_reference: str = "",
+    release_tag: str = "",
+    progress: _Progress | None = None,
+) -> GitHubReleasePackage | None:
+    """Download the selected tag, or the highest compatible stable release.
+
+    Only unpinned repositories without the Infernux protocol may return None
+    for explicit source acquisition. A selected version is never substituted.
+    """
+
+    candidates = _github_release_candidates(
+        location, expected_reference=expected_reference, release_tag=release_tag,
+    )
+    if candidates is None:
+        return None
+    version, selected, asset, release = candidates[0]
     Path(destination_root).mkdir(parents=True, exist_ok=True)
     destination = str(Path(destination_root) / str(selected["artifact_name"]))
     _download_asset(
@@ -427,5 +481,6 @@ __all__ = [
     "RELEASE_MANIFEST_NAME",
     "RELEASE_MANIFEST_SCHEMA",
     "release_manifest_name",
+    "list_github_releases",
     "resolve_github_release",
 ]

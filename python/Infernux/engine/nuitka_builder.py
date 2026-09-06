@@ -4,9 +4,9 @@ using Nuitka (Python → C → native binary). The output is a self-contained
 directory containing the EXE, all required native libraries and the embedded
 Python runtime.
 
-On Windows, Infernux requires an MSVC toolchain for game builds.
-Intermediate compilation is kept in the owning project's build cache and
-moved to the final destination afterwards.
+Compiler tooling belongs to runtime publication. Consumer Player builds use
+precompiled distributions and never compile a replacement when one is absent.
+Release-engineering compilation retains its own build cache.
 """
 
 from __future__ import annotations
@@ -1240,6 +1240,12 @@ class NuitkaBuilder:
                 compatibility_key=compatibility_key if self.packaged_runtime_lookup else "",
             )
         if dist_dir is None:
+            if self.player_module and self.packaged_runtime_lookup:
+                raise RuntimeError(
+                    "The selected platform has no compatible precompiled Player runtime. "
+                    "Install the matching complete platform package; game export does "
+                    "not compile the engine."
+                )
             self._check_nuitka()
             if runtime_pack_key:
                 # Requirements can change the environment used for compilation.

@@ -735,11 +735,9 @@ class PluginManager:
             )
         cache_path = self.cached_reference_path(reference)
         if cache_path:
-            cached = dict(descriptor)
-            cached["type"] = "local"
-            cached["location"] = cache_path
-            return self.install_source(
-                cached,
+            return self.install_package(
+                cache_path,
+                source=descriptor,
                 install_dependencies=install_dependencies,
                 progress=progress,
             )
@@ -748,6 +746,25 @@ class PluginManager:
             install_dependencies=install_dependencies,
             progress=progress,
         )
+
+    def available_releases(self, reference: str) -> tuple[dict[str, object], ...]:
+        """Read versions from a package's source without changing its project pin."""
+
+        record = self.registry.installed_record(reference) or self.registry.find(reference)
+        if record is None:
+            raise KeyError(f"Plugin reference was not found: {reference}")
+        source = record.get("source", {})
+        if source.get("type") == "github":
+            location = str(source["location"])
+        elif source.get("acquisition") == "github-release" and source.get("repository"):
+            # Older cache imports recorded the local archive as their location.
+            # Their explicit repository still identifies the original publisher.
+            location = str(source["repository"])
+        else:
+            return ()
+        from .github_releases import list_github_releases
+
+        return list_github_releases(location, expected_reference=reference)
 
     def cached_reference_path(self, reference: str) -> str:
         record = self.registry.find(reference)
@@ -773,6 +790,7 @@ class PluginManager:
         reference: str,
         *,
         force: bool = False,
+        release_tag: str = "",
         progress: _InstallProgress | None = None,
     ) -> dict[str, object]:
         """Download one registry package into the shared Hub library."""
@@ -781,7 +799,7 @@ class PluginManager:
         if record is None:
             raise KeyError(f"Plugin reference was not found: {reference}")
         cached = self.cached_reference_path(reference)
-        if cached and not force:
+        if cached and not force and not release_tag:
             return {"reference": reference, "path": cached, "cached": True}
         source = record.get("source")
         if not isinstance(source, Mapping):
@@ -799,6 +817,7 @@ class PluginManager:
                 descriptor,
                 workspace,
                 progress=progress,
+                release_tag=release_tag,
             )
             preview = InxPackage.inspect(package_path)
             actual_reference = validate_reference(
@@ -1413,10 +1432,13 @@ class PluginManager:
         workspace: str,
         *,
         progress: _InstallProgress | None = None,
+        release_tag: str = "",
     ) -> tuple[str, dict[str, object]]:
         descriptor = dict(source)
         source_type = str(descriptor["type"])
         location = str(descriptor["location"])
+        if release_tag and source_type != "github":
+            raise ValueError("A release version can only be selected for a GitHub plugin source")
         if source_type == "local":
             _report_progress(progress, "read_local_source", 0.16)
             local = resolved_path(
@@ -1446,6 +1468,7 @@ class PluginManager:
                 workspace,
                 expected_reference=str(descriptor.get("reference", "")),
                 progress=progress,
+                release_tag=release_tag,
             )
             if released is not None:
                 released_source = dict(descriptor)
