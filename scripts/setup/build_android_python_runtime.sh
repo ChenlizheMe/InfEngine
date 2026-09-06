@@ -92,9 +92,6 @@ numpy_source="$sources/numpy-${NUMPY_VERSION}"
 if [[ ! -f "$numpy_source/pyproject.toml" ]]; then
     tar -xf "$numpy_archive" -C "$sources"
 fi
-cp "$script_dir/android_numpy_cross.ini" \
-    "$numpy_source/.infernux-android-cross.ini"
-
 export ANDROID_HOME
 python_prefix="$python_source/cross-build/$host/prefix"
 build_python="$python_source/cross-build/build/python"
@@ -104,6 +101,20 @@ fi
 if [[ ! -f "$python_prefix/lib/libpython3.13.so" ]]; then
     "$python_source/Android/android.py" build "$host"
 fi
+
+"$build_python" - "$script_dir/android_numpy_cross.ini" \
+    "$numpy_source/.infernux-android-cross.ini" "$python_prefix/lib/libpython3.13.so" <<'PY'
+import sys
+from pathlib import Path
+
+source, destination, library = map(Path, sys.argv[1:])
+destination.write_text(
+    source.read_text(encoding="utf-8").replace(
+        "@INFERNUX_ANDROID_PYTHON_LIBRARY@", repr(str(library.resolve()))
+    ),
+    encoding="utf-8",
+)
+PY
 
 cibw_environment="$work_root/cibuildwheel-${CIBUILDWHEEL_VERSION}"
 if [[ ! -x "$cibw_environment/bin/python" ]]; then

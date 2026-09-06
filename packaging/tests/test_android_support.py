@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import configparser
 import json
 import os
 import re
@@ -81,6 +83,27 @@ def test_android_python_producer_selects_java_before_sdk_setup():
     assert producer.index("actions/setup-java@v4") < producer.index("android-actions/setup-android@v3")
     assert 'java-version: "17"' in producer
     assert 'python-version: "3.13"' in producer
+
+
+@pytest.mark.parametrize("abi", ["arm64-v8a", "x86_64"])
+def test_numpy_cross_file_uses_the_selected_target_python(tmp_path, abi):
+    setup = PACKAGING_DIR.parent / "scripts/setup"
+    script = (setup / "build_android_python_runtime.sh").read_text(encoding="utf-8")
+    configure = script.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    library = tmp_path / "target Python" / abi / "libpython3.13.so"
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"target library fixture")
+    output = tmp_path / "cross.ini"
+    subprocess.run(
+        [sys.executable, "-c", configure,
+         str(setup / "android_numpy_cross.ini"), str(output), str(library)],
+        check=True,
+    )
+    config = configparser.ConfigParser()
+    config.read(output, encoding="utf-8")
+    assert ast.literal_eval(config["constants"]["python_runtime"]) == str(library.resolve())
+    for language in ("c", "cpp"):
+        assert config["built-in options"][f"{language}_link_args"] == "[python_runtime]"
 
 
 def _create_support(root: Path) -> None:
