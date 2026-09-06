@@ -145,6 +145,7 @@ def test_windows_publisher_has_a_system_loader_independent_of_sdk_cache():
         assert "VulkanRT-$env:VULKAN_SDK_VERSION-Installer.exe" in step
         assert "-WindowStyle Hidden" in step
         assert "ExitCode -ne 0" in step
+        assert "-ArgumentList '/s'" in step
 
 
 def test_platform_workflow_keeps_product_graphics_contracts_explicit():

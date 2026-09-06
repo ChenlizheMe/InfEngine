@@ -103,7 +103,23 @@ Installed plugins have reload/uninstall actions but no version update operation.
   packaging: 5 passed. Build workflow/ownership checks: 25 passed, 2 skipped.
 - Fixed the installed-only acceptance entry to bind project paths and synchronize
   installed resources before plugin preloads, matching Editor startup order;
-  all 12 CLI tests pass. Installed-only Android export verification is in progress.
+  all 12 CLI tests pass. Installed-only Android export passed in 28.4 seconds:
+  both engine origins were under site-packages, the native payload was Release,
+  and the resulting APK was 52,276,976 bytes with a passing package audit.
+  This run reused the previously validated Gradle cache. A separate cold-cache
+  attempt failed on a Maven TLS handshake, so fresh Hub first-build acceptance
+  is not yet claimed. The corrected entry's TXT preload probe also passed.
+- Pushed Android implementation `d86d173` and engine integration `883b0239`.
+  Dispatched the complete Android release build and tagged Linux v0.2.0 after
+  its complete workflow passed; public artifact completion remains pending.
+- Full local Python regression: 5,331 passed, 11 skipped. Lifecycle-only package
+  tests now omit generated Player payloads from their test copies; the focused
+  release-assets suite passes in 13.3 seconds (13 passed, 1 skipped), while actual
+  complete-package and installed-build acceptance retain their native payloads.
+- Android release CI now selects JDK 17 before SDK setup instead of using the
+  Ubuntu runner's default JDK 11. Windows runtime installation uses the vendor's
+  lowercase `/s` switch with a five-minute step limit. These installer checks run
+  only in CI; no local Vulkan installation is part of acceptance.
 - The complete Linux plugin workflow passed. Main PR Linux desktop/Player,
   Android Player and Web Player/browser checks passed at `bc5cdfd6`; both Windows
   jobs failed because the staged publisher lacked the system Vulkan loader.

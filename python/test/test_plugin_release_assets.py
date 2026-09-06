@@ -337,7 +337,15 @@ def test_platform_package_registers_and_removes_its_build_targets(
     target_ids,
 ):
     root = Path(__file__).parents[2]
-    source = root / "external" / "plugins" / source_directory
+    repository = root / "external" / "plugins" / source_directory
+    source = tmp_path / "plugin-source"
+    # This test exercises lifecycle and version transactions, not native loading.
+    # Complete payloads are verified by release tests and installed Player builds.
+    shutil.copytree(
+        repository / "package", source / "package",
+        ignore=shutil.ignore_patterns("player", "__pycache__", "*.pyc"),
+    )
+    shutil.copy2(repository / "package.py", source / "package.py")
     package = tmp_path / f"{reference.replace('/', '.')}.inxpkg"
     project = tmp_path / "project"
     (project / "Assets").mkdir(parents=True)
