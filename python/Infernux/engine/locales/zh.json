@@ -648,7 +648,7 @@
   "build.step.cleaning_output": "清理输出目录...",
   "build.step.collecting_deps": "收集用户依赖...",
   "build.step.generating_boot": "生成入口脚本...",
-  "build.step.nuitka_compilation": "Nuitka 原生编译...",
+  "build.step.assembling_runtime": "组装预编译 Player...",
   "build.step.organizing_output": "整理输出目录...",
   "build.step.copying_data": "复制游戏数据...",
   "build.step.compiling_scripts": "编译用户脚本...",

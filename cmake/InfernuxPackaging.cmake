@@ -48,7 +48,7 @@ add_custom_target(package_python
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${INFERNUX_PYTHON_WHEEL_DIR}" "${INFERNUX_RELEASE_DIR}"
 
-    DEPENDS prebuild_player_runtime
+    DEPENDS stage_python_package
     COMMENT "Building and verifying the Infernux Python wheel"
     VERBATIM
 )

@@ -137,6 +137,7 @@ jobs:
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           cmake --preset windows-msvc-release
           cmake --build --preset windows-msvc-release
+          cmake --build --preset windows-msvc-player
 
       - name: Build Windows Player fixture
         shell: pwsh
@@ -221,6 +222,7 @@ jobs:
           conda activate infernux
           cmake --preset linux-clang-release
           cmake --build --preset linux-clang-release
+          cmake --build --preset linux-clang-player
 
       - name: Build Linux Player fixture
         run: |

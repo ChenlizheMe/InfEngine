@@ -77,6 +77,7 @@ def inspect_host_player_request(
     target: BuildTarget | None,
     *,
     exporter_id: str,
+    player_runtime_root: str = "",
 ) -> CapabilityReport:
     if target is None or request.target != target.id:
         return CapabilityReport(
@@ -92,6 +93,16 @@ def inspect_host_player_request(
         )
     project = Path(request.project_root)
     diagnostics = []
+    if player_runtime_root:
+        from Infernux.engine.precompiled_player import inspect_desktop_runtime
+
+        try:
+            inspect_desktop_runtime(player_runtime_root)
+        except (OSError, ValueError, RuntimeError) as exc:
+            diagnostics.append(BuildDiagnostic(
+                DiagnosticSeverity.ERROR, "host-player.runtime.unavailable", str(exc),
+                source=exporter_id,
+            ))
     if not (project / "Assets").is_dir() or not (
         project / "ProjectSettings"
     ).is_dir():
@@ -137,6 +148,8 @@ class _CancellationEvent:
 def execute_host_player_build(
     request: BuildRequest,
     plan: BuildPlan,
+    *,
+    player_runtime_root: str = "",
 ) -> BuildResult:
     del plan
     from Infernux.engine.game_builder import GameBuilder
@@ -173,6 +186,7 @@ def execute_host_player_build(
         ),
         lto=bool(settings["lto"]),
         enable_jit=bool(settings["enable_jit"]),
+        player_runtime_root=player_runtime_root,
     )
     builder.freeze_asset_index_entries(catalog_entries)
     builder._validate_output_directory()

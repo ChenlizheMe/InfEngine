@@ -95,93 +95,15 @@ def test_desktop_target_loads_the_core_exporter():
     assert [target.id for target in exporter.targets()] == [module.DESKTOP_TARGET]
 
 
-def test_native_module_override_does_not_redirect_the_source_player_host(tmp_path):
+def test_installed_acceptance_rejects_the_source_checkout():
     module = _module()
-    native_root = tmp_path / "installed-wheel" / "Infernux" / "lib"
-    native_root.mkdir(parents=True)
-    preset = (
-        "windows-msvc-release"
-        if module.sys.platform == "win32"
-        else "linux-clang-release"
-    )
-    host_name = (
-        "InfernuxPlayerHost.exe"
-        if module.sys.platform == "win32"
-        else "InfernuxPlayerHost"
-    )
-    host = tmp_path / "out" / "build" / preset / "player-runtime" / host_name
-    host.parent.mkdir(parents=True)
-    host.write_bytes(b"host")
-    environment = {"INFERNUX_NATIVE_MODULE_DIR": str(native_root)}
-
-    discovered = module._configure_source_player_host(environment, tmp_path)
-
-    assert discovered == host.resolve()
-    assert environment["INFERNUX_PLAYER_HOST_PATH"] == str(host.resolve())
+    with pytest.raises(RuntimeError, match="installed wheel"):
+        module._prepare_engine(installed=True)
 
 
-def test_source_player_host_uses_current_repository_preset_without_native_override(
-    tmp_path,
-):
-    module = _module()
-    preset = (
-        "windows-msvc-release"
-        if module.sys.platform == "win32"
-        else "linux-clang-release"
-    )
-    host_name = (
-        "InfernuxPlayerHost.exe"
-        if module.sys.platform == "win32"
-        else "InfernuxPlayerHost"
-    )
-    host = tmp_path / "out" / "build" / preset / "player-runtime" / host_name
-    host.parent.mkdir(parents=True)
-    host.write_bytes(b"host")
-    environment = {}
-
-    discovered = module._configure_source_player_host(environment, tmp_path)
-
-    assert discovered == host.resolve()
-    assert environment["INFERNUX_PLAYER_HOST_PATH"] == str(host.resolve())
-
-
-def test_source_player_host_uses_linux_single_config_preset_root(
-    tmp_path, monkeypatch
-):
-    module = _module()
-    monkeypatch.setattr(module, "sys", SimpleNamespace(platform="linux"))
-    host = (
-        tmp_path
-        / "out"
-        / "build"
-        / "linux-clang-release"
-        / "player-runtime"
-        / "InfernuxPlayerHost"
-    )
-    host.parent.mkdir(parents=True)
-    host.write_bytes(b"host")
-    environment = {
-        "INFERNUX_NATIVE_MODULE_DIR": str(tmp_path / "wheel" / "Infernux" / "lib")
-    }
-
-    discovered = module._configure_source_player_host(environment, tmp_path)
-
-    assert discovered == host.resolve()
-    assert environment["INFERNUX_PLAYER_HOST_PATH"] == str(host.resolve())
-
-
-def test_explicit_player_host_is_never_replaced(tmp_path):
-    module = _module()
-    explicit = tmp_path / "custom-host"
-    environment = {
-        "INFERNUX_PLAYER_HOST_PATH": str(explicit),
-        "INFERNUX_NATIVE_MODULE_DIR": str(tmp_path / "python-sync"),
-    }
-
-    discovered = module._configure_source_player_host(environment)
-
-    assert discovered == explicit.resolve()
-    assert environment["INFERNUX_PLAYER_HOST_PATH"] == str(explicit)
+def test_installed_acceptance_is_an_explicit_cli_mode():
+    arguments = _module()._parser().parse_args(["project", "web-wasm32", "output", "--installed"])
+    assert arguments.installed is True
 
 
 def test_raw_build_tool_output_is_not_retained_as_phase_progress():

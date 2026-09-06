@@ -1,8 +1,8 @@
 """
 GameBuilder — packages a standalone native game from an Infernux project.
 
-Uses **Nuitka** to compile the Python entry script into a native EXE.
-All engine code, dependencies, and the CPython runtime are bundled into
+Uses the selected platform plugin's precompiled Player and CPython runtime.
+All engine code and runtime dependencies are bundled into
 a self-contained directory.  User scripts (.py in Assets/) are compiled
 to .pyc with ``py_compile`` for source protection.
 
@@ -255,7 +255,7 @@ from ._build_dependencies import BuildDependencyMixin
 
 
 class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
-    """Build a standalone native game distribution using Nuitka."""
+    """Assemble a standalone game using the platform plugin's native Player."""
 
     OUTPUT_MARKER_FILENAME = ".infernux-build-output"
     _BUILD_TEMP_DIR_NAME = "_build_temp"
@@ -388,6 +388,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         debug_mode: bool = False,
         lto: bool = True,
         enable_jit: bool = False,
+        player_runtime_root: str = "",
     ):
         self.project_path = resolved_path(project_path)
         self.project_name = game_name.strip() if game_name.strip() else os.path.basename(self.project_path)
@@ -402,6 +403,11 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self.debug_mode = debug_mode
         self.lto = lto
         self.enable_jit = enable_jit
+        host_platform = "windows" if sys.platform == "win32" else "linux"
+        self.player_runtime_root = resolved_path(player_runtime_root or os.path.join(
+            self.project_path, "Packages", "infernux", f"platform-{host_platform}",
+            "editor", f"infernux_{host_platform}", "player",
+        ))
         self._full_build_validated = False
         self._runtime_type_records: list[dict[str, object]] = []
         self._build_output_transaction: dict[str, str] | None = None
@@ -572,9 +578,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         _p(t("build.step.generating_boot"), 0.05)
         boot_script = self._generate_boot_script()
 
-        _p(t("build.step.nuitka_compilation"), 0.06)
+        _p(t("build.step.assembling_runtime"), 0.06)
         try:
-            dist_dir = self._run_nuitka(
+            dist_dir = self._stage_player_runtime(
                 boot_script,
                 on_progress,
                 user_packages,
@@ -1252,107 +1258,49 @@ finally:
         return boot_path
 
     # ------------------------------------------------------------------
-    # Nuitka compilation
+    # Precompiled platform runtime assembly
     # ------------------------------------------------------------------
 
-    def _run_nuitka(
+    def _stage_player_runtime(
         self,
         boot_script: str,
         on_progress: Optional[Callable[[str, float], None]],
         user_packages: Optional[List[str]] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
-        """Invoke NuitkaBuilder. Returns the dist directory path."""
-        # NumPy and packaging are part of the engine runtime.  The latter is
-        # required by the runtime PluginManager for version/specifier checks;
-        # both must remain importable from the source-less runtime archive.
-        # Numba and llvmlite remain conditional because only the public JIT
-        # path needs their bytecode-preserving raw package copies.
-        jit_set = NuitkaBuilder._JIT_NOFOLLOW_PACKAGES
-        all_pkgs = user_packages or []
-        compiled_pkgs = [p for p in all_pkgs if p not in jit_set]
-        raw_pkgs = {"numpy", "packaging"}
+        """Restore the selected plugin payload, independent of compiler caches."""
+        from .precompiled_player import stage_desktop_runtime
 
-        player_icon = (
-            self._asset_source_for_guid(self.icon_guid, "Build icon")
-            if self.icon_guid
-            else os.path.join(
-                _resources.get_package_resources_path(), "icons", "icon.png"
-            )
+        if cancel_event is not None and cancel_event.is_set():
+            raise _BuildCancelled()
+        if on_progress:
+            on_progress("Assembling the platform plugin's precompiled Player", 0.06)
+        dist_dir = stage_desktop_runtime(
+            self.player_runtime_root,
+            os.path.join(self.project_path, "Cache", "Build", "Desktop"),
+            parallel=self.enable_jit,
         )
-        if not os.path.isfile(player_icon):
-            raise FileNotFoundError(f"Player icon is missing: {player_icon}")
-
-        nk = NuitkaBuilder(
-            entry_script=boot_script,
-            output_dir=self.output_dir,
-            build_cache_root=os.path.join(
-                self.project_path,
-                "Cache",
-                "Build",
-                "Desktop",
-            ),
-            output_filename=(
-                "_InfernuxPlayer.pyd"
-                if sys.platform == "win32"
-                else "_InfernuxPlayer.so"
-            ),
-            product_name="Infernux Player",
-            icon_path=player_icon,
-            extra_include_packages=compiled_pkgs,
-            extra_requirements_files=self._project_requirement_files(),
-            raw_copy_packages=sorted(raw_pkgs),
-            # Release wheels prebuild this dependency closure into the base
-            # Runtime Pack, while the packages themselves remain in a small
-            # optional module selected by the user's build setting.
-            runtime_support_packages=["numba", "llvmlite"],
-            console_mode="force" if self.debug_mode else "disable",
-            lto=self.lto,
-            # Runtime compilation is independent from Data/ project content
-            # and product branding. The generic Player is renamed after the
-            # prebuilt pack is restored.
-            runtime_pack_cache=True,
-            player_module=True,
-        )
-
-        def _nk_progress(msg: str, pct: float):
-            # Map Nuitka's 0–1 range into our 0.06–0.85 range
-            mapped = 0.06 + pct * 0.79
-            if on_progress:
-                on_progress(msg, mapped)
-
-        dist_dir = nk.build(on_progress=_nk_progress, cancel_event=cancel_event)
-        if self.enable_jit:
-            if on_progress:
-                on_progress(t("build.step.injecting_jit"), 0.85)
-            if not nk.install_runtime_module(
-                dist_dir,
-                module_name="parallel",
-                packages=["numba", "llvmlite"],
-                archive_only=True,
-                profile=self._player_inxpack_profile(),
-            ):
-                raise RuntimeError("Unable to stage the parallel Runtime Module")
-        return dist_dir
+        try:
+            additional = sorted(set(user_packages or ()) - {"numpy", "packaging", "numba", "llvmlite"})
+            if additional:
+                # Reuse the source-less dependency copier, not its compiler
+                # or environment/cache fingerprint path.
+                copier = NuitkaBuilder(
+                    entry_script=boot_script, output_dir=self.output_dir,
+                    build_cache_root=os.path.join(self.project_path, "Cache", "Build", "Desktop"),
+                )
+                copier._inject_jit_packages(dist_dir, packages=additional)
+            if cancel_event is not None and cancel_event.is_set():
+                raise _BuildCancelled()
+            return dist_dir
+        except BaseException:
+            shutil.rmtree(os.path.dirname(dist_dir))
+            raise
 
     def _player_host_path(self) -> str:
-        """Resolve the native single-process host; fail closed if absent."""
-
-        override = os.environ.get("INFERNUX_PLAYER_HOST_PATH", "").strip()
-        if override:
-            candidate = resolved_path(override)
-            if not os.path.isfile(candidate):
-                raise RuntimeError(
-                    f"INFERNUX_PLAYER_HOST_PATH is not a file: {candidate}"
-                )
-            return candidate
+        """The selected platform package owns the game's native host."""
         host_name = "InfernuxPlayerHost.exe" if sys.platform == "win32" else "InfernuxPlayerHost"
-        candidate = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "resources",
-            "player_runtime",
-            host_name,
-        )
+        candidate = os.path.join(self.player_runtime_root, host_name)
         if not os.path.isfile(candidate):
             raise RuntimeError(f"{host_name} is required for Player packaging")
         return candidate
@@ -1362,7 +1310,7 @@ finally:
     # ------------------------------------------------------------------
 
     def _organize_output(self, dist_dir: str) -> str:
-        """Move Nuitka dist contents from staging into self.output_dir.
+        """Move the assembled platform distribution into self.output_dir.
 
         The dist_dir lives under the project's ``Cache/Build/Desktop``
         staging tree. We move every item into the user's chosen output
@@ -1372,30 +1320,12 @@ finally:
         final_dir = self.output_dir
         os.makedirs(final_dir, exist_ok=True)
 
-        if sys.platform == "win32":
-            # robocopy /MOVE /E is dramatically faster than per-item
-            # shutil.move for large directory trees (native NTFS ops).
-            rc = subprocess.call(
-                ["robocopy", dist_dir, final_dir, "/E", "/MOVE",
-                 "/MT:16", "/R:1", "/W:1", "/XJ",
-                 "/COPY:DAT", "/DCOPY:DAT",
-                 "/NFL", "/NDL", "/NJH", "/NJS", "/NP"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=0x08000000,
-            )
-            if rc >= 8:
-                raise RuntimeError(f"robocopy /MOVE failed with exit code {rc}")
-        else:
-            for item in os.listdir(dist_dir):
-                src = os.path.join(dist_dir, item)
-                dst = os.path.join(final_dir, item)
-                if os.path.exists(dst):
-                    if os.path.isdir(dst):
-                        shutil.rmtree(dst)
-                    else:
-                        os.remove(dst)
-                shutil.move(src, dst)
+        # Move whole package directories, preserving their authored case.
+        # On the same volume these are directory renames, not recursive copies.
+        for item in os.listdir(dist_dir):
+            src = os.path.join(dist_dir, item)
+            dst = os.path.join(final_dir, item)
+            shutil.move(src, dst)
 
         game_name = f"{self.project_name}.exe" if sys.platform == "win32" else self.project_name
         game_executable = os.path.join(final_dir, game_name)
@@ -1406,16 +1336,10 @@ finally:
         if sys.platform != "win32":
             os.chmod(game_executable, os.stat(game_executable).st_mode | 0o111)
 
-        # Remove the now-empty staging parent
-        staging_parent = os.path.dirname(dist_dir)
-        if sys.platform == "win32":
-            subprocess.run(
-                ["cmd", "/c", "rd", "/s", "/q", staging_parent],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            shutil.rmtree(staging_parent, ignore_errors=True)
+        # Both directories were allocated for this assembly only. Empty-directory
+        # removal cannot recursively erase unrelated files if that contract breaks.
+        os.rmdir(dist_dir)
+        os.rmdir(os.path.dirname(dist_dir))
 
         return final_dir
 
@@ -2596,8 +2520,8 @@ finally:
     _BUILTIN_MODULES = frozenset({
         # Standard library (always available in the Nuitka bundle)
         *sys.stdlib_module_names,
-        # Engine packages (already followed by Nuitka via boot.py)
-        "Infernux",
+        # Both public names belong to the precompiled engine, not user packages.
+        "Infernux", "infernux",
         # Editor-only / build-only packages owned by the engine itself.
         "watchdog", "PIL", "cv2", "imageio", "psd_tools",
         "tkinter", "unittest", "test", "pip", "setuptools",
@@ -4526,11 +4450,11 @@ finally:
 
         def _queue_dir(d: str):
             if os.path.isdir(d):
-                dirs_to_remove.add(d)
+                dirs_to_remove.add(path_key(d))
 
         def _queue_file(f: str):
             if os.path.isfile(f):
-                files_to_remove.add(f)
+                files_to_remove.add(path_key(f))
 
         # Directories that are entirely unnecessary at runtime
         _queue_dir(os.path.join(final_dir, "Infernux", "lib", "_player_runtime"))
@@ -4619,10 +4543,10 @@ finally:
         for root, dirs, files in os.walk(final_dir, topdown=False):
             for dname in dirs:
                 if dname == "__pycache__" or dname.endswith(".dist-info"):
-                    dirs_to_remove.add(os.path.join(root, dname))
+                    _queue_dir(os.path.join(root, dname))
             for fname in files:
                 if os.path.splitext(fname)[1].lower() in {".pdb", ".lib", ".exp", ".pyi"}:
-                    files_to_remove.add(os.path.join(root, fname))
+                    _queue_file(os.path.join(root, fname))
 
         # ── Execute removals ─────────────────────────────────────────
         # 1. Remove individual files (fast, no subprocess)

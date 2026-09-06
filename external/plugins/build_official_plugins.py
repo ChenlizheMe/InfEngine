@@ -1,4 +1,4 @@
-"""Build official source repositories into wheel-distributed InxPackages."""
+"""Build the official catalog and only the wheel-bundled default packages."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ if _SOURCE_PYTHON.is_dir() and str(_SOURCE_PYTHON) not in sys.path:
     sys.path.insert(0, str(_SOURCE_PYTHON))
 
 from Infernux.plugins import InxPackage
+from Infernux.plugins.content import discover_plugin_pages, merge_plugin_pages
 
 
 def _write_json(path: Path, document: dict[str, object]) -> None:
@@ -59,12 +60,18 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
         if not reference:
             raise RuntimeError(f"Official plugin has no reference: {plugin_source}")
         artifact = f"{reference.replace('/', '.')}.inxpkg"
-        expected_outputs.add(artifact)
-        preview = InxPackage.export_source(
-            str(plugin_source),
-            str(output_root / artifact),
-            profile="release",
-        )
+        if bool(source_entry.get("default", False)):
+            expected_outputs.add(artifact)
+            metadata = InxPackage.export_source(
+                str(plugin_source), str(output_root / artifact), profile="release",
+            ).metadata
+        else:
+            # Independent platform releases own their archives. Catalog refresh
+            # needs metadata only, not another serialization of every runtime.
+            metadata = dict(manifest)
+            metadata["pages"] = merge_plugin_pages(
+                discover_plugin_pages(str(plugin_source / "package")), manifest.get("pages"),
+            )
         source: dict[str, object] = {}
         if repository:
             source = {
@@ -78,18 +85,18 @@ def build(source_root: Path, output_root: Path, catalog_path: Path) -> None:
         registry.append(
             {
                 "reference": reference,
-                "name": str(preview.metadata.get("name", reference)),
-                "version": str(preview.metadata.get("version", "")),
-                "intro": str(preview.metadata.get("intro", "")),
-                "intros": dict(preview.metadata.get("intros", {})),
+                "name": str(metadata.get("name", reference)),
+                "version": str(metadata.get("version", "")),
+                "intro": str(metadata.get("intro", "")),
+                "intros": dict(metadata.get("intros", {})),
                 "artifact": artifact,
-                "engine": str(preview.metadata.get("engine", "")),
+                "engine": str(metadata.get("engine", "")),
                 "dependencies": [],
                 "repository": repository,
                 "source": source,
                 "category": str(source_entry.get("category", "Other")),
                 "targets": [str(value) for value in source_entry.get("targets", [])],
-                "pages": list(preview.metadata.get("pages", [])),
+                "pages": list(metadata.get("pages", [])),
             }
         )
         if bool(source_entry.get("default", False)):

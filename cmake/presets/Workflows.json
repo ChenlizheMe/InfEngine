@@ -27,6 +27,7 @@
         {"type": "configure", "name": "windows-msvc-release"},
         {"type": "build", "name": "windows-msvc-release"},
         {"type": "test", "name": "windows-msvc-release"},
+        {"type": "build", "name": "windows-msvc-player"},
         {"type": "build", "name": "windows-msvc-wheel"}
       ]
     },
@@ -37,6 +38,7 @@
         {"type": "configure", "name": "linux-clang-release"},
         {"type": "build", "name": "linux-clang-release"},
         {"type": "test", "name": "linux-clang-release"},
+        {"type": "build", "name": "linux-clang-player"},
         {"type": "build", "name": "linux-clang-wheel"}
       ]
     }

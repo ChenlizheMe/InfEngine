@@ -64,7 +64,12 @@ def test_runtime_pack_cmake_does_not_write_bytecode_into_its_source(tmp_path):
     (package / "__init__.py").write_text("", encoding="utf-8")
     (engine / "__init__.py").write_text("", encoding="utf-8")
     (engine / "prebuilt_runtime.py").write_text(
-        "import os\nassert os.environ['INFERNUX_NATIVE_MODULE_DIR']\n", encoding="utf-8"
+        "import os, sys\nfrom pathlib import Path\n"
+        "assert os.environ['INFERNUX_NATIVE_MODULE_DIR']\n"
+        "target = Path(sys.argv[sys.argv.index('--platform-player-output') + 1])\n"
+        "target.mkdir(parents=True)\n"
+        "(target / 'Runtime.inxrt').write_bytes(b'published by the CMake target')\n",
+        encoding="utf-8",
     )
     sentinel = package / "__pycache__/author.sentinel"
     sentinel.parent.mkdir()
@@ -84,8 +89,28 @@ def test_runtime_pack_cmake_does_not_write_bytecode_into_its_source(tmp_path):
         f"-DNATIVE_MODULE_DIR={tmp_path / 'native'}",
         f"-DOUTPUT_ROOT={tmp_path / 'runtime-packs'}",
         f"-DMODULE_OUTPUT_ROOT={tmp_path / 'runtime-modules'}",
+        f"-DPLATFORM_PLAYER_OUTPUT={tmp_path / 'plugin/package/editor/player'}",
         f"-DBUILD_CACHE_ROOT={tmp_path / 'cache'}",
         "-P", str(ROOT / "cmake/prebuild_player_runtime.cmake"),
     ], env=environment, capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     assert snapshot() == before
+    assert (tmp_path / 'plugin/package/editor/player/Runtime.inxrt').read_bytes() == (
+        b'published by the CMake target'
+    )
+
+
+@pytest.mark.parametrize("host,toolchain", [("windows", "msvc"), ("linux", "clang")])
+def test_release_workflows_publish_platform_payloads_through_cmake(host, toolchain):
+    import json
+
+    presets = json.loads((ROOT / f"cmake/presets/{host.title()}.json").read_text())
+    name = f"{host}-{toolchain}-player"
+    player = next(p for p in presets['buildPresets'] if p['name'] == name)
+    assert player['targets'] == ['prebuild_player_runtime']
+    assert player['configurePreset'] == f'{host}-{toolchain}-release'
+    workflows = json.loads((ROOT / 'cmake/presets/Workflows.json').read_text())
+    release = next(p for p in workflows['workflowPresets'] if p['name'] == f'{host}-release')
+    assert {'type': 'build', 'name': name} in release['steps']
+    acceptance = (ROOT / '.github/workflows/platform-player.yml').read_text()
+    assert f'cmake --build --preset {name}' in acceptance

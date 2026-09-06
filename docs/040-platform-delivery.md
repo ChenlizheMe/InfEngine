@@ -64,6 +64,11 @@ completed physical-device acceptance or mark untested work as passed.
   and installation transactions. Do not introduce parallel packaging formats.
 - Compilation belongs to engine/plugin release engineering, never ordinary
   consumer installation or game export.
+- CMake release targets publish final payloads directly into their owning plugin
+  subrepositories; build caches stay in `out`. Delivery must not depend on manual
+  post-build copying. Local development commands run after `conda activate infernux`.
+- Do not wrap or transfer plugin payloads in intermediate ZIP archives. Plugin
+  release CI runs CMake in the owning checkout and publishes the final `.inxpkg`.
 - Apply necessary binary compatibility, download integrity and user-data protection
   checks at their boundaries, not repeated hashing or speculative fallback chains.
 - Keep release versions immutable and never silently overwrite local author work.
@@ -77,6 +82,45 @@ The installed editor's official catalog is currently a wheel-bundled snapshot.
 Installed plugins have reload/uninstall actions but no version update operation.
 
 ## Iteration log
+
+### 2026-09-06: CMake-owned desktop plugin payloads (in progress)
+
+- Desktop game assembly now selects its platform plugin's precompiled Player;
+  the Editor wheel no longer carries Player archives or the native PlayerHost.
+- `windows-msvc-player` and `linux-clang-player` publish directly into their
+  respective subrepository's `package/editor/infernux_*/player/`. Release workflow
+  presets and desktop acceptance CI invoke these CMake targets. Compiler caches
+  remain build-tree-owned; no manual copy is part of publication. The same CMake
+  target writes the complete `.inxpkg` and release manifest into the subrepository's
+  `dist/`. There is no intermediate ZIP or runtime-archive transfer channel.
+- Removed the duplicate source-Editor PlayerHost copy rule and its publisher
+  resource fallback. CMake supplies the exact native target to the publisher.
+- Windows CMake publication completed in the active `infernux` Conda environment:
+  41,252,672-byte base archive and 42,994,432-byte parallel module. The 0.4.0
+  Editor wheel is built separately. This is local payload verification, not yet
+  a complete public plugin release or source-free game acceptance.
+- Android/Web payload publication and public complete releases remain open.
+
+### 2026-09-06: Windows installed-only export acceptance
+
+- Built and inspected the complete 0.2.0 Windows `.inxpkg` (84,742,784 bytes):
+  native host, base Player and parallel module are present inside the plugin.
+- Fixed the lowercase public `infernux` import being misclassified as a user
+  dependency, which had overwritten the selected precompiled engine with the
+  builder environment's package. Both public engine names are now engine-owned.
+- Source-mode MultiPlatform040 export passed the complete package audit in 13.7
+  seconds. Installed-only export of an isolated copy passed in 19.9 seconds;
+  both Python and native engine origins were verified under Conda site-packages.
+- Launched the installed-only Player and injected a real mouse down/up on the
+  package TXT button. UIText returned `BUTTON READ #1: Package resource reached
+  UIText on every Player target.`; capture passed and fatal log count was zero.
+- The old project's cached development-era archive has an unsupported InxPack
+  record layout. The isolated test copy used uninstall/fresh installation; the
+  original project was not modified. This does not prove migration of that old
+  archive format or replace the current-format update acceptance requirement.
+- Full Python regression after the desktop delivery changes: 5,328 passed and
+  11 skipped. This is local regression evidence, not a substitute for public
+  release publication, remote PR checks or untested platform acceptance.
 
 ### 2026-09-06: consumer/compiler boundary and release discovery
 

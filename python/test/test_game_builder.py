@@ -1785,116 +1785,44 @@ def test_player_module_stages_source_less_engine_runtime(tmp_path, monkeypatch):
     assert probe.returncode == 0, probe.stderr
 
 
-def test_player_always_raw_copies_numpy_when_jit_is_disabled(tmp_path, monkeypatch):
-    captured: dict = {}
+@pytest.mark.parametrize("debug_mode", (False, True))
+def test_player_stages_plugin_payload_without_compiler_or_cache_lookup(tmp_path, monkeypatch, debug_mode):
+    from Infernux.engine import precompiled_player
+    captured = {}
 
-    class _FakeNuitkaBuilder:
-        _JIT_NOFOLLOW_PACKAGES = NuitkaBuilder._JIT_NOFOLLOW_PACKAGES
+    def stage(root, staging_root, **kwargs):
+        captured.update(root=root, staging_root=staging_root, **kwargs)
+        return str(tmp_path / "dist")
 
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def build(self, **_kwargs):
-            return str(tmp_path / "dist")
-
-    monkeypatch.setattr(game_builder_module, "NuitkaBuilder", _FakeNuitkaBuilder)
+    monkeypatch.setattr(precompiled_player, "stage_desktop_runtime", stage)
+    monkeypatch.setattr(game_builder_module, "NuitkaBuilder",
+                        lambda **kwargs: pytest.fail("No compiler builder for the base Player"))
     builder = _make_builder(tmp_path, tmp_path / "build_output")
-    builder.enable_jit = False
-
-    result = builder._run_nuitka(
-        str(tmp_path / "boot.py"),
-        on_progress=None,
-        user_packages=[],
-    )
-
+    builder.debug_mode = debug_mode
+    result = builder._stage_player_runtime(str(tmp_path / "boot.py"), None, user_packages=[])
     assert result == str(tmp_path / "dist")
-    assert captured["raw_copy_packages"] == ["numpy", "packaging"]
-    assert captured["runtime_support_packages"] == ["numba", "llvmlite"]
-    assert captured["runtime_pack_cache"] is True
-    assert Path(captured["build_cache_root"]) == (
-        Path(builder.project_path) / "Cache" / "Build" / "Desktop"
-    )
-    assert captured["output_filename"] == ("_InfernuxPlayer.pyd" if sys.platform == "win32" else "_InfernuxPlayer.so")
-    assert captured["player_module"] is True
-    assert captured["product_name"] == "Infernux Player"
-    assert captured["icon_path"]
-    assert Path(captured["icon_path"]).name == "icon.png"
-    assert Path(captured["icon_path"]).is_file()
+    assert captured["root"] == builder.player_runtime_root
+    assert Path(captured["staging_root"]) == Path(builder.project_path) / "Cache/Build/Desktop"
+    assert captured["parallel"] is False
 
 
-@pytest.mark.parametrize(
-    ("debug_mode", "expected_profile"),
-    ((False, "release"), (True, "development")),
-)
-def test_jit_build_installs_optional_parallel_runtime_module(
-    tmp_path,
-    monkeypatch,
-    debug_mode,
-    expected_profile,
-):
-    captured: dict = {}
-    installed: dict = {}
+@pytest.mark.parametrize("debug_mode", (False, True))
+def test_jit_build_selects_the_plugin_parallel_archive(tmp_path, monkeypatch, debug_mode):
+    from Infernux.engine import precompiled_player
+    captured = {}
 
-    class _FakeNuitkaBuilder:
-        _JIT_NOFOLLOW_PACKAGES = NuitkaBuilder._JIT_NOFOLLOW_PACKAGES
+    def stage(root, staging_root, **kwargs):
+        captured.update(kwargs)
+        return str(tmp_path / "dist")
 
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def build(self, **_kwargs):
-            return str(tmp_path / "dist")
-
-        def install_runtime_module(self, dist_dir, **kwargs):
-            installed.update({"dist_dir": dist_dir, **kwargs})
-            return True
-
-    monkeypatch.setattr(game_builder_module, "NuitkaBuilder", _FakeNuitkaBuilder)
+    monkeypatch.setattr(precompiled_player, "stage_desktop_runtime", stage)
+    monkeypatch.setattr(game_builder_module, "NuitkaBuilder",
+                        lambda **kwargs: pytest.fail("Do not assemble a replacement Parallel module"))
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     builder.enable_jit = True
     builder.debug_mode = debug_mode
-
-    result = builder._run_nuitka(
-        str(tmp_path / "boot.py"),
-        on_progress=None,
-        user_packages=[],
-    )
-
-    assert result == str(tmp_path / "dist")
-    assert captured["raw_copy_packages"] == ["numpy", "packaging"]
-    assert installed == {
-        "dist_dir": str(tmp_path / "dist"),
-        "module_name": "parallel",
-        "packages": ["numba", "llvmlite"],
-        "archive_only": True,
-        "profile": expected_profile,
-    }
-
-
-def test_debug_player_uses_generic_reusable_runtime_pack(tmp_path, monkeypatch):
-    captured: dict = {}
-
-    class _FakeNuitkaBuilder:
-        _JIT_NOFOLLOW_PACKAGES = NuitkaBuilder._JIT_NOFOLLOW_PACKAGES
-
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def build(self, **_kwargs):
-            return str(tmp_path / "dist")
-
-    monkeypatch.setattr(game_builder_module, "NuitkaBuilder", _FakeNuitkaBuilder)
-    builder = _make_builder(tmp_path, tmp_path / "build_output")
-    builder.debug_mode = True
-
-    builder._run_nuitka(str(tmp_path / "boot.py"), on_progress=None, user_packages=[])
-
-    assert captured["runtime_pack_cache"] is True
-    assert captured["output_filename"] == ("_InfernuxPlayer.pyd" if sys.platform == "win32" else "_InfernuxPlayer.so")
-    assert captured["player_module"] is True
-    assert captured["product_name"] == "Infernux Player"
-    assert captured["icon_path"]
-    assert Path(captured["icon_path"]).name == "icon.png"
-    assert Path(captured["icon_path"]).is_file()
+    assert builder._stage_player_runtime(str(tmp_path / "boot.py"), None) == str(tmp_path / "dist")
+    assert captured == {"parallel": True}
 
 
 def test_pack_core_runtime_moves_unclassified_native_files(tmp_path):
@@ -3023,14 +2951,21 @@ def test_release_output_copies_player_host_and_keeps_module(tmp_path, monkeypatc
     module_name = "_InfernuxPlayer.pyd" if sys.platform == "win32" else "_InfernuxPlayer.so"
     (dist / module_name).write_bytes(b"player module")
 
+    service = dist / "Infernux" / "Application.pyc"
+    service.parent.mkdir()
+    service.write_bytes(b"case-sensitive archive identity")
+
     final_dir = Path(builder._organize_output(str(dist)))
 
     game_name = "TestGame.exe" if sys.platform == "win32" else "TestGame"
     assert (final_dir / game_name).read_bytes() == b"host"
     assert (final_dir / module_name).read_bytes() == b"player module"
+    assert "Infernux" in [p.name for p in final_dir.iterdir()]
+    assert "Application.pyc" in [p.name for p in (final_dir / "Infernux").iterdir()]
+    assert not dist.parent.exists()
 
 
-def test_player_host_resolves_from_player_runtime_resources(tmp_path, monkeypatch):
+def test_player_host_resolves_from_selected_platform_plugin(tmp_path, monkeypatch):
     monkeypatch.delenv("INFERNUX_PLAYER_HOST_PATH", raising=False)
     package = tmp_path / "Infernux"
     engine = package / "engine"
@@ -3042,7 +2977,7 @@ def test_player_host_resolves_from_player_runtime_resources(tmp_path, monkeypatc
     monkeypatch.setattr(game_builder_module, "__file__", str(engine / "game_builder.py"))
 
     builder = _make_builder(tmp_path, tmp_path / "build_output")
-
+    builder.player_runtime_root = str(runtime)
     assert Path(builder._player_host_path()) == host
 
 
@@ -3187,6 +3122,21 @@ def test_requirements_install_is_skipped_when_content_is_unchanged(tmp_path, mon
     )
 
     assert len(calls) == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows case-insensitive file identities")
+def test_player_cleanup_deduplicates_case_variant_paths(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    final_dir = tmp_path / "dist"
+    stub = final_dir / "infernux" / "lib" / "_Infernux.pyi"
+    stub.parent.mkdir(parents=True)
+    stub.write_text("# build-time stubs", encoding="utf-8")
+    (stub.parent / "keep.dll").write_bytes(b"runtime")
+
+    builder._cleanup_dist(str(final_dir))
+
+    assert not stub.exists()
+    assert (stub.parent / "keep.dll").read_bytes() == b"runtime"
 
 
 def test_player_cleanup_preserves_engine_icon_resources(tmp_path):
@@ -6411,6 +6361,12 @@ class TestGameBuilderDependencyCollection:
         deps = builder._collect_user_dependencies()
 
         assert deps == ["llvmlite", "numba", "numpy"]
+
+    def test_collect_user_dependencies_excludes_both_public_engine_names(self, tmp_path):
+        project_root = _make_project(tmp_path)
+        _write_asset_script(project_root, "public_api.py", "import infernux as inx\nfrom Infernux import Application\n")
+        builder = GameBuilder(str(project_root), str(tmp_path / "build_output"))
+        assert builder._collect_user_dependencies() == []
 
     def test_collect_user_dependencies_rejects_invalid_project_script(self, tmp_path):
         project_root = _make_project(tmp_path)

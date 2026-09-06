@@ -128,6 +128,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--axis", choices=("x", "y", "z"), default="z")
     parser.add_argument("--minimum-axis-delta", type=float, default=0.1)
     parser.add_argument("--minimum-final-y", type=float)
+    parser.add_argument("--click-at", nargs=2, type=float, metavar=("X", "Y"),
+                        help="Click a UI button at client coordinates before capture and component assertions")
     parser.add_argument(
         "--capture-file",
         default="",
@@ -285,6 +287,15 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                 raise RuntimeError(
                     "Windows Player paused at runtime frame "
                     f"{captured_runtime_frame}, expected {args.pause_after_frame}"
+                )
+
+        if args.click_at is not None:
+            for pressed in (True, False):
+                control.call(
+                    "mouse_button",
+                    {"button": 0, "pressed": pressed, "x": args.click_at[0], "y": args.click_at[1]},
+                    timeout=args.startup_timeout,
+                    process=process,
                 )
 
         capture_path = ""

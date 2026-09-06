@@ -94,6 +94,16 @@ def _run_editor_without_mcp(project: Path, port: int) -> None:
         from Infernux.engine.game_builder import GameBuilder
         from Infernux.engine.player_build_preflight import publish_player_asset_catalog
 
+        # MCP is optional, but desktop export is supplied by its platform plugin.
+        # The release CMake preset builds this complete artifact before this test.
+        platform = "windows" if sys.platform == "win32" else "linux"
+        package = (
+            Path(__file__).resolve().parents[2] / "external/plugins"
+            / f"infernux_{platform}/dist/infernux.platform-{platform}.inxpkg"
+        )
+        manager.install_package(str(package))
+        assert not (project / "Packages/infernux/mcp").exists()
+
         output = project.parent / "NoMCPPlayer"
         builder = GameBuilder(
             str(project),

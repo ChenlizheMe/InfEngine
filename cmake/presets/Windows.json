@@ -75,6 +75,13 @@
       "targets": ["stage_python_package"]
     },
     {
+      "name": "windows-msvc-player",
+      "configurePreset": "windows-msvc-release",
+      "configuration": "Release",
+      "jobs": 4,
+      "targets": ["prebuild_player_runtime"]
+    },
+    {
       "name": "windows-msvc-wheel",
       "configurePreset": "windows-msvc-release",
       "configuration": "Release",

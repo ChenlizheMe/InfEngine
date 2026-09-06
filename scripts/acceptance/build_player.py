@@ -11,7 +11,7 @@ import os
 import platform
 import sys
 from pathlib import Path
-from typing import MutableMapping, Sequence
+from typing import Sequence
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -86,35 +86,22 @@ def _load_exporter(target: str):
     return getattr(module, class_name)()
 
 
-def _configure_source_player_host(
-    environment: MutableMapping[str, str] | None = None,
-    repository_root: Path = REPOSITORY_ROOT,
-) -> Path | None:
-    """Bind the host owned by this source tree's canonical release preset."""
-    accepted_environment = os.environ if environment is None else environment
-    configured = accepted_environment.get("INFERNUX_PLAYER_HOST_PATH", "").strip()
-    if configured:
-        return Path(configured).expanduser().resolve()
-    host_name = (
-        "InfernuxPlayerHost.exe" if sys.platform == "win32" else "InfernuxPlayerHost"
-    )
-    preset = (
-        "windows-msvc-release"
-        if sys.platform == "win32"
-        else "linux-clang-release"
-    )
-    candidate = (
-        repository_root.expanduser().resolve()
-        / "out"
-        / "build"
-        / preset
-        / "player-runtime"
-        / host_name
-    )
-    if not candidate.is_file():
-        return None
-    accepted_environment["INFERNUX_PLAYER_HOST_PATH"] = str(candidate)
-    return candidate
+def _prepare_engine(*, installed: bool) -> dict[str, str]:
+    """Select an explicit source or installed-only acceptance environment."""
+    if not installed:
+        python_root = str(REPOSITORY_ROOT / "python")
+        if python_root not in sys.path:
+            sys.path.insert(0, python_root)
+    import Infernux
+    from Infernux.lib import _Infernux
+
+    origins = {
+        "python": str(Path(Infernux.__file__).resolve()),
+        "native": str(Path(_Infernux.__file__).resolve()),
+    }
+    if installed and any(Path(path).is_relative_to(REPOSITORY_ROOT) for path in origins.values()):
+        raise RuntimeError("Installed-only acceptance must use an installed wheel, not this source checkout")
+    return origins
 
 
 def _diagnostic_payload(item) -> dict[str, object]:
@@ -148,6 +135,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("project", type=Path, help="Infernux project root")
     parser.add_argument("target", choices=SUPPORTED_TARGETS)
     parser.add_argument("output", type=Path, help="published Player output directory")
+    parser.add_argument("--installed", action="store_true", help="Use only the installed wheel and project-installed platform plugins")
     parser.add_argument(
         "--report",
         type=Path,
@@ -202,10 +190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 2
 
-    python_root = str(REPOSITORY_ROOT / "python")
-    if python_root not in sys.path:
-        sys.path.insert(0, python_root)
-    _configure_source_player_host()
+    engine_origins = _prepare_engine(installed=arguments.installed)
     from Infernux.engine.build import (
         BuildConfiguration,
         BuildExporterRegistry,
@@ -258,9 +243,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         progress=on_progress,
     )
-    exporter = _load_exporter(arguments.target)
-    registry = BuildExporterRegistry()
-    registry.register("scripts/acceptance/build-player", exporter)
+    if arguments.installed:
+        from Infernux.plugins import PluginManager
+        from Infernux.engine.build import exporter_registry
+
+        PluginManager.startup(str(project), runtime=False)
+        registry = exporter_registry
+    else:
+        exporter = _load_exporter(arguments.target)
+        registry = BuildExporterRegistry()
+        registry.register("scripts/acceptance/build-player", exporter)
     service = BuildService(registry)
     try:
         plan = service.create_plan(request)
@@ -288,6 +280,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "target": str(result.target),
         "output": str(output),
         "configuration": arguments.configuration,
+        "installed_only": arguments.installed,
+        "engine_origins": engine_origins,
         "debug_symbols": arguments.debug_symbols,
         "compress_resources": arguments.compress_resources,
         "options": options,

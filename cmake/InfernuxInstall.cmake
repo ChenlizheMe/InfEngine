@@ -128,14 +128,15 @@ else()
 endif()
 
 # ------------------------------------------------------------------------------
-# Wheel-distributed Player Runtime Pack
+# Platform-plugin Player Runtime Pack (release engineering only)
 # ------------------------------------------------------------------------------
-# This is an explicit stage in the package_python dependency chain.
-# The script exits immediately for non-Release configurations (for example
-# RelWithDebInfo), so debug installs still package without building a Player
-# Runtime Pack.
-set(INFERNUX_PREBUILT_RUNTIME_DIR "${INFERNUX_STAGE_DIR}/python-wheel-source/python/Infernux/_runtime_packs")
-set(INFERNUX_PREBUILT_RUNTIME_MODULE_DIR "${INFERNUX_STAGE_DIR}/python-wheel-source/python/Infernux/_runtime_modules")
+# Runtime publication is separate from the Editor wheel. The platform plugin
+# owns these target-specific artifacts; ordinary game exports only assemble them.
+set(INFERNUX_PREBUILT_RUNTIME_DIR "${CMAKE_BINARY_DIR}/platform-player/runtime-packs")
+set(INFERNUX_PREBUILT_RUNTIME_MODULE_DIR "${CMAKE_BINARY_DIR}/platform-player/_runtime_modules")
+string(TOLOWER "${CMAKE_SYSTEM_NAME}" _infernux_player_platform)
+set(INFERNUX_PLATFORM_PLAYER_OUTPUT_DIR
+    "${CMAKE_SOURCE_DIR}/external/plugins/infernux_${_infernux_player_platform}/package/editor/infernux_${_infernux_player_platform}/player")
 add_custom_target(prebuild_player_runtime
     COMMAND ${CMAKE_COMMAND}
         "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
@@ -147,11 +148,14 @@ add_custom_target(prebuild_player_runtime
         "-DPLAYER_HOST_PATH=${INFERNUX_PLAYER_HOST_BUILD_PATH}"
         "-DOUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_DIR}"
         "-DMODULE_OUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_MODULE_DIR}"
+        "-DPLATFORM_PLAYER_OUTPUT=${INFERNUX_PLATFORM_PLAYER_OUTPUT_DIR}"
         "-DBUILD_CACHE_ROOT=${CMAKE_BINARY_DIR}/build-cache/player-runtime"
         -P "${CMAKE_SOURCE_DIR}/cmake/prebuild_player_runtime.cmake"
+    COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_SOURCE_DIR}/external/plugins/infernux_${_infernux_player_platform}/release.py"
     DEPENDS _Infernux _InfernuxBootstrap
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    COMMENT "Preparing wheel-distributed Release Player Runtime Pack and parallel module"
+    COMMENT "Publishing the platform Player payload and complete InxPackage in its subrepository"
     VERBATIM
 )
 add_dependencies(prebuild_player_runtime refresh_player_native_contract)
@@ -263,11 +267,3 @@ install(
     DESTINATION "python/Infernux/resources"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
-
-if(TARGET InfernuxPlayerHost)
-    install(
-        TARGETS InfernuxPlayerHost
-        RUNTIME DESTINATION "python/Infernux/resources/player_runtime"
-            COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-    )
-endif()

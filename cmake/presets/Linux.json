@@ -76,6 +76,12 @@
       "targets": ["stage_python_package"]
     },
     {
+      "name": "linux-clang-player",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["prebuild_player_runtime"]
+    },
+    {
       "name": "linux-clang-wheel",
       "configurePreset": "linux-clang-release",
       "jobs": 8,

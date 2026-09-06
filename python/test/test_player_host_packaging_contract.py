@@ -18,9 +18,9 @@ def test_player_host_loads_the_direct_runtime_tree():
         encoding="utf-8"
     )
     assert "cpp/infernux/platform/filesystem/InxPack.cpp" not in cmake
-    assert "INFERNUX_PLAYER_HOST_DEVELOPMENT_DIR" in cmake
-    assert '"$<TARGET_FILE:InfernuxPlayerHost>"' in cmake
-    assert '"${INFERNUX_PLAYER_HOST_DEVELOPMENT_DIR}/$<TARGET_FILE_NAME:InfernuxPlayerHost>"' in cmake
+    assert "INFERNUX_PLAYER_HOST_DEVELOPMENT_DIR" not in cmake
+    assert 'set(INFERNUX_PLAYER_HOST_BUILD_PATH "$<TARGET_FILE:InfernuxPlayerHost>")' in cmake
+    assert "python/Infernux/resources/player_runtime" not in cmake
     assert "target_link_libraries(InfernuxPlayerHost PRIVATE InfernuxFoundation" not in cmake
     assert "target_link_libraries(InfernuxPlayerHost PRIVATE ${CMAKE_DL_LIBS})" in cmake
     assert "PyConfig_InitIsolatedConfig" in host
@@ -85,7 +85,10 @@ def test_runtime_pack_is_compiled_from_the_assembled_wheel_payload():
     assert "prebuild_player_runtime" not in stage
     assert "refresh_player_native_contract" in stage
     assert "add_dependencies(prebuild_player_runtime stage_python_package)" in packaging
-    assert "DEPENDS prebuild_player_runtime" in wheel
+    assert "DEPENDS stage_python_package" in wheel
+    assert "DEPENDS prebuild_player_runtime" not in wheel
+    assert '"-DPLATFORM_PLAYER_OUTPUT=${INFERNUX_PLATFORM_PLAYER_OUTPUT_DIR}"' in install
+    assert '/external/plugins/infernux_${_infernux_player_platform}/package/editor/infernux_${_infernux_player_platform}/player"' in install
     assert '"-DINFERNUX_SOURCE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source"' in install
     assert 'DIRECTORY "${INFERNUX_PREBUILT_RUNTIME_DIR}/"' not in install
 

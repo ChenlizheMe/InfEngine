@@ -1,4 +1,4 @@
-# All official archives are generated in the build tree. Only the default MCP
+# Only wheel-bundled archives are generated in the build tree. The default MCP
 # package is copied into the source-checkout resources used by the editor; the
 # platform packages remain release artifacts and are downloaded on demand.
 # Wheel staging depends on this target, preserving the order native module →
@@ -20,10 +20,6 @@ set(INFERNUX_OFFICIAL_PLUGIN_ARTIFACTS
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/official-registry.json"
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/default-libraries.json"
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.mcp.inxpkg"
-    "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.platform-windows.inxpkg"
-    "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.platform-linux.inxpkg"
-    "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.platform-android.inxpkg"
-    "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.platform-web.inxpkg"
     "${CMAKE_SOURCE_DIR}/python/Infernux/resources/infernux.mcp.inxpkg"
 )
 

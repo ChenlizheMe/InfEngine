@@ -112,7 +112,7 @@ def test_repository_package_script_is_standalone_deterministic_and_native_compat
         )
     )
     scripts = [(root / "package.py").read_bytes() for root in plugin_roots]
-    assert len({script.rstrip(b"\r\n") for script in scripts}) == 1
+    assert len({script.replace(b"\r\n", b"\n").rstrip(b"\n") for script in scripts}) == 1
     assert b"from Infernux" not in scripts[0]
     assert b"import Infernux" not in scripts[0]
 

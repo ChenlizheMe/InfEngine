@@ -648,7 +648,7 @@
   "build.step.cleaning_output": "Cleaning output...",
   "build.step.collecting_deps": "Collecting user dependencies...",
   "build.step.generating_boot": "Generating boot script...",
-  "build.step.nuitka_compilation": "Nuitka native compilation...",
+  "build.step.assembling_runtime": "Assembling precompiled Player...",
   "build.step.organizing_output": "Organizing output directory...",
   "build.step.copying_data": "Copying game data...",
   "build.step.compiling_scripts": "Compiling user scripts...",

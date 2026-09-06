@@ -103,6 +103,7 @@ jobs:
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           cmake --build --preset windows-msvc-release
+          cmake --build --preset windows-msvc-player
 
       - name: Run preset tests
         shell: pwsh
@@ -198,6 +199,7 @@ jobs:
         run: |
           conda activate infernux
           cmake --build --preset linux-clang-release
+          cmake --build --preset linux-clang-player
 
       - name: Run Linux preset tests
         run: |

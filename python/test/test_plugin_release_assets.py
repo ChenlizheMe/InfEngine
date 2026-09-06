@@ -188,18 +188,11 @@ def test_official_catalog_preserves_explicit_source_revision(tmp_path, monkeypat
     monkeypatch.setattr(
         module.InxPackage,
         "export_source",
-        lambda *_args, **_kwargs: _Preview(
-            {
-                "reference": "infernux/platform-linux",
-                "name": "Linux",
-                    "version": "0.1.0",
-                    "engine": ">=0.4,<0.5",
-                    "pages": [],
-            }
-        ),
+        lambda *_args, **_kwargs: pytest.fail("Catalog generation must not rebuild platform archives"),
     )
 
     module.build(source, tmp_path / "output", catalog)
+    assert not list((tmp_path / "output").glob("*.inxpkg"))
 
     registry = json.loads(
         (tmp_path / "output/official-registry.json").read_text(encoding="utf-8")
@@ -287,7 +280,13 @@ def test_platform_releases_are_owned_by_independent_repositories():
         release = (sources / item["path"] / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
-        assert "python release.py" in release
+        if item["path"] in {"infernux_windows", "infernux_linux"}:
+            assert "-player" in release and "cmake --build --preset" in release
+            assert "--runtime-only" not in release
+            assert "python -m zipfile" not in release
+            assert "player-runtime-v0.4.0" not in release
+        else:
+            assert "python release.py" in release
         assert "gh release create" in release
 
 
