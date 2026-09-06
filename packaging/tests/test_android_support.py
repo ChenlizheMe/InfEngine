@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import configparser
+import hashlib
+import io
 import json
 import os
 import re
@@ -286,6 +288,71 @@ def test_installed_kit_preserves_executables_without_privileged_mode_bits(
     assert stat.S_IMODE((manager.root / "jdk/release").stat().st_mode) == 0o644
     result = subprocess.run([str(executable)], check=True, capture_output=True, text=True)
     assert result.stdout == "kit-java-ready\n"
+
+
+@pytest.mark.parametrize("received", [b"trunc", b"modified"])
+def test_channel_download_rejects_incomplete_or_changed_content(tmp_path, monkeypatch, received):
+    expected = b"complete"
+    manager = android_support.AndroidSupportManager(tmp_path / "managed")
+    _create_support(manager.root)
+    manifest = (manager.root / android_support.MANIFEST_NAME).read_bytes()
+    monkeypatch.setattr(manager, "_release_asset", lambda: (
+        "https://example.invalid/android.inxkit", hashlib.sha256(expected).hexdigest(), len(expected)))
+    response = io.BytesIO(received)
+    response.status = 206
+    response.headers = {"Content-Range": f"bytes 0-{len(expected) - 1}/{len(expected)}"}
+    monkeypatch.setattr(android_support.urllib.request, "urlopen", lambda *_a, **_k: response)
+    with pytest.raises(android_support.AndroidSupportError,
+                       match=f"received {len(received)}/{len(expected)} bytes"):
+        manager.install()
+    assert (manager.root / android_support.MANIFEST_NAME).read_bytes() == manifest
+    assert not list(tmp_path.glob("android-support-*.inxkit"))
+
+
+def test_channel_download_uses_contiguous_ranges_and_one_complete_digest(tmp_path, monkeypatch):
+    content = b"a" * (32 * 1024 * 1024) + b"last range"
+    manager = android_support.AndroidSupportManager(tmp_path / "managed")
+    monkeypatch.setattr(manager, "_release_asset", lambda: (
+        "https://example.invalid/android.inxkit", hashlib.sha256(content).hexdigest(), len(content)))
+    requests = []
+    progress = []
+
+    def open_range(request, timeout):
+        assert timeout == 120
+        header = request.get_header("Range")
+        requests.append(header)
+        start, end = map(int, header.removeprefix("bytes=").split("-"))
+        response = io.BytesIO(content[start:end + 1])
+        response.status = 206
+        response.headers = {"Content-Range": f"bytes {start}-{end}/{len(content)}"}
+        return response
+
+    def install_archive(path):
+        assert Path(path).read_bytes() == content
+        return "installed"
+
+    monkeypatch.setattr(android_support.urllib.request, "urlopen", open_range)
+    monkeypatch.setattr(manager, "install_archive", install_archive)
+    assert manager.install(on_progress=lambda done, total: progress.append((done, total))) == "installed"
+    assert requests == ["bytes=0-33554431", f"bytes=33554432-{len(content) - 1}"]
+    assert progress[-1] == (len(content), len(content))
+    assert all(a[0] < b[0] for a, b in zip(progress, progress[1:]))
+    assert not list(tmp_path.glob("android-support-*.inxkit"))
+
+
+@pytest.mark.parametrize("status, content_range", [(200, None), (206, "bytes 1-4/5")])
+def test_channel_download_rejects_ignored_or_wrong_ranges(tmp_path, monkeypatch, status, content_range):
+    manager = android_support.AndroidSupportManager(tmp_path / "managed")
+    monkeypatch.setattr(manager, "_release_asset", lambda: (
+        "https://example.invalid/android.inxkit", hashlib.sha256(b"hello").hexdigest(), 5))
+    response = io.BytesIO(b"hello")
+    response.status = status
+    response.headers = {"Content-Range": content_range}
+    monkeypatch.setattr(android_support.urllib.request, "urlopen", lambda *_a, **_k: response)
+    with pytest.raises(android_support.AndroidSupportError, match="invalid download range"):
+        manager.install()
+    assert not manager.root.exists()
+    assert not list(tmp_path.glob("android-support-*.inxkit"))
 
 
 def test_release_asset_requires_a_github_sha256_digest(monkeypatch: pytest.MonkeyPatch) -> None:

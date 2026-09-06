@@ -95,7 +95,7 @@
     {
       "reference": "infernux/platform-android",
       "name": "Infernux Android Platform",
-      "version": "0.2.0",
+      "version": "0.2.2",
       "intro": "Build Infernux games for Android with Vulkan.",
       "intros": {
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Android。"

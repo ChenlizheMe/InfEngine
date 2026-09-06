@@ -330,30 +330,47 @@ class AndroidSupportManager:
         )
         os.close(fd)
         try:
-            request = urllib.request.Request(
-                url,
-                headers={
-                    "Accept": "application/octet-stream",
-                    "User-Agent": "Infernux-Hub/1.0",
-                },
-            )
             digest = hashlib.sha256()
             downloaded = 0
-            with urllib.request.urlopen(request, timeout=120) as response, open(
-                temporary, "wb"
-            ) as stream:
-                while True:
-                    block = response.read(1024 * 1024)
-                    if not block:
-                        break
-                    stream.write(block)
-                    digest.update(block)
-                    downloaded += len(block)
-                    if on_progress is not None:
-                        on_progress(downloaded, expected_size)
-            if downloaded != expected_size or digest.hexdigest() != expected_sha256:
+            # Bound each connection for GB-sized channel assets. Integrity is
+            # checked once for the complete file; failed ranges are not retried.
+            with open(temporary, "wb") as stream:
+                while downloaded < expected_size:
+                    end = min(downloaded + 32 * 1024 * 1024, expected_size) - 1
+                    request = urllib.request.Request(
+                        url,
+                        headers={
+                            "Accept": "application/octet-stream",
+                            "User-Agent": "Infernux-Hub/1.0",
+                            "Range": f"bytes={downloaded}-{end}",
+                        },
+                    )
+                    with urllib.request.urlopen(request, timeout=120) as response:
+                        expected_range = f"bytes {downloaded}-{end}/{expected_size}"
+                        if (
+                            response.status != 206
+                            or response.headers.get("Content-Range") != expected_range
+                        ):
+                            raise AndroidSupportError(
+                                "Android compatibility server returned an invalid download range"
+                            )
+                        while downloaded <= end:
+                            block = response.read(min(1024 * 1024, end + 1 - downloaded))
+                            if not block:
+                                raise AndroidSupportError(
+                                    "Incomplete Android compatibility download: "
+                                    f"received {downloaded}/{expected_size} bytes"
+                                )
+                            stream.write(block)
+                            digest.update(block)
+                            downloaded += len(block)
+                            if on_progress is not None:
+                                on_progress(downloaded, expected_size)
+            actual_sha256 = digest.hexdigest()
+            if actual_sha256 != expected_sha256:
                 raise AndroidSupportError(
-                    "Downloaded Android compatibility archive does not match its release digest"
+                    "Downloaded Android compatibility archive does not match its release digest: "
+                    f"received {downloaded}/{expected_size} bytes; SHA-256 {actual_sha256}"
                 )
             return self.install_archive(temporary)
         finally:

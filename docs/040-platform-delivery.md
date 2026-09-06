@@ -12,19 +12,19 @@ and a green, mergeable engine PR. Publishing exporter-only plugins is not enough
 - [x] Android plugins carry the supported ABI-specific native Player payloads.
 - [x] Web plugins carry the precompiled WASM/JavaScript runtime and the host-side
   asset/shader tools needed for supported build hosts.
-- [ ] Normal game exports require no engine source checkout, Git submodules,
+- [x] Normal game exports require no engine source checkout, Git submodules,
   CMake invocation, or engine compilation, including hidden compiler fallback.
-- [ ] Editor runtime files remain engine-owned. Target-specific delivery files
+- [x] Editor runtime files remain engine-owned. Target-specific delivery files
   have one declared owner; shared dependencies are not duplicated in Hub and plugins.
-- [ ] Release CI builds runtime payloads and publishes matching complete packages.
+- [x] Release CI builds runtime payloads and publishes matching complete packages.
 
 ## 2. Hub Android compatibility
 
-- [ ] Publish channel-installable kits for Windows and Linux build hosts.
-- [ ] Hub owns the SDK, NDK, JDK, Gradle and reusable target Python dependencies.
+- [x] Publish channel-installable kits for Windows and Linux build hosts.
+- [x] Hub owns the SDK, NDK, JDK, Gradle and reusable target Python dependencies.
 - [ ] Installation prepares paths and official build dependencies without manual
   environment variables, source checkouts, or Conda knowledge.
-- [ ] Installation remains asynchronous with the compact queue UI.
+- [x] Installation remains asynchronous with the compact queue UI.
 - [ ] Editor import availability refreshes after Hub installation finishes.
 
 ## 3. Explicit plugin updates
@@ -47,9 +47,9 @@ and a green, mergeable engine PR. Publishing exporter-only plugins is not enough
 ## 5. Delivery and acceptance
 
 - [ ] Update affected engine/Hub/platform repositories and public release artifacts.
-- [ ] Verify source-free exports with the InfernuxMultiPlatform040 project.
+- [x] Verify source-free exports with the InfernuxMultiPlatform040 project.
 - [ ] Verify its button reads packaged TXT content and displays it in game UI.
-- [ ] Keep cooked assets in binary packages; do not expose an editable Assets/Library tree.
+- [x] Keep cooked assets in binary packages; do not expose an editable Assets/Library tree.
 - [ ] Verify install, update, uninstall and centralized storage ownership.
 - [ ] Keep documentation consistent with the actual released payloads.
 - [ ] Required PR checks are green and the PR is mergeable.
@@ -82,6 +82,94 @@ The installed editor's official catalog is currently a wheel-bundled snapshot.
 Installed plugins have reload/uninstall actions but no version update operation.
 
 ## Iteration log
+
+### 2026-09-06: Android patch publication and bounded channel transfers
+
+- Published Android v0.2.2 from successful workflow `34031775323` at
+  `a0c1a06`. GitHub's digest matches the exact 93,694,464-byte CI package.
+  Installed update from v0.2.1 preserved all 59 GUIDs and enabled state;
+  source-free MultiPlatform040 x86_64 APK export passed in 20.750 seconds.
+  This export used the existing local kit, not the new public-channel kit.
+- Updated the bundled catalog seed to Android v0.2.2. Catalog publication and
+  project updates remain distinct; installed project pins do not change.
+- Both initial full-stream Hub kit downloads ended early and were rejected.
+  Verified the public endpoint returns exact HTTP byte ranges. The installer
+  now downloads sequential 32 MiB ranges with one final whole-file digest;
+  it does not retry failed ranges, change sources or add per-range hashes.
+  Regression covers contiguous ranges, ignored/wrong ranges, short responses,
+  modified content and existing-install preservation. Hub suite: 329 passed,
+  3 skipped. Real Linux channel validation of this path is in progress.
+- Additional physical-device acceptance remains paused. Android API 36 system
+  input passed in PR CI; sample APK runtime acceptance is still separate.
+
+### 2026-09-06: installed Linux delivery and channel-boundary evidence
+
+- All desktop and Player checks passed at `d89fbd91`, including Android system
+  input and the Web browser. The complete Android v0.2.2 artifact workflow
+  `34031775323` also passed; its installed-package acceptance and publication
+  are recorded above.
+- Installed the Linux 0.4.0 wheel from desktop CI `34028827492`. Its wheel is
+  36,334,395 bytes; the matching Windows wheel is 20,822,710 bytes. Inspection
+  confirms the Windows wheel excludes the CI-only `vulkan-1.dll` driver.
+- The copied MultiPlatform040 project's development-era Linux package has
+  different GUIDs from formal releases. Update correctly refused to overwrite
+  it. Backed up that package and its registry in the isolated WSL acceptance
+  directory, then used public v0.1.0 as the explicit formal baseline. Updating
+  to public v0.2.0 retained six shared GUIDs, enabled state and a user-added file.
+  No identity remapping or fallback was added to the engine. The original desktop
+  project remains untouched; this is not development-format migration support.
+- Linux installed-only MultiPlatform040 export passed in 5.702 seconds. Both
+  engine origins are under site-packages. The Data directory contains Runtime,
+  Content.inxpkg and binary catalogs/manifests, without Assets/Library directories.
+  A real Player mouse click displayed the packaged TXT and produced a reviewed
+  frame capture. This used WSL software Vulkan, not physical-device performance
+  acceptance. Windows, Web and Linux now have actual sample TXT-button evidence.
+- The Windows Hub download ended before its advertised size and was rejected
+  without installation. The public server still advertises the correct asset
+  length. A single manual Windows retry is underway; the initial Linux transfer
+  also ended early and was rejected.
+  Download failure messages now include actual/expected byte counts and the
+  received digest. Short and altered-content tests preserve an existing kit and
+  clean only the failed temporary download; no automatic retry or alternate
+  source was introduced. Focused Hub channel tests: 14 passed, 1 skipped.
+
+### 2026-09-06: public channel delivery and Android Back regression
+
+- Published Android v0.2.1 from the successful complete plugin build
+  `34028188119`: the `.inxpkg` is 93,694,080 bytes. Installed its exact CI bytes
+  into the isolated MultiPlatform040 project; all 59 member GUIDs and enabled
+  state survived. Installed-only ARM64 export passed in 18.541 seconds. This
+  still used the existing local kit/cache, not the new public channel kit.
+- Published `android-support-v0.1.0` independently of engine releases. Channel
+  workflow `34029605853` passed for both hosts and uploaded the Windows
+  1,370,034,734-byte and Linux 1,742,442,681-byte `.inxkit` assets, with GitHub
+  download digests. Real Hub channel downloads are underway; installation,
+  editor import gating and first export are not yet claimed for these kits.
+- A real installed-editor catalog refresh retained the exact project lock and
+  all six installed versions. Android release discovery lists v0.2.1 without
+  changing the installed pin, even when the catalog seed still says v0.2.0.
+- Desktop release/tests passed at `2a685f17`. Player run `34028827490` passed
+  Windows, Linux, Web and Web-browser jobs. Android startup/resume, multi-touch,
+  orientation and Chinese/emoji text input passed, but system Back failed.
+  Its captured logcat reports a Back callback invoked on an already hidden IME.
+- Android's existing keyboard-dismissal/gameplay-Back handler now registers at
+  overlay priority so a stale IME callback cannot consume gameplay Back. No
+  retry, synthetic second keypress or longer acceptance timeout was added.
+  Focused Android exporter, instrumentation and input-action tests: 72 passed.
+  The original system-input regression is running again at `d89fbd91`; the
+  changed plugin host is not yet included in a new public patch release.
+- Full local Python regression at `d89fbd91`: 5,342 passed, 11 skipped in
+  342.15 seconds. This does not replace the pending Android emulator rerun or
+  the fresh-channel installed-toolchain export checks.
+- Prepared Android v0.2.2 at `a0c1a06` with matching metadata, release notes and
+  illustrated documentation. Windows standalone packaging tests passed with the
+  ELF test skipped; WSL passed all six tests, including real symbol separation.
+  Complete artifact workflow `34031775323` is running without publishing a tag.
+- Reviewed Hub queue evidence: 317 tests passed, 3 skipped. The Qt integration
+  checks exercise a worker-thread installation while the UI timer keeps running,
+  a non-modal install page, the 40-pixel collapsed queue and hover details, and
+  tray/close handling. These checks establish asynchronous UI behavior; they do
+  not claim that the still-downloading public kits have finished installing.
 
 ### 2026-09-06: complete Web release and Android symbol separation
 
