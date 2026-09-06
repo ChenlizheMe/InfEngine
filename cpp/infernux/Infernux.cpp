@@ -2586,11 +2586,10 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(
     }
 
     if (shouldEnqueue) {
-        constexpr int kDefaultPreviewResolution = 200;
         // Inspector component icons (~16 logical px, often 2x framebuffer); keep GPU texture near
         // display density instead of a 256px atlas + heavy minification.
         constexpr int kComponentIconPreviewMaxDim = 64;
-        EnqueuePreviewTask([this, req, kDefaultPreviewResolution, kComponentIconPreviewMaxDim]() {
+        EnqueuePreviewTask([this, req, kComponentIconPreviewMaxDim]() {
             TexturePreviewCompleted completed;
             completed.resourceKey = req.resourceKey;
             completed.generation = req.generation;
@@ -2603,7 +2602,9 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(
                     int outH = 0;
                     const bool spriteEditPreview =
                         !req.resourceKey.empty() && req.resourceKey.compare(0, 11, "spriteedit|") == 0;
-                    const int configuredMaxDim = std::clamp(req.maxSize, 1, kDefaultPreviewResolution);
+                    // The caller supplies the display budget. Documentation pages
+                    // must not be reduced to a 200px Project-panel thumbnail.
+                    const int configuredMaxDim = req.maxSize;
                     const int maxDim =
                         spriteEditPreview
                             ? std::max(texData.width, texData.height)

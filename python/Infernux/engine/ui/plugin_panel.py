@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
+from Infernux.core.asset_types import TextureImportSettings, TextureType
 from Infernux.engine.i18n import get_locale, t
 from Infernux.engine.interaction import PanelInteractionDescriptor
 from Infernux.engine.path_utils import resolved_path
@@ -44,6 +45,8 @@ class PluginPanel(EditorPanel):
         self._pip = ""
         self._message = ""
         self._selected_reference = ""
+        self._detail_reference = ""
+        self._document_texture_settings = TextureImportSettings(texture_type=TextureType.UI)
         self._scope_index = 0
         self._sort_index = 2
         from .plugin_versions import PluginVersionsView
@@ -452,12 +455,15 @@ class PluginPanel(EditorPanel):
 
     def _render_detail_pages(self, ctx, manager, row, state) -> None:
         pages = manager.content_pages(row)
+        reference = str(row.get("reference", "")).casefold()
+        select_first = reference != self._detail_reference
         if ctx.begin_tab_bar("##plugins_details_tabs"):
+            self._detail_reference = reference
             if pages:
-                for page in pages:
+                for index, page in enumerate(pages):
                     page_id = str(page.get("id", "page"))
                     title = self._page_title(page_id, str(page.get("title", page_id)))
-                    if ctx.begin_tab_item(f"{title}##plugin_page_{page_id}"):
+                    if ctx.begin_tab_item(f"{title}##plugin_page_{page_id}", selected=select_first and index == 0):
                         content = str(page.get("content", ""))
                         if str(page.get("format", "text")) == "markdown":
                             self._render_markdown_page(ctx, manager, row, page, content)
@@ -469,7 +475,7 @@ class PluginPanel(EditorPanel):
                             self._render_diagnostics(ctx, row, state)
                         ctx.end_tab_item()
             else:
-                if ctx.begin_tab_item(t("plugins.tab.description")):
+                if ctx.begin_tab_item(t("plugins.tab.description"), selected=select_first):
                     ctx.text_wrapped(t("plugins.no_description"))
                     ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_TITLE_GAP))
                     self._render_metadata(ctx, row)
@@ -559,6 +565,7 @@ class PluginPanel(EditorPanel):
             width,
             min(_metric(ctx, 360.0), width),
             preserve_aspect=True,
+            texture_settings=self._document_texture_settings,
         )
         if not shown:
             label = str(block.get("alt", "")).strip() or source

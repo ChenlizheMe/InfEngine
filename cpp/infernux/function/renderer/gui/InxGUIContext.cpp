@@ -909,9 +909,9 @@ void InxGUIContext::EndTabBar()
     ImGui::EndTabBar();
 }
 
-bool InxGUIContext::BeginTabItem(const std::string &label, bool *open)
+bool InxGUIContext::BeginTabItem(const std::string &label, bool *open, bool selected)
 {
-    const bool visible = ImGui::BeginTabItem(label.c_str(), open);
+    const bool visible = ImGui::BeginTabItem(label.c_str(), open, selected ? ImGuiTabItemFlags_SetSelected : 0);
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("tab", label, open == nullptr || *open);
     return visible;
