@@ -15,8 +15,10 @@
 #include <utility>
 #include <variant>
 #include <vector>
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
+#endif
 
 namespace infernux
 {
@@ -40,12 +42,15 @@ enum class ShaderStageType
 };
 
 /**
- * @brief Bitmask flags indicating which RenderState fields have been
- *        manually overridden by the user via the Material Inspector.
+ * @brief Bitmask flags indicating which RenderState fields the material has
+ *        explicitly authored (Inspector edit, Python setter, or a full
+ *        SetRenderState() call).
  *
- * When ApplyShaderRenderMeta() is called (shader annotation defaults),
- * only fields whose corresponding override bit is NOT set will be updated.
- * This allows per-material customization that survives shader reloads.
+ * Shader annotations only provide *defaults*: when ApplyShaderRenderMeta()
+ * is called, only fields whose corresponding override bit is NOT set will be
+ * updated. Authored fields always win. Switching the material to a different
+ * shader clears all bits so the new shader's annotation defaults become the
+ * baseline, after which explicit material edits take over again.
  */
 enum class RenderStateOverride : uint32_t
 {
@@ -61,6 +66,123 @@ enum class RenderStateOverride : uint32_t
     AlphaClip = 1 << 8,
 };
 
+/// Every authorable RenderState override bit. Used by SetRenderState() to
+/// claim full authorship of the render state in one call.
+inline constexpr uint32_t kAllRenderStateOverrides =
+    static_cast<uint32_t>(RenderStateOverride::CullMode) | static_cast<uint32_t>(RenderStateOverride::DepthWrite) |
+    static_cast<uint32_t>(RenderStateOverride::DepthTest) | static_cast<uint32_t>(RenderStateOverride::DepthCompareOp) |
+    static_cast<uint32_t>(RenderStateOverride::BlendEnable) | static_cast<uint32_t>(RenderStateOverride::BlendMode) |
+    static_cast<uint32_t>(RenderStateOverride::RenderQueue) | static_cast<uint32_t>(RenderStateOverride::SurfaceType) |
+    static_cast<uint32_t>(RenderStateOverride::AlphaClip);
+
+// Material documents are shared by Vulkan, WebGPU, and future renderer
+// backends. Keep their persisted values independent from backend headers while
+// retaining the numeric schema already used by .mat files and Python.
+enum class MaterialCullMode : uint32_t
+{
+    None = 0,
+    Front = 1,
+    Back = 2,
+    FrontAndBack = 3,
+};
+
+enum class MaterialFrontFace : uint32_t
+{
+    CounterClockwise = 0,
+    Clockwise = 1,
+};
+
+enum class MaterialPolygonMode : uint32_t
+{
+    Fill = 0,
+    Line = 1,
+    Point = 2,
+};
+
+enum class MaterialPrimitiveTopology : uint32_t
+{
+    PointList = 0,
+    LineList = 1,
+    LineStrip = 2,
+    TriangleList = 3,
+    TriangleStrip = 4,
+};
+
+enum class MaterialCompareOp : uint32_t
+{
+    Never = 0,
+    Less = 1,
+    Equal = 2,
+    LessOrEqual = 3,
+    Greater = 4,
+    NotEqual = 5,
+    GreaterOrEqual = 6,
+    Always = 7,
+};
+
+enum class MaterialStencilOp : uint32_t
+{
+    Keep = 0,
+    Zero = 1,
+    Replace = 2,
+    IncrementAndClamp = 3,
+    DecrementAndClamp = 4,
+    Invert = 5,
+    IncrementAndWrap = 6,
+    DecrementAndWrap = 7,
+};
+
+struct MaterialStencilOpState
+{
+    MaterialStencilOp failOp = MaterialStencilOp::Keep;
+    MaterialStencilOp passOp = MaterialStencilOp::Keep;
+    MaterialStencilOp depthFailOp = MaterialStencilOp::Keep;
+    MaterialCompareOp compareOp = MaterialCompareOp::Never;
+    uint32_t compareMask = 0;
+    uint32_t writeMask = 0;
+    uint32_t reference = 0;
+
+    [[nodiscard]] bool operator==(const MaterialStencilOpState &other) const noexcept
+    {
+        return failOp == other.failOp && passOp == other.passOp && depthFailOp == other.depthFailOp &&
+               compareOp == other.compareOp && compareMask == other.compareMask && writeMask == other.writeMask &&
+               reference == other.reference;
+    }
+
+    [[nodiscard]] bool operator!=(const MaterialStencilOpState &other) const noexcept
+    {
+        return !(*this == other);
+    }
+};
+
+enum class MaterialBlendFactor : uint32_t
+{
+    Zero = 0,
+    One = 1,
+    SourceColor = 2,
+    OneMinusSourceColor = 3,
+    DestinationColor = 4,
+    OneMinusDestinationColor = 5,
+    SourceAlpha = 6,
+    OneMinusSourceAlpha = 7,
+    DestinationAlpha = 8,
+    OneMinusDestinationAlpha = 9,
+    ConstantColor = 10,
+    OneMinusConstantColor = 11,
+    ConstantAlpha = 12,
+    OneMinusConstantAlpha = 13,
+    SourceAlphaSaturate = 14,
+};
+
+enum class MaterialBlendOp : uint32_t
+{
+    Add = 0,
+    Subtract = 1,
+    ReverseSubtract = 2,
+    Minimum = 3,
+    Maximum = 4,
+};
+
 /**
  * @brief Render state configuration for materials
  *
@@ -69,9 +191,9 @@ enum class RenderStateOverride : uint32_t
 struct RenderState
 {
     // Rasterization
-    VkCullModeFlags cullMode = VK_CULL_MODE_BACK_BIT;
-    VkFrontFace frontFace = VK_FRONT_FACE_CLOCKWISE;
-    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
+    MaterialCullMode cullMode = MaterialCullMode::Back;
+    MaterialFrontFace frontFace = MaterialFrontFace::Clockwise;
+    MaterialPolygonMode polygonMode = MaterialPolygonMode::Fill;
     float lineWidth = 1.0f;
 
     // Depth bias (polygon offset) — pushes fragments in depth to avoid z-fighting
@@ -81,24 +203,24 @@ struct RenderState
     float depthBiasClamp = 0.0f;
 
     // Primitive topology (default: triangle list)
-    VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    MaterialPrimitiveTopology topology = MaterialPrimitiveTopology::TriangleList;
 
     // Depth/Stencil
     bool depthTestEnable = true;
     bool depthWriteEnable = true;
-    VkCompareOp depthCompareOp = VK_COMPARE_OP_LESS;
+    MaterialCompareOp depthCompareOp = MaterialCompareOp::Less;
     bool stencilTestEnable = false;
-    VkStencilOpState stencilFront{}; // front-face stencil operations
-    VkStencilOpState stencilBack{};  // back-face stencil operations
+    MaterialStencilOpState stencilFront{}; // front-face stencil operations
+    MaterialStencilOpState stencilBack{};  // back-face stencil operations
 
     // Blending
     bool blendEnable = false;
-    VkBlendFactor srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    VkBlendFactor dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    VkBlendOp colorBlendOp = VK_BLEND_OP_ADD;
-    VkBlendFactor srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    VkBlendFactor dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    VkBlendOp alphaBlendOp = VK_BLEND_OP_ADD;
+    MaterialBlendFactor srcColorBlendFactor = MaterialBlendFactor::SourceAlpha;
+    MaterialBlendFactor dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+    MaterialBlendOp colorBlendOp = MaterialBlendOp::Add;
+    MaterialBlendFactor srcAlphaBlendFactor = MaterialBlendFactor::Zero;
+    MaterialBlendFactor dstAlphaBlendFactor = MaterialBlendFactor::One;
+    MaterialBlendOp alphaBlendOp = MaterialBlendOp::Add;
 
     // Alpha clip (runtime toggle — controls _AlphaClipThreshold material property)
     bool alphaClipEnabled = false;
@@ -155,12 +277,14 @@ struct MaterialProperty
 class InxMaterial
 {
   public:
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     struct DetachedUBO
     {
         VmaAllocator allocator = VK_NULL_HANDLE;
         VkBuffer buffer = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
     };
+#endif
     InxMaterial() = default;
     InxMaterial(const std::string &name);
     InxMaterial(const std::string &name, const std::string &shaderName);
@@ -234,14 +358,23 @@ class InxMaterial
     // Shader identity
     // ========================================================================
 
+    /// Switching to another shader hands render-state authorship back to that
+    /// shader's defaults. Declared before the inline shader setters so every
+    /// supported compiler resolves the call consistently.
+    void ResetRenderStateAuthorship();
+
     /// @brief Set both vertex and fragment shader to the same name (convenience).
     void SetShader(const std::string &shaderName)
     {
         const ShaderAssetReference reference{"", shaderName, ""};
         if (m_vertexShader == reference && m_fragmentShader == reference)
             return;
+        const bool switched =
+            !ReferencesSameShader(m_vertexShader, reference) || !ReferencesSameShader(m_fragmentShader, reference);
         m_vertexShader = reference;
         m_fragmentShader = reference;
+        if (switched)
+            ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
     }
@@ -252,7 +385,10 @@ class InxMaterial
         const ShaderAssetReference reference{"", name, ""};
         if (m_vertexShader == reference)
             return;
+        const bool switched = !ReferencesSameShader(m_vertexShader, reference);
         m_vertexShader = reference;
+        if (switched)
+            ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
     }
@@ -263,7 +399,10 @@ class InxMaterial
         const ShaderAssetReference reference{"", name, ""};
         if (m_fragmentShader == reference)
             return;
+        const bool switched = !ReferencesSameShader(m_fragmentShader, reference);
         m_fragmentShader = reference;
+        if (switched)
+            ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
     }
@@ -272,7 +411,10 @@ class InxMaterial
     {
         if (m_vertexShader == reference)
             return;
+        const bool switched = !ReferencesSameShader(m_vertexShader, reference);
         m_vertexShader = std::move(reference);
+        if (switched)
+            ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
     }
@@ -281,7 +423,10 @@ class InxMaterial
     {
         if (m_fragmentShader == reference)
             return;
+        const bool switched = !ReferencesSameShader(m_fragmentShader, reference);
         m_fragmentShader = std::move(reference);
+        if (switched)
+            ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
     }
@@ -322,11 +467,16 @@ class InxMaterial
     {
         return m_renderState;
     }
+    /// @brief Explicitly author the full render state. Every field becomes an
+    /// override, so shader annotation defaults can never replace it — the
+    /// shader only supplies defaults for fields the material has not authored
+    /// (at creation, or again after a shader switch clears authorship).
     void SetRenderState(const RenderState &state)
     {
-        if (m_renderState == state)
+        if (m_renderState == state && (m_renderStateOverrides & kAllRenderStateOverrides) == kAllRenderStateOverrides)
             return;
         m_renderState = state;
+        m_renderStateOverrides |= kAllRenderStateOverrides;
         m_pipelineDirty = true;
         ++m_version;
     }
@@ -477,16 +627,20 @@ class InxMaterial
     // + bolt-on shadow pipeline design.
     // ========================================================================
 
-    /// Per-pass Vulkan pipeline data.
+    /// Per-pass shader publication plus backend-owned Vulkan state when the
+    /// Vulkan material runtime is compiled.
     struct PassPipeline
     {
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout layout = VK_NULL_HANDLE;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+#endif
         std::shared_ptr<const ShaderProgram> shaderProgram;
     };
 
     /// Access per-pass pipeline data by compile target.
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     void SetPassPipeline(ShaderCompileTarget target, VkPipeline pipeline)
     {
         PassPipeline_(target).pipeline = pipeline;
@@ -513,6 +667,7 @@ class InxMaterial
     {
         return PassPipeline_(target).descriptorSet;
     }
+#endif
 
     void SetPassShaderProgram(ShaderCompileTarget target, std::shared_ptr<const ShaderProgram> program)
     {
@@ -544,7 +699,12 @@ class InxMaterial
     /// Check if a specific pass variant has a valid pipeline.
     [[nodiscard]] bool HasPassPipeline(ShaderCompileTarget target) const
     {
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
         return PassPipeline_(target).pipeline != VK_NULL_HANDLE;
+#else
+        (void)target;
+        return false;
+#endif
     }
 
     // ========================================================================
@@ -561,6 +721,9 @@ class InxMaterial
 
     /// @brief Create a default unlit opaque material
     static std::shared_ptr<InxMaterial> CreateDefaultUnlit();
+
+    /// @brief Create the default double-sided transparent LineRenderer material.
+    static std::shared_ptr<InxMaterial> CreateDefaultLineMaterial();
 
     /// @brief Create the default GPU ParticleGraph sprite material.
     static std::shared_ptr<InxMaterial> CreateParticleSpriteMaterial();
@@ -660,10 +823,14 @@ class InxMaterial
         return m_passPipelines[static_cast<int>(target)];
     }
 
-    // Per-material UBO (Unity-style: each material has its own buffer)
+// Per-material Vulkan UBO. WebGPU and other backends own their material
+// buffers through their backend runtime rather than storing foreign handles in
+// the asset object.
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     VkBuffer m_uboBuffer = VK_NULL_HANDLE;
     VmaAllocator m_uboAllocator = VK_NULL_HANDLE;
     VmaAllocation m_uboAllocation = VK_NULL_HANDLE;
+#endif
     void *m_uboMappedData = nullptr;
 
     // Dirty flag for pipeline recreation
@@ -685,6 +852,7 @@ class InxMaterial
     // Per-Material UBO (Unity-style)
     // ========================================================================
 
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     void SetUBOBuffer(VmaAllocator allocator, VkBuffer buffer, VmaAllocation allocation, void *mappedData)
     {
         m_uboAllocator = allocator;
@@ -722,13 +890,18 @@ class InxMaterial
     {
         return m_uboAllocation;
     }
+#endif
     [[nodiscard]] void *GetUBOMappedData() const
     {
         return m_uboMappedData;
     }
     [[nodiscard]] bool HasUBO() const
     {
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
         return m_uboBuffer != VK_NULL_HANDLE;
+#else
+        return false;
+#endif
     }
 
     // ========================================================================

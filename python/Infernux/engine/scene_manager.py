@@ -16,7 +16,7 @@ This module orchestrates those primitives into a complete workflow.
 """
 
 import os
-from Infernux.engine.path_utils import path_key, resolved_path
+from Infernux.engine.path_utils import is_path_within, path_key, resolved_path
 import json
 from dataclasses import dataclass
 from typing import Any, Optional, Callable
@@ -31,6 +31,7 @@ from Infernux.engine.project_context import get_project_root
 
 SCENE_EXTENSION = ".scene"
 EDITOR_SETTINGS_FILE = "EditorSettings.json"
+LAST_OPENED_SCENE_GUID_KEY = "lastOpenedSceneGuid"
 DEFAULT_SCENE_NAME = "Untitled Scene"
 DEFAULT_SCENE_FILE_BASE = "UntitledScene"
 PREFAB_MODE_SCENE_NAME = "__PrefabMode__"
@@ -722,14 +723,18 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             native.confirm_close()
 
     def load_last_scene_or_default(self):
-        """Called at startup — load the last opened scene, or create a default.
+        """Load the GUID-addressed last scene, or create a default.
 
         Uses immediate (non-deferred) loading since no rendering occurs yet.
         """
         settings = _load_editor_settings()
-        last_scene = settings.get("lastOpenedScene")
+        scene_guid = str(settings.get(LAST_OPENED_SCENE_GUID_KEY) or "").strip()
+        last_scene = ""
+        if scene_guid and self._asset_database is not None:
+            last_scene = str(self._asset_database.get_path_from_guid(scene_guid) or "")
         if last_scene and os.path.isfile(last_scene):
             if self._do_open_scene(last_scene, record_navigation=False):
+                self._remember_last_scene(last_scene)
                 return
             Debug.log_warning(f"Last scene file missing or invalid: {last_scene}")
 
@@ -936,7 +941,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         # Sync all prefab instances to the latest on-disk prefab data
         self.sync_all_prefab_instances(scene)
 
-        Debug.log_internal(f"Scene loaded: {os.path.basename(path)}")
         if self._on_scene_changed:
             self._on_scene_changed()
         if not runtime_load and record_navigation:
@@ -1253,7 +1257,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         from Infernux.gizmos.collector import notify_scene_changed
         notify_scene_changed()
 
-        Debug.log_internal("New scene created")
         if self._on_scene_changed:
             self._on_scene_changed()
         self._publish_scene_navigation("New Scene")
@@ -1324,11 +1327,16 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
             "yaw": rot[0],
             "pitch": rot[1],
         }
+        get_guid = getattr(self._asset_database, "get_guid_from_path", None)
+        guid = (
+            str(get_guid(scene_path) or "").strip() if callable(get_guid) else ""
+        )
+        if not guid:
+            return
         settings = _load_editor_settings()
-        if "sceneCameraStates" not in settings:
+        if not isinstance(settings.get("sceneCameraStates"), dict):
             settings["sceneCameraStates"] = {}
-        key = path_key(scene_path)
-        settings["sceneCameraStates"][key] = state
+        settings["sceneCameraStates"][guid] = state
         _save_editor_settings(settings)
 
     def _restore_camera_state(self, scene_path: str):
@@ -1338,10 +1346,15 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         cam = self._engine.editor_camera
         if not cam:
             return
+        get_guid = getattr(self._asset_database, "get_guid_from_path", None)
+        guid = (
+            str(get_guid(scene_path) or "").strip() if callable(get_guid) else ""
+        )
+        if not guid:
+            return
         settings = _load_editor_settings()
         states = settings.get("sceneCameraStates", {})
-        key = path_key(scene_path)
-        state = states.get(key)
+        state = states.get(guid)
         if not state:
             return
         p = state["position"]

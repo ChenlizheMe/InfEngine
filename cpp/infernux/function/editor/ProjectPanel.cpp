@@ -189,41 +189,39 @@ static std::vector<std::string> GetOSClipboardFiles();
 namespace
 {
 // All editor colors resolve through the runtime theme registry (active theme),
-// so a theme switch re-skins the Project panel live. Fallbacks reproduce the
-// current look when a token is absent.
-inline ImVec4 ThemeColor(const char *name, const ImVec4 &fb)
+// so a theme switch re-skins the Project panel live.
+inline ImVec4 ThemeColor(const char *name)
 {
-    return EditorThemeRegistry::Color(name, fb);
+    return EditorThemeRegistry::Color(name);
 }
-inline ImU32 ThemeU32(const char *name, const ImVec4 &fb)
+inline ImU32 ThemeU32(const char *name)
 {
-    return ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color(name, fb));
+    return ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color(name));
 }
 
 inline ImU32 ProjectSelectionOutlineColor()
 {
-    return ThemeU32("ROLE_ACCENT", ImVec4(EditorTheme::ACCENT_R, EditorTheme::ACCENT_G, EditorTheme::ACCENT_B, 1.0f));
+    return ThemeU32("ROLE_ACCENT");
 }
 
 inline ImU32 ProjectExpandStripBg(bool hovered)
 {
-    return hovered ? ThemeU32("PROJECT_EXPAND_STRIP_HOVER", EditorTheme::PROJECT_EXPAND_STRIP_HOVER)
-                   : ThemeU32("PROJECT_EXPAND_STRIP_BG", EditorTheme::PROJECT_EXPAND_STRIP_BG);
+    return hovered ? ThemeU32("PROJECT_EXPAND_STRIP_HOVER") : ThemeU32("PROJECT_EXPAND_STRIP_BG");
 }
 
 inline ImU32 ProjectSubAssetCellBg()
 {
-    return ThemeU32("PROJECT_SUBASSET_CELL_BG", EditorTheme::PROJECT_SUBASSET_CELL_BG);
+    return ThemeU32("PROJECT_SUBASSET_CELL_BG");
 }
 
 // Accent-tinted highlight used for eased hover / selection backgrounds.
 inline ImVec4 ProjectAccentColor()
 {
-    return ThemeColor("ROLE_ACCENT", ImVec4(EditorTheme::ACCENT_R, EditorTheme::ACCENT_G, EditorTheme::ACCENT_B, 1.0f));
+    return ThemeColor("ROLE_ACCENT");
 }
 inline ImVec4 ProjectHoverColor()
 {
-    return ThemeColor("ROLE_BG_HOVER", ImVec4(0.165f, 0.165f, 0.165f, 1.0f));
+    return ThemeColor("ROLE_BG_HOVER");
 }
 
 constexpr float kProjectSelectionOutlineThickness = 2.0f;
@@ -1695,7 +1693,7 @@ void ProjectPanel::EnsureTypeIconsLoaded()
             continue;
 
         (void)m_renderer->SubmitTextureForImGui(texName, texData.pixels.data(), texData.pixels.size(), texData.width,
-                                                texData.height, VK_FILTER_LINEAR, true);
+                                                texData.height, rhi::FilterMode::Linear, true);
         const uint64_t textureId = m_renderer->GetImGuiTextureId(texName);
         m_typeIconCache[iconKey] = textureId;
         if (textureId == 0)
@@ -1749,7 +1747,7 @@ uint64_t ProjectPanel::GetTypeIconId(const FileItem &item) const
 float ProjectPanel::GetGridTextLineHeight(InxGUIContext *ctx)
 {
     if (m_gridTextLineHeight <= 0.0f)
-        m_gridTextLineHeight = std::max(ImGui::GetTextLineHeight(), 14.0f);
+        m_gridTextLineHeight = std::max(ImGui::GetTextLineHeight(), 14.0f * ctx->GetDpiScale());
     return m_gridTextLineHeight;
 }
 
@@ -1791,7 +1789,7 @@ const ProjectPanel::LabelEntry &ProjectPanel::GetCachedItemLabel(InxGUIContext *
     }
 
     static constexpr const char *kEllipsisAscii = "...";
-    float maxTextW = textRegionW - 4.0f;
+    float maxTextW = textRegionW - 4.0f * ctx->GetDpiScale();
     float textW = ctx->CalcTextWidth(nameDisplay);
     if (textW > maxTextW) {
         // Truncate with ASCII ellipsis
@@ -2260,6 +2258,12 @@ void ProjectPanel::VisiblePreRender(InxGUIContext *ctx)
 void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
 {
     const auto contentStart = std::chrono::steady_clock::now();
+    const float dpi = ctx->GetDpiScale();
+    if (std::abs(dpi - m_lastDpiScale) > 0.001f) {
+        m_lastDpiScale = dpi;
+        m_gridTextLineHeight = 0.0f;
+        m_labelCache.clear();
+    }
     // Process any deferred cache invalidation from the previous frame
     // (CommitRename, Delete, Paste, Move / AssetManager invalidate_dir_cache).
     if (m_pendingCacheInvalidation) {
@@ -2280,8 +2284,8 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
 
     const bool searchActive = m_search.IsActive();
 
-    // Left panel: folder tree (200px)
-    if (ctx->BeginChild("FolderTree", 200, 0, false)) {
+    // Left panel: folder tree (200 authored pixels at 100% DPI).
+    if (ctx->BeginChild("FolderTree", 200.0f * dpi, 0, false)) {
         RenderFolderTree(ctx);
     }
     ctx->EndChild();
@@ -2291,7 +2295,7 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
 
     // Right panel: file grid, or project-wide search hits while the Path
     // search box has text.
-    ctx->PushStyleVarVec2(ImGuiStyleVar_WindowPadding, 12.0f, 8.0f);
+    ctx->PushStyleVarVec2(ImGuiStyleVar_WindowPadding, 12.0f * dpi, 8.0f * dpi);
     ctx->PushStyleColor(ImGuiCol_Border, 0.0f, 0.0f, 0.0f, 0.0f); // transparent border
     if (ctx->BeginChild("FileGrid", 0, 0, true)) {
         if (searchActive)
@@ -2339,11 +2343,12 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
         }
     }
 
-    constexpr float kSearchWidth = 220.0f;
-    constexpr float kSearchGap = 8.0f;
+    const float dpi = ctx->GetDpiScale();
+    const float searchWidth = 220.0f * dpi;
+    const float searchGap = 8.0f * dpi;
     const float avail = ctx->GetContentRegionAvailWidth();
-    const float searchW = (std::min)(kSearchWidth, (std::max)(140.0f, avail * 0.32f));
-    const float pathBudget = (std::max)(48.0f, avail - searchW - kSearchGap);
+    const float searchW = (std::min)(searchWidth, (std::max)(140.0f * dpi, avail * 0.32f));
+    const float pathBudget = (std::max)(48.0f * dpi, avail - searchW - searchGap);
 
     std::string pathLabel = m_breadcrumbText;
     if (ctx->CalcTextSizeA(pathLabel).first > pathBudget && pathLabel.size() > 4) {
@@ -2355,7 +2360,7 @@ void ProjectPanel::RenderBreadcrumb(InxGUIContext *ctx)
     }
 
     ctx->Label(pathLabel);
-    ctx->SameLine(0.0f, kSearchGap);
+    ctx->SameLine(0.0f, searchGap);
     const float remain = ctx->GetContentRegionAvailWidth();
     if (remain > searchW)
         ctx->SetCursorPosX(ctx->GetCursorPosX() + (remain - searchW));
@@ -2794,7 +2799,7 @@ void ProjectPanel::RenderFolderTree(InxGUIContext *ctx)
     }
 
     float remainH = ctx->GetContentRegionAvailHeight();
-    if (remainH > 4.0f) {
+    if (remainH > 4.0f * ctx->GetDpiScale()) {
         ctx->InvisibleButton("##folder_tree_empty_area", ctx->GetContentRegionAvailWidth(), remainH);
         if (ctx->IsItemClicked(0))
             PublishSelectionIntent({}, "");
@@ -2860,10 +2865,12 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
     }
 
     // Grid config
-    float iconSize = static_cast<float>(ICON_SIZE);
+    const float dpi = ctx->GetDpiScale();
+    const float iconSize = static_cast<float>(ICON_SIZE) * dpi;
+    const float cellWidth = static_cast<float>(CELL_WIDTH) * dpi;
     float avail_w = ctx->GetContentRegionAvailWidth();
-    int cols = std::max(static_cast<int>(avail_w / CELL_WIDTH), 1);
-    float rowHeight = iconSize + GetGridTextLineHeight(ctx) + GRID_PADDING + 8.0f;
+    int cols = std::max(static_cast<int>(avail_w / cellWidth), 1);
+    float rowHeight = iconSize + GetGridTextLineHeight(ctx) + (GRID_PADDING + 8.0f) * dpi;
 
     if (items->empty() && FilesystemPathKey(m_currentPath) == FilesystemPathKey(m_rootPath)) {
         ctx->Label(Tr("project.empty_folder"));
@@ -2921,15 +2928,15 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             if (hovered || selected) {
                 ImGui::TablePushBackgroundChannel();
                 if (hovered)
-                    drawList->AddRectFilled(g0, g1, cHoverFill, 3.0f);
+                    drawList->AddRectFilled(g0, g1, cHoverFill, 3.0f * dpi);
                 if (selected)
-                    drawList->AddRectFilled(g0, g1, cSelFill, 3.0f);
+                    drawList->AddRectFilled(g0, g1, cSelFill, 3.0f * dpi);
                 ImGui::TablePopBackgroundChannel();
             }
             // Single uniform tint on top → consistent hover for thumbnails, full-bleed
             // images and model expand-strips alike (no second accent-coloured patch).
             if (hovered)
-                drawList->AddRectFilled(g0, g1, cHoverTopTint, 3.0f);
+                drawList->AddRectFilled(g0, g1, cHoverTopTint, 3.0f * dpi);
             if (selected) {
                 // The outline sits 2px OUTSIDE the icon box. For the leftmost/topmost
                 // column that 2px falls into the window-padding band, outside the
@@ -2937,10 +2944,11 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 // (still well within the panel's padding) so the full outline shows.
                 const ImVec2 cMin = drawList->GetClipRectMin();
                 const ImVec2 cMax = drawList->GetClipRectMax();
-                drawList->PushClipRect(ImVec2(cMin.x - 4.0f, cMin.y - 4.0f), ImVec2(cMax.x + 4.0f, cMax.y + 4.0f),
-                                       false);
-                drawList->AddRect(ImVec2(g0.x - 2.0f, g0.y - 2.0f), ImVec2(g1.x + 2.0f, g1.y + 2.0f), cSelOutline, 3.0f,
-                                  0, kProjectSelectionOutlineThickness);
+                drawList->PushClipRect(ImVec2(cMin.x - 4.0f * dpi, cMin.y - 4.0f * dpi),
+                                       ImVec2(cMax.x + 4.0f * dpi, cMax.y + 4.0f * dpi), false);
+                drawList->AddRect(ImVec2(g0.x - 2.0f * dpi, g0.y - 2.0f * dpi),
+                                  ImVec2(g1.x + 2.0f * dpi, g1.y + 2.0f * dpi), cSelOutline, 3.0f * dpi, 0,
+                                  kProjectSelectionOutlineThickness * dpi);
                 drawList->PopClipRect();
             }
         };
@@ -2966,13 +2974,13 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             // right of each fixed-width icon. Retain one such gutter as the
             // request-only semantic fallback for background context actions.
             if (captureSemantics && semanticBackgroundMax.x <= semanticBackgroundMin.x) {
-                constexpr float kSemanticGutterInset = 3.0f;
+                const float semanticGutterInset = 3.0f * dpi;
                 const float gutterWidth = cellW - iconSize;
-                if (gutterWidth > kSemanticGutterInset * 2.0f) {
+                if (gutterWidth > semanticGutterInset * 2.0f) {
                     semanticBackgroundMin =
-                        ImVec2(cellTopLeft.x + iconSize + kSemanticGutterInset, cellTopLeft.y + kSemanticGutterInset);
-                    semanticBackgroundMax = ImVec2(cellTopLeft.x + cellW - kSemanticGutterInset,
-                                                   cellTopLeft.y + iconSize - kSemanticGutterInset);
+                        ImVec2(cellTopLeft.x + iconSize + semanticGutterInset, cellTopLeft.y + semanticGutterInset);
+                    semanticBackgroundMax = ImVec2(cellTopLeft.x + cellW - semanticGutterInset,
+                                                   cellTopLeft.y + iconSize - semanticGutterInset);
                 }
             }
 
@@ -3060,7 +3068,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             }
 
             // ── Render icon (model: thumbnail on the left + narrow expand strip, same height) ──
-            const float stripW = isModelFile ? kModelExpandStripW : 0.0f;
+            const float stripW = isModelFile ? kModelExpandStripW * dpi : 0.0f;
             const float thumbW = (stripW > 0.0f) ? (iconSize - stripW) : iconSize;
 
             if (displayTexId != 0) {
@@ -3140,7 +3148,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                         expandClicked = ImGui::IsItemClicked(0) && !hasDragPayload;
                         const ImVec2 ex0 = ImGui::GetItemRectMin();
                         const ImVec2 ex1 = ImGui::GetItemRectMax();
-                        drawList->AddRectFilled(ex0, ex1, expandHovered ? cExpandBgHover : cExpandBg, 2.0f);
+                        drawList->AddRectFilled(ex0, ex1, expandHovered ? cExpandBgHover : cExpandBg, 2.0f * dpi);
                         const float exW = ex1.x - ex0.x;
                         const float exH = ex1.y - ex0.y;
                         const float srcW = kModelExpandIconSrcPx;
@@ -3251,7 +3259,7 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
 
     // Bottom empty area: click to deselect + accept hierarchy drops
     float remainH = ctx->GetContentRegionAvailHeight();
-    if (remainH > 10.0f) {
+    if (remainH > 10.0f * dpi) {
         ctx->InvisibleButton("##drop_prefab_area", ctx->GetContentRegionAvailWidth(), remainH);
         if (captureSemantics) {
             ctx->RecordSemanticRect("project_background", "File Grid Background", ctx->GetItemRectMinX(),

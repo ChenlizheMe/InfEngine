@@ -240,9 +240,7 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                 supplied_guid = ""
                 if isinstance(path, dict):
                     supplied_guid = str(path.get("guid") or "").strip()
-                    target = str(
-                        path.get("path_hint") or path.get("path") or ""
-                    ).strip()
+                    target = str(path.get("path_hint") or "").strip()
                 else:
                     target = str(path)
                 if supplied_guid and not target:
@@ -550,9 +548,7 @@ def _apply_track_audio_clip_pick(comp, track_index: int, file_path) -> None:
         supplied_guid = ""
         if isinstance(file_path, dict):
             supplied_guid = str(file_path.get("guid") or "").strip()
-            file_path = str(
-                file_path.get("path_hint") or file_path.get("path") or ""
-            ).strip()
+            file_path = str(file_path.get("path_hint") or "").strip()
         else:
             file_path = str(file_path)
         old_document = comp.serialize_document()
@@ -638,32 +634,16 @@ def _mesh_display_name(comp) -> str:
 
 
 def _get_asset_database():
-    try:
-        from Infernux.lib import AssetRegistry
-        registry = AssetRegistry.instance()
-        if registry:
-            return registry.get_asset_database()
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    try:
-        from Infernux.core.assets import AssetManager
-        return getattr(AssetManager, '_asset_database', None)
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-    return None
+    from Infernux.core.assets import AssetManager
+
+    return AssetManager.require_asset_database()
 
 
 def _path_from_guid(guid: str) -> str:
     if not guid:
         return ""
     adb = _get_asset_database()
-    if not adb:
-        return ""
-    try:
-        return adb.get_path_from_guid(guid) or ""
-    except Exception as exc:
-        Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
-        return ""
+    return adb.get_path_from_guid(guid) or ""
 
 
 def _guid_and_path_from_model_payload(payload):
@@ -671,7 +651,7 @@ def _guid_and_path_from_model_payload(payload):
         payload = payload[1]
     if isinstance(payload, dict):
         guid = str(payload.get("guid") or "").strip()
-        path = str(payload.get("path_hint") or payload.get("path") or "").strip()
+        path = str(payload.get("path_hint") or "").strip()
         if guid or path:
             return guid, path
     ref = str(payload) if not isinstance(payload, str) else payload
@@ -772,9 +752,7 @@ def _clear_mesh(comp) -> None:
 
 def _apply_mesh_pick(comp, picked_value) -> None:
     if isinstance(picked_value, dict):
-        primitive_name = str(
-            picked_value.get("builtin") or picked_value.get("built_in") or ""
-        ).strip()
+        primitive_name = str(picked_value.get("builtin") or "").strip()
         if primitive_name:
             _assign_primitive_mesh(comp, primitive_name)
             return
@@ -824,9 +802,7 @@ def _set_material_slot_from_path(comp, slot_idx: int, material_path) -> None:
     supplied_guid = ""
     if isinstance(material_path, dict):
         supplied_guid = str(material_path.get("guid") or "").strip()
-        material_path = str(
-            material_path.get("path_hint") or material_path.get("path") or ""
-        ).strip()
+        material_path = str(material_path.get("path_hint") or "").strip()
     guid = supplied_guid or adb.get_guid_from_path(str(material_path))
     if not guid:
         return

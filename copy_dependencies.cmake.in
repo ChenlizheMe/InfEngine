@@ -14,15 +14,19 @@ set(_copied_names "")
 macro(copy_if_exists src dest)
     if(EXISTS "${src}")
         get_filename_component(_copy_name "${src}" NAME)
-        list(FIND _copied_names "${_copy_name}" _copy_index)
-        if(_copy_index EQUAL -1)
-            list(APPEND _copied_names "${_copy_name}")
-            set(_copy_destination "${dest}/${_copy_name}")
-            file(TO_CMAKE_PATH "${src}" _copy_source_normalized)
-            file(TO_CMAKE_PATH "${_copy_destination}" _copy_destination_normalized)
-            if(NOT _copy_source_normalized STREQUAL _copy_destination_normalized)
-                message(STATUS "Staging ${_copy_name} to ${dest}")
-                infernux_copy_file_stable("${src}" "${_copy_destination}")
+        # Binding modules are staged by stage_native_module.cmake, which also
+        # removes other Python ABI variants. They are not shared dependencies.
+        if(NOT _copy_name MATCHES "^_Infernux(Bootstrap)?([._]|$)")
+            list(FIND _copied_names "${_copy_name}" _copy_index)
+            if(_copy_index EQUAL -1)
+                list(APPEND _copied_names "${_copy_name}")
+                set(_copy_destination "${dest}/${_copy_name}")
+                file(TO_CMAKE_PATH "${src}" _copy_source_normalized)
+                file(TO_CMAKE_PATH "${_copy_destination}" _copy_destination_normalized)
+                if(NOT _copy_source_normalized STREQUAL _copy_destination_normalized)
+                    message(STATUS "Staging ${_copy_name} to ${dest}")
+                    infernux_copy_file_stable("${src}" "${_copy_destination}")
+                endif()
             endif()
         endif()
     else()
@@ -75,28 +79,25 @@ endif()
 # Search for shared library files in the build directories
 foreach(search_dir ${LIB_SEARCH_DIRS})
     if(EXISTS "${search_dir}")
-        file(GLOB lib_files "${search_dir}/*.${_SHARED_LIB_EXT}")
+        if(UNIX AND NOT APPLE)
+            # Linux consumers link against ELF SONAMEs such as libSDL3.so.0
+            # and libassimp.so.6. Staging only the unversioned development
+            # symlink produces a package that cannot load on a clean machine.
+            file(GLOB lib_files "${search_dir}/*.${_SHARED_LIB_EXT}*")
+        else()
+            file(GLOB lib_files "${search_dir}/*.${_SHARED_LIB_EXT}")
+        endif()
         foreach(lib_file ${lib_files})
             copy_if_exists("${lib_file}" "${TARGET_DIR}")
         endforeach()
     endif()
 endforeach()
 
-# Also search for any other shared libs that might be in subdirectories
-file(GLOB_RECURSE all_libs "${BUILD_DIR}/*.${_SHARED_LIB_EXT}")
-foreach(lib_file ${all_libs})
-    get_filename_component(lib_dir ${lib_file} DIRECTORY)
-    get_filename_component(lib_name ${lib_file} NAME)
-
-    if(WIN32)
-        # Only copy libs from the detected configuration directory
-        if(lib_dir MATCHES ".*/${_CFG}$" OR lib_dir MATCHES ".*/${_CFG}/.*")
-            copy_if_exists("${lib_file}" "${TARGET_DIR}")
-        endif()
-    else()
-        copy_if_exists("${lib_file}" "${TARGET_DIR}")
-    endif()
-endforeach()
+# Do not recursively scan the build tree. It contains previous ABI outputs,
+# wheel verification stages and TARGET_DIR itself. Copying from those generated
+# trees can resurrect stale native modules after stage_native_module.cmake has
+# removed them. Every runtime-producing directory must be listed explicitly in
+# LIB_SEARCH_DIRS above.
 
 # Copy the MSVC runtime DLLs discovered by CMake so wheel installs work on clean machines.
 if(WIN32)

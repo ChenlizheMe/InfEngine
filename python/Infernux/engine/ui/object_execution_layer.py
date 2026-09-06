@@ -7,8 +7,6 @@ Inspector UI rendering code, mirroring the asset execution layer architecture.
 
 from __future__ import annotations
 
-from Infernux.debug import Debug
-
 
 class ObjectExecutionLayer:
     """Execution helpers for GameObject selection and object-level actions."""
@@ -18,12 +16,8 @@ class ObjectExecutionLayer:
         """Resolve selected GameObject ID to a live object, null-safe."""
         if not selected_object_id:
             return None
-        try:
-            from Infernux.lib import SceneManager
-            scene = SceneManager.instance().get_active_scene()
-            if scene:
-                return scene.find_by_id(selected_object_id)
-        except (ImportError, RuntimeError) as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        from Infernux.lib import SceneManager
+        scene = SceneManager.instance().get_active_scene()
+        if scene:
+            return scene.find_by_id(selected_object_id)
         return None

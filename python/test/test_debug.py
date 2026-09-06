@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import sys
 
 import pytest
 
@@ -127,7 +128,7 @@ class TestDebugConsole:
             message="old warning",
             log_type=LogType.WARNING,
             timestamp=datetime.now(),
-            source_file=str(script).upper(),
+            source_file=(str(script).upper() if sys.platform == "win32" else str(script)),
         ))
         console.log(LogEntry(
             message="unrelated",

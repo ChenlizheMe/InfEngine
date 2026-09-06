@@ -23,7 +23,6 @@ namespace
 {
 constexpr std::string_view JournalMagic = "INXDTX2\n";
 constexpr uint64_t MaximumEntryCount = 1'000'000;
-constexpr uint64_t MaximumFieldBytes = 1ULL << 32;
 constexpr uint64_t MaximumJournalBytes = 2ULL << 30;
 
 uint64_t Fnv1a64(std::string_view bytes)
@@ -68,7 +67,7 @@ void AccumulateJournalSize(uint64_t &total, uint64_t bytes)
 std::string ReadField(std::string_view bytes, size_t &cursor)
 {
     const uint64_t size = ReadUint64(bytes, cursor);
-    if (size > MaximumFieldBytes || size > bytes.size() - cursor)
+    if (size > MaximumJournalBytes || size > bytes.size() - cursor)
         throw std::invalid_argument("document transaction journal has an invalid field size");
     std::string value(bytes.substr(cursor, static_cast<size_t>(size)));
     cursor += static_cast<size_t>(size);
@@ -194,7 +193,8 @@ std::string SerializeJournal(const std::filesystem::path &root, std::vector<Docu
     for (const auto &entry : entries) {
         if (!uniquePaths.insert(entry.path).second)
             throw std::invalid_argument("document transaction contains a duplicate target path");
-        if (entry.path.size() > MaximumFieldBytes || entry.content.size() > MaximumFieldBytes)
+        if (static_cast<uint64_t>(entry.path.size()) > MaximumJournalBytes ||
+            static_cast<uint64_t>(entry.content.size()) > MaximumJournalBytes)
             throw std::overflow_error("document transaction exceeds the journal size limit");
         AccumulateJournalSize(estimatedBytes, entry.path.size());
         AccumulateJournalSize(estimatedBytes, entry.content.size());
@@ -203,7 +203,7 @@ std::string SerializeJournal(const std::filesystem::path &root, std::vector<Docu
     for (const auto &path : invalidatedPaths) {
         if (!uniquePaths.insert(path).second)
             throw std::invalid_argument("document transaction invalidates a target path");
-        if (path.size() > MaximumFieldBytes)
+        if (static_cast<uint64_t>(path.size()) > MaximumJournalBytes)
             throw std::overflow_error("document transaction exceeds the journal size limit");
         AccumulateJournalSize(estimatedBytes, path.size());
         AccumulateJournalSize(estimatedBytes, sizeof(uint64_t));

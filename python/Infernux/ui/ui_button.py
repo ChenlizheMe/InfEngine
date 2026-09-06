@@ -210,7 +210,7 @@ class UIButton(UISelectable):
                     result["error"] = invocation.message
                     self._log_dispatch_failure(result)
                     continue
-                if invocation.status not in {"resolved", "legacy_pinned"}:
+                if invocation.status not in {"resolved", "direct"}:
                     result["status"] = invocation.status
                     result["error"] = invocation.message
                     self._log_dispatch_failure(result)

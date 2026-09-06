@@ -21,7 +21,15 @@ from __future__ import annotations
 
 from typing import Optional
 
-from Infernux.lib import AudioClip as CppAudioClip
+from Infernux import lib as _native_lib
+
+CppAudioClip = getattr(_native_lib, "AudioClip", None)
+
+
+def _require_native_audio_clip():
+    if CppAudioClip is None:
+        raise RuntimeError("AudioClip is unavailable in this platform runtime")
+    return CppAudioClip
 
 
 class AudioClip:
@@ -35,6 +43,7 @@ class AudioClip:
     """
 
     def __init__(self, native: CppAudioClip):
+        _require_native_audio_clip()
         if native is None:
             raise ValueError("Cannot wrap a None AudioClip")
         self._native = native
@@ -53,7 +62,7 @@ class AudioClip:
         Returns:
             An AudioClip instance, or None if loading failed.
         """
-        native = CppAudioClip()
+        native = _require_native_audio_clip()()
         if native.load_from_file(file_path):
             return AudioClip(native)
         return None

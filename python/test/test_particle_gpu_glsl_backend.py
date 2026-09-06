@@ -40,7 +40,7 @@ from Infernux.particle import (
 )
 from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
 from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
-from Infernux.graph.ramp import Curve, CurveKey, Gradient, GradientKey
+from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
 from Infernux.particle.nodes import (
     PARTICLE_EVENT_ACTIVE_TYPE_ID,
     PARTICLE_EVENT_TRIGGER_TYPE_ID,
@@ -96,8 +96,10 @@ def test_gpu_fused_update_rendering_stage_has_structured_symbols_and_workgroup_c
     }
     assert "shared uint inx_particle_render_local_count;" in fused
     assert "shared uint inx_particle_render_group_base;" in fused
-    assert len(re.findall(r"atomicAdd\s*\(\s*counters\.visible_count", fused)) == 1
-    assert len(re.findall(r"atomicAdd\s*\(\s*indirect_args\.instance_count", fused)) == 1
+    assert "#ifdef INX_WEBGPU" in fused
+    assert len(re.findall(r"atomicAdd\s*\(\s*counters\.visible_count", fused)) == 3
+    assert "atomicAdd(indirect_args.instance_count, 1u);" in fused
+    assert len(re.findall(r"atomicAdd\s*\(\s*indirect_args\.instance_count", fused)) == 2
     # Alive-list and render export share one subgroup prefix pass.  Keeping
     # this at two barriers is the performance contract for the fused kernel.
     fused_main = fused.rsplit("void main()", 1)[1]
@@ -118,7 +120,7 @@ def test_gpu_fused_update_rendering_stage_has_structured_symbols_and_workgroup_c
     assert fused.count("inx_push_free(particle_index)") == 1
 
 
-def test_gpu_noneligible_emitter_keeps_only_fallback_stages():
+def test_gpu_noneligible_emitter_keeps_separate_update_and_rendering_stages():
     kernel = ParticleKernelLowerer().lower(
         ParticleGraphCompiler().compile(_scene_collision_asset())
     )
@@ -2618,6 +2620,8 @@ def test_gpu_sprite_flipbook_exports_frame_and_remaps_atlas_uvs():
     assert "transforms.simulation_to_world * vec4(" in emitter.rendering
     assert "view.rendering_control.zw" in gpu_backend._BILLBOARD_VERTEX_GLSL
     assert "layout(location = 0) out vec3 out_world_position;" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "layout(location = 6) out vec4 out_line_color;" in gpu_backend._BILLBOARD_VERTEX_GLSL
+    assert "out_line_color = vec4(1.0);" in gpu_backend._BILLBOARD_VERTEX_GLSL
     assert "layout(location = 10) out vec2 out_particle_next_uv;" in gpu_backend._BILLBOARD_VERTEX_GLSL
     assert "layout(location = 14) out float out_particle_alpha;" in gpu_backend._BILLBOARD_VERTEX_GLSL
     assert "layout(location = 15) flat out uint out_layer_mask;" in gpu_backend._BILLBOARD_VERTEX_GLSL
@@ -2902,7 +2906,11 @@ def test_gpu_init_reserves_one_free_list_block_per_workgroup_and_compiles():
     assert "inx_pop_free();" not in main
     assert "return" not in before_barrier
     assert main.count("barrier();") == 1
-    assert "emitter_spawn.spawn_count - group_first_invocation" in main
+    assert "authoritative_spawn_count - group_first_invocation" in main
+    assert "pc.reserved != 0u" in main
+    assert "pc.invocation_count" in main
+    assert "pc.spawn_base_id" in main
+    assert "pc.spawn_generation" in main
     assert "simulation_control.simulation_allowed" not in before_barrier
     assert "inx_current_emitter_playing()" not in before_barrier
     assert re.search(
@@ -2914,6 +2922,10 @@ def test_gpu_init_reserves_one_free_list_block_per_workgroup_and_compiles():
     assert "atomicAdd(counters.reserved_count, inx_particle_init_accepted_count)" in main
     assert "atomicAdd(counters.dropped_count, dropped_count)" in main
     assert "if (!initialized_state_finite) atomicAdd(counters.dropped_count, 1u);" in main
+    assert "bool inx_append_alive(uint slot, uint particle_index)" in init
+    assert "atomicAdd(alive_control.alive_counts[min(slot, 1u)], 0xffffffffu)" in init
+    assert "particle_alive && !inx_append_alive" in main
+    assert "inx_push_free(particle_index);" in main
 
     compiled = native._compile_compute_glsl_batch(
         {"init": init}, "particle-init-free-block-test"
@@ -3103,6 +3115,8 @@ def test_gpu_mesh_orientation_and_nonuniform_scale_use_current_instance_abi():
     assert ".a_builtin_scale" in emitter.rendering
     assert "scale_custom = vec4(" in emitter.rendering
     assert "instance.rotation_custom.yzw" in gpu_backend._MESH_VERTEX_GLSL
+    assert "layout(location = 6) out vec4 out_line_color;" in gpu_backend._MESH_VERTEX_GLSL
+    assert "out_line_color = vec4(1.0);" in gpu_backend._MESH_VERTEX_GLSL
     assert "instance.scale_custom.xyz" in gpu_backend._MESH_VERTEX_GLSL
     assert "rotation_z * rotation_y * rotation_x" in gpu_backend._MESH_VERTEX_GLSL
     assert "view.rendering_control.y > 0.5" in gpu_backend._MESH_VERTEX_GLSL
@@ -3170,10 +3184,10 @@ def test_gpu_curve_and_gradient_sampling_emit_valid_vulkan_glsl():
 
 
 def test_gpu_curve_and_gradient_parameters_use_fixed_hot_update_layouts():
-    curve = Curve(
+    curve = AnimationCurve(
         (
-            CurveKey(0.0, 0.25, 0.0, 1.0),
-            CurveKey(1.0, 2.0, -0.5, 0.0),
+            Keyframe(0.0, 0.25, 0.0, 1.0),
+            Keyframe(1.0, 2.0, -0.5, 0.0),
         ),
         "repeat",
         "ping_pong",
@@ -3258,7 +3272,7 @@ def test_gpu_curve_and_gradient_parameters_use_fixed_hot_update_layouts():
     changed_words = pack_gpu_particle_parameters(
         kernel.parameters,
         {
-            "size-over-life": Curve((CurveKey(0.0, 4.0),)).to_dict(),
+            "size-over-life": AnimationCurve((Keyframe(0.0, 4.0),)).to_dict(),
             "color-over-life": Gradient(
                 (GradientKey(0.0, (0.0, 1.0, 0.0, 1.0)),),
                 "fixed",

@@ -17,17 +17,22 @@ def project_guid_paths(
     *,
     engine: Any = None,
 ) -> tuple[dict[str, str], bool]:
-    """Return GUID-to-path mappings and whether the native index supplied them."""
+    """Return GUID-to-path mappings and whether the native index supplied them.
+
+    The native AssetDatabase is the *only* GUID authority for its project:
+    when one is bound to ``project_root`` its catalog is returned as-is and
+    any error propagates. There is deliberately no fallback from a live
+    database to a filesystem scan — a stale or pending catalog is handled by
+    the post-refresh preload catch-up, not by re-deriving identity from
+    ``.meta`` files. The scan below only serves environments that have no
+    native database at all (pure-Python tooling and tests).
+    """
 
     project = resolved_path(project_root)
     database = _asset_database(engine)
     if database is not None:
-        try:
-            database_root = resolved_path(str(database.project_root or ""))
-            if not database_root or path_key(database_root) != path_key(project):
-                raise RuntimeError("AssetDatabase belongs to another project")
-            if bool(getattr(database, "refresh_pending", False)):
-                raise RuntimeError("AssetDatabase refresh has not committed")
+        database_root = resolved_path(str(database.project_root or ""))
+        if database_root and path_key(database_root) == path_key(project):
             result: dict[str, str] = {}
             for raw_guid in database.get_all_guids():
                 guid = str(raw_guid).strip().casefold()
@@ -44,32 +49,16 @@ def project_guid_paths(
                     raise ValueError(f"Project contains duplicate GUID {guid}: {other}, {path}")
                 result[guid] = path
             return result, True
-        except (AttributeError, RuntimeError, ValueError):
-            pass
     return _scan_guid_paths(project), False
 
 
 def _asset_database(engine: Any):
     if engine is not None:
-        try:
-            database = engine.get_asset_database()
-            if database is not None:
-                return database
-        except (AttributeError, RuntimeError):
-            pass
-    try:
-        from Infernux.core.assets import AssetManager
+        return engine.get_asset_database()
 
-        if AssetManager._asset_database is not None:
-            return AssetManager._asset_database
-    except Exception:
-        pass
-    try:
-        from Infernux.lib import AssetRegistry
+    from Infernux.core.assets import AssetManager
 
-        return AssetRegistry.instance().get_asset_database()
-    except Exception:
-        return None
+    return AssetManager._asset_database
 
 
 def _scan_guid_paths(project_root: str) -> dict[str, str]:

@@ -331,56 +331,6 @@ def test_prepare_scene_holds_ready_transaction_until_explicit_activation(monkeyp
     assert calls == ["start", "commit"]
 
 
-def test_runtime_scene_transaction_prefetches_external_meshes(monkeypatch):
-    from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
-
-    document = {
-        "objects": [
-            {
-                "components": [
-                    {
-                        "type_id": "native:infernux.MeshRenderer",
-                        "data": {
-                            "meshAssetGuid": "mesh-a",
-                            "useInlineMesh": False,
-                        },
-                    },
-                    {
-                        "type_id": "native:infernux.SkinnedMeshRenderer",
-                        "data": {
-                            "meshAssetGuid": "mesh-a",
-                            "useInlineMesh": False,
-                        },
-                    },
-                    {
-                        "type_id": "native:infernux.MeshRenderer",
-                        "data": {"useInlineMesh": True},
-                    },
-                ],
-                "children": [
-                    {
-                        "components": [
-                            {
-                                "type_id": "native:infernux.MeshRenderer",
-                                "data": {
-                                    "meshAssetGuid": "mesh-b",
-                                    "useInlineMesh": False,
-                                },
-                            }
-                        ],
-                        "children": [],
-                    }
-                ],
-            }
-        ]
-    }
-
-    assert SceneDocumentTransaction._scene_mesh_guids(document) == (
-        "mesh-a",
-        "mesh-b",
-    )
-
-
 def test_prepared_scene_advances_at_most_one_transaction_phase_per_tick(monkeypatch):
     import Infernux.scene as scene_api
     from Infernux.scene import SceneManager

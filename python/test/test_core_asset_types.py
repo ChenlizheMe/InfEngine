@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 
@@ -155,10 +156,10 @@ class TestTextureImportSettings:
         s = TextureImportSettings(aniso_level=-1)
         assert TextureImportSettings.from_dict(s.to_dict()).aniso_level == -1
 
-    def test_legacy_default_anisotropy_migrates_to_device_maximum(self):
+    def test_explicit_anisotropy_level_is_preserved(self):
         document = TextureImportSettings().to_dict()
         document["aniso_level"] = 1
-        assert TextureImportSettings.from_dict(document).aniso_level == -1
+        assert TextureImportSettings.from_dict(document).aniso_level == 1
 
     def test_copy(self):
         s = TextureImportSettings(max_size=512)
@@ -462,6 +463,32 @@ class TestReadMetaGuid:
 
         from Infernux.core.asset_types import read_meta_guid
         assert read_meta_guid(str(asset)) == ""
+
+
+class TestAssetIoPool:
+    def test_missing_thread_executor_does_not_block_asset_model_imports(
+        self, monkeypatch
+    ):
+        from Infernux.core import asset_types
+
+        original_import = builtins.__import__
+
+        def import_without_thread_executor(name, *args, **kwargs):
+            if name == "concurrent.futures":
+                raise ImportError("thread executor is unavailable")
+            return original_import(name, *args, **kwargs)
+
+        previous_pool = asset_types._io_pool
+        asset_types._io_pool = None
+        monkeypatch.setattr(builtins, "__import__", import_without_thread_executor)
+        try:
+            with pytest.raises(
+                RuntimeError,
+                match="Asynchronous asset writes are unavailable",
+            ):
+                asset_types._asset_io_pool()
+        finally:
+            asset_types._io_pool = previous_pool
 
 
 class TestNativeResourceMetaSchema:

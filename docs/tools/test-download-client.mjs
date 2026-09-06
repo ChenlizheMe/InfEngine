@@ -6,76 +6,81 @@ import vm from "node:vm";
 const docsRoot = path.resolve("docs");
 const source = await readFile(path.join(docsRoot, "js", "download.js"), "utf8");
 const html = await readFile(path.join(docsRoot, "download.html"), "utf8");
+const catalog = JSON.parse(await readFile(path.join(docsRoot, "hub-catalog.json"), "utf8"));
+const release = catalog.releases.find(item => item.version === catalog.stable);
+release.published_at = "2026-09-06T00:00:00Z";
 const listeners = new Map();
 
 function makeSelect(id, initialUrl) {
-    const link = { href: "" };
-    const options = [{ value: initialUrl, textContent: "0.3.6 · fallback" }];
+    const link = makeLink();
+    const options = [{ value: initialUrl, textContent: catalog.stable }];
     const select = {
         id,
         value: initialUrl,
         options,
-        ownerDocument: { createElement() { return { value: "", textContent: "" }; } },
-        get firstChild() { return options[0] || null; },
         closest(selector) {
             if (selector === ".version-picker") return { querySelector() { return link; } };
             return null;
-        },
-        querySelectorAll(selector) { return selector === "option" ? options : []; },
-        insertBefore(option) { options.unshift(option); },
-        replaceChildren(...nextOptions) {
-            options.splice(0, options.length, ...nextOptions);
         },
         addEventListener(type, handler) { listeners.set(`${id}:${type}`, handler); }
     };
     return { select, link };
 }
 
-const fallbackWheel = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.6/infernux-0.3.6-cp312-cp312-win_amd64.whl";
-const latestWheel = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/infernux-0.3.7-cp312-cp312-win_amd64.whl";
-const latestHub = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/InfernuxHubInstaller-0.3.7.exe";
-const previousWheel = "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.6/infernux-0.3.6-cp312-cp312-win_amd64.whl";
-const latestRelease = {
-    tag_name: "v0.3.7",
-    assets: [
-        { name: "InfernuxHubInstaller-0.3.7.exe", browser_download_url: latestHub },
-        { name: "infernux-0.3.7-cp312-cp312-win_amd64.whl", browser_download_url: latestWheel }
-    ]
-};
-const previousRelease = {
-    tag_name: "v0.3.6",
-    assets: [
-        { name: "infernux-0.3.6-cp312-cp312-win_amd64.whl", browser_download_url: previousWheel }
-    ]
-};
-const en = makeSelect("engine-version-en", fallbackWheel);
-const zh = makeSelect("engine-version-zh", fallbackWheel);
-const hubLinks = [{ href: "" }, { href: "" }];
-const labels = [
-    { textContent: "", closest() { return null; } },
-    { textContent: "", closest() { return {}; } }
-];
+function makeLink() {
+    const classes = new Set(["is-disabled"]);
+    return {
+        href: "",
+        attributes: new Map(),
+        classList: {
+            add(name) { classes.add(name); },
+            remove(name) { classes.delete(name); },
+            contains(name) { return classes.has(name); }
+        },
+        removeAttribute(name) {
+            this.attributes.delete(name);
+            if (name === "href") this.href = "";
+        },
+        setAttribute(name, value) { this.attributes.set(name, value); }
+    };
+}
+
+function makeLabel(chinese) {
+    return {
+        textContent: "",
+        closest(selector) {
+            return selector === "[data-page-language='zh']" && chinese ? {} : null;
+        }
+    };
+}
+
+const wheel = `https://example.invalid/releases/download/v${catalog.stable}/infernux-${catalog.stable}.whl`;
+const en = makeSelect("engine-version-en", wheel);
+const zh = makeSelect("engine-version-zh", wheel);
+const windowsLinks = [makeLink(), makeLink()];
+const linuxLinks = [makeLink(), makeLink()];
+const windowsLabels = [makeLabel(false), makeLabel(true)];
+const linuxLabels = [makeLabel(false), makeLabel(true)];
 
 const sandbox = {
     Array,
+    Boolean,
     Error,
     Promise,
     String,
-    fetch: async (url) => ({
-        ok: true,
-        status: 200,
-        async json() {
-            return String(url).includes("?per_page=")
-                ? [latestRelease, previousRelease, { tag_name: "v0.4.0-rc1", prerelease: true, assets: [] }]
-                : latestRelease;
-        }
-    }),
+    fetch: async (url, options) => {
+        assert.equal(url, "hub-catalog.json");
+        assert.equal(options.cache, "no-store");
+        return { ok: true, status: 200, async json() { return catalog; } };
+    },
     document: {
         addEventListener(type, handler) { listeners.set(type, handler); },
         querySelectorAll(selector) {
             if (selector === "[data-version-select]") return [en.select, zh.select];
-            if (selector === "[data-latest-hub]") return hubLinks;
-            if (selector === "[data-hub-meta]") return labels;
+            if (selector === "[data-hub-link='windows-x64']") return windowsLinks;
+            if (selector === "[data-hub-link='linux-x64']") return linuxLinks;
+            if (selector === "[data-hub-meta='windows-x64']") return windowsLabels;
+            if (selector === "[data-hub-meta='linux-x64']") return linuxLabels;
             return [];
         }
     }
@@ -86,27 +91,46 @@ new vm.Script(source, { filename: "download.js" }).runInContext(sandbox);
 listeners.get("DOMContentLoaded")();
 await new Promise((resolve) => setImmediate(resolve));
 
-assert.equal(en.link.href, latestWheel, "the English wheel button should use GitHub's latest release");
-assert.equal(zh.link.href, latestWheel, "the Chinese wheel button should use GitHub's latest release");
-assert.equal(en.select.options[0].textContent, "0.3.7 · latest public release");
-assert.equal(zh.select.options[0].textContent, "0.3.7 · 最新公开版本");
-assert.deepEqual(en.select.options.map((option) => option.textContent), ["0.3.7 · latest public release", "0.3.6"]);
-assert.equal(en.select.options[1].value, previousWheel, "published GitHub wheels should populate the version list");
-assert.deepEqual(hubLinks.map((link) => link.href), [latestHub, latestHub]);
-assert.match(labels[0].textContent, /latest public release 0\.3\.7/);
-assert.match(labels[1].textContent, /最新公开版本 0\.3\.7/);
+const windowsInstaller = release.platforms["windows-x64"].installer.url;
+assert.equal(en.link.href, wheel);
+assert.equal(zh.link.href, wheel);
+assert.deepEqual(windowsLinks.map((link) => link.href), [windowsInstaller, windowsInstaller]);
+assert.equal(windowsLinks[0].classList.contains("is-disabled"), false);
+assert.equal(linuxLinks[0].href, release.platforms["linux-x64"].installer.url);
+assert.equal(linuxLinks[0].classList.contains("is-disabled"), false);
+assert.equal(windowsLabels[0].textContent, `Windows x64 · ${catalog.stable}`);
+assert.equal(windowsLabels[1].textContent, `Windows x64 · ${catalog.stable}`);
 
-en.select.value = fallbackWheel;
+release.published_at = null;
+listeners.get("DOMContentLoaded")();
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(windowsLinks[0].href, "");
+assert.equal(linuxLinks[0].href, "");
+assert.equal(en.link.href, "");
+assert.equal(zh.link.attributes.get("aria-disabled"), "true");
+assert.match(windowsLabels[0].textContent, /release files pending publication/);
+assert.match(windowsLabels[1].textContent, /制品待发布/);
+
+en.select.value = "https://example.invalid/releases/download/v0.3.7/old.whl";
 listeners.get("engine-version-en:change")();
-assert.equal(en.link.href, fallbackWheel, "changing versions should still update the direct wheel link");
+assert.equal(en.link.href, en.select.value);
+assert.equal(en.link.classList.contains("is-disabled"), false);
+
+release.published_at = "2026-09-06T00:00:00Z";
+delete release.platforms["linux-x64"];
+listeners.get("DOMContentLoaded")();
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(linuxLinks[0].href, "");
+assert.equal(linuxLinks[0].attributes.get("aria-disabled"), "true");
 
 assert.match(html, /InfernuxHub/, "the primary download must be presented as InfernuxHub");
-assert.match(html, /data-latest-hub/, "the recommended Hub download must track GitHub's latest release");
-assert.match(html, /connect-src 'self' https:\/\/api\.github\.com/, "the download page CSP must allow the GitHub Releases API");
+assert.match(html, /data-hub-link="windows-x64"/, "the Windows Hub must have its own path");
+assert.match(html, /data-hub-link="linux-x64"/, "the Linux Hub must have its own path");
+assert.doesNotMatch(html, /api\.github\.com/, "the download page must not depend on GitHub's API");
 assert.match(html, /<details class="advanced-download">/, "manual wheel downloads must live in advanced mode");
 assert.doesNotMatch(html, /<details class="advanced-download"\s+open/, "advanced mode must be collapsed by default");
-assert.match(html, /0\.2\.9[\s\S]*0\.2\.1[\s\S]*0\.2\.0/, "the offline fallback should offer multiple engine versions");
+assert.match(html, /0\.2\.9[\s\S]*0\.2\.1[\s\S]*0\.2\.0/, "the direct wheel list should offer multiple versions");
 assert.doesNotMatch(html, /SHA-?256|checksum|校验码|publisher signature/i, "ordinary downloads should not expose verification clutter");
 assert.doesNotMatch(html, /pwa-install\.js/, "the download page should not load the documentation-app installer");
 
-console.log("Download page test passed: GitHub latest drives recommended downloads with checked-in fallbacks.");
+console.log("Download page test passed: the anonymous Hub catalog drives separate Windows and Linux paths.");

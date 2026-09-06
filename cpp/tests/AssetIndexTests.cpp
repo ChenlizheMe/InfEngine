@@ -78,20 +78,9 @@ void TestResourceTypeMetadataRoundTrip()
     }
 }
 
-void TestSpriteFramesRequireStructuredMetadata()
+void TestSpriteFramesStructuredMetadata()
 {
-    nlohmann::json legacy = {
-        {"metadata", {{"sprite_frames", {{"type", "string"}, {"value", "[]"}}}}},
-    };
     infernux::InxResourceMeta metadata;
-    bool rejected = false;
-    try {
-        metadata.DeserializeDocument(legacy);
-    } catch (const std::invalid_argument &) {
-        rejected = true;
-    }
-    Require(rejected, "Resource metadata accepted string-encoded sprite_frames");
-
     nlohmann::json current = {
         {"metadata", {{"sprite_frames", {{"type", "json_array"}, {"value", nlohmann::json::array()}}}}},
     };
@@ -173,7 +162,7 @@ void TestScaleAndStrictRoundTrip()
     Require(loaded.Size() == entryCount, "AssetIndex file round-trip entry count mismatch");
 
     auto invalid = document;
-    invalid["entries"][0]["legacy_path"] = invalid["entries"][0]["normalized_path"];
+    invalid["entries"][0]["unexpected"] = true;
     bool rejected = false;
     try {
         loaded.DeserializeDocument(invalid, "c:/project");
@@ -200,7 +189,7 @@ int main()
 {
     try {
         TestResourceTypeMetadataRoundTrip();
-        TestSpriteFramesRequireStructuredMetadata();
+        TestSpriteFramesStructuredMetadata();
         TestMetadataFilePathCanonicalization();
         TestScaleAndStrictRoundTrip();
         return 0;

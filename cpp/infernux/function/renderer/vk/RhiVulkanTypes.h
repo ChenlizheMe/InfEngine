@@ -19,6 +19,16 @@ struct DynamicRenderingCommands final
     }
 };
 
+struct Synchronization2Commands final
+{
+    PFN_vkCmdPipelineBarrier2 barrier = nullptr;
+
+    [[nodiscard]] constexpr bool IsValid() const noexcept
+    {
+        return barrier != nullptr;
+    }
+};
+
 [[nodiscard]] constexpr bool SelectDynamicRenderingPath(bool capabilityEnabled, bool corePairAvailable,
                                                         bool extensionPairAvailable) noexcept
 {
@@ -39,6 +49,21 @@ struct DynamicRenderingCommands final
     commands.begin = reinterpret_cast<PFN_vkCmdBeginRendering>(vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR"));
     commands.end = reinterpret_cast<PFN_vkCmdEndRendering>(vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR"));
     return commands.IsValid() ? commands : DynamicRenderingCommands{};
+}
+
+[[nodiscard]] inline Synchronization2Commands ResolveSynchronization2Commands(VkDevice device) noexcept
+{
+    if (device == VK_NULL_HANDLE)
+        return {};
+
+    Synchronization2Commands commands;
+    commands.barrier =
+        reinterpret_cast<PFN_vkCmdPipelineBarrier2>(vkGetDeviceProcAddr(device, "vkCmdPipelineBarrier2"));
+    if (!commands.IsValid()) {
+        commands.barrier =
+            reinterpret_cast<PFN_vkCmdPipelineBarrier2>(vkGetDeviceProcAddr(device, "vkCmdPipelineBarrier2KHR"));
+    }
+    return commands.IsValid() ? commands : Synchronization2Commands{};
 }
 
 [[nodiscard]] inline VkShaderStageFlags ToVkShaderStages(ShaderStage stages) noexcept

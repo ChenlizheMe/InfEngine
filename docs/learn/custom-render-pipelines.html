@@ -21,7 +21,7 @@
 <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header" role="banner">
-        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.7</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.0</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
             <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
             <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
@@ -47,17 +47,17 @@
 <h2 id="discover-pipeline">Discover and select a pipeline</h2>
 <p>Create <code>Assets/Rendering/simple_forward_pipeline.py</code> in the project. No registry call or package <code>__init__.py</code> is required: discovery scans the <code>Assets</code> tree for <code>.py</code> files, reads class inheritance without importing unrelated scripts, then imports files that lead to a <code>RenderPipeline</code> subclass. Indirect subclasses and subclasses of the built-in pipelines are included. Files whose names start with <code>_</code>, hidden directories, and common build or virtual-environment directories are skipped.</p>
 <p>The class needs a non-empty <code>name</code> that does not start with <code>_</code>:</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderPipeline</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">SimpleForwardPipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">SimpleForwardPipeline</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">RenderPipeline</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="s2">"Simple Forward"</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">define</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pipeline</span><span class="p">):</span>
         <span class="o">...</span>
 </code></pre></div>
 
-<p>The file imports the public base directly from <code>Infernux.renderstack</code>; do not import it through another project script solely to trigger registration. After saving the file, wait for the asset refresh to finish, select the GameObject that owns the scene's <code>RenderStack</code> component, then choose <strong>Simple Forward</strong> from <strong>Pipeline</strong> in the RenderStack Inspector. Save the scene after the topology appears. The list shows <code>name</code>; the Python class name stays in code.</p>
+<p>The file uses the public <code>inx.renderstack.RenderPipeline</code> base; do not import it through another project script solely to trigger registration. After saving the file, wait for the asset refresh to finish, select the GameObject that owns the scene's <code>RenderStack</code> component, then choose <strong>Simple Forward</strong> from <strong>Pipeline</strong> in the RenderStack Inspector. Save the scene after the topology appears. The list shows <code>name</code>; the Python class name stays in code.</p>
 <p>These names have different jobs:</p>
 <ul>
 <li><code>SimpleForwardPipeline</code> is the Python class name. It identifies the implementation in code.</li>
@@ -67,30 +67,27 @@
 <p>There is currently no separate stable-ID field for a pipeline. Despite the serialized field name <code>pipeline_class_name</code>, RenderStack stores the pipeline's <code>name</code> value.</p>
 <p>If a candidate module fails to import, Editor discovery keeps the rest of the catalog available and omits the broken class until the script is fixed. Saving, creating, moving, or deleting a pipeline script invalidates the catalog; the active pipeline source is also watched for reload in the Editor.</p>
 <p>Use the Editor Console to separate import failures from catalog problems. This diagnostic reads the same discovery functions used by RenderStack:</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack.discovery</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">discover_pipelines</span><span class="p">,</span>
-    <span class="n">discovery_import_failures</span><span class="p">,</span>
-<span class="p">)</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
-<span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">discover_pipelines</span><span class="p">()))</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">discovery_import_failures</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discover_pipelines</span><span class="p">()))</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discovery_import_failures</span><span class="p">())</span>
 </code></pre></div>
 
 <p>An import failure entry is keyed by source path and includes the exception type and message. An empty failure map plus a missing name usually means the file was skipped, the class inheritance was not recognized, or <code>name</code> is empty or begins with <code>_</code>.</p>
 <p>Duplicate pipeline names have a narrower current diagnostic boundary. Discovery stores <code>{pipeline.name: class}</code> and a later subclass silently replaces an earlier class under the same key. The Pipeline menu shows one entry and emits no collision diagnostic or candidate list. To identify the selected winner in the Console, run:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">inspect</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack.discovery</span><span class="w"> </span><span class="kn">import</span> <span class="n">discover_pipelines</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
-<span class="n">pipeline_type</span> <span class="o">=</span> <span class="n">discover_pipelines</span><span class="p">()[</span><span class="s2">"Simple Forward"</span><span class="p">]</span>
+<span class="n">pipeline_type</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discover_pipelines</span><span class="p">()[</span><span class="s2">"Simple Forward"</span><span class="p">]</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">pipeline_type</span><span class="o">.</span><span class="vm">__module__</span><span class="p">,</span> <span class="n">inspect</span><span class="o">.</span><span class="n">getsourcefile</span><span class="p">(</span><span class="n">pipeline_type</span><span class="p">))</span>
 </code></pre></div>
 
 <p>Give every project pipeline a unique, stable <code>name</code>. After a rename, select the new name and save the scene again; the old saved selection and its parameter-store key are not migrated automatically.</p>
 <h2 id="minimal-pipeline">A minimal pipeline</h2>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderPipeline</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">SimpleForwardPipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">SimpleForwardPipeline</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">RenderPipeline</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="s2">"Simple Forward"</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">define</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pipeline</span><span class="p">):</span>
@@ -123,10 +120,10 @@
 </ol>
 <p>The recovery result depends on when failure occurs. A rejected script import does not publish the edited module. If a published topology rebuild then fails and this RenderStack already has a valid graph, the Console reports <code>Pipeline graph rebuild rejected</code> and the last valid graph keeps rendering until another invalidation. On the first Editor build, failure attempts <code>DefaultForwardPipeline</code>; a packaged Player reports the missing or failed custom pipeline and does not substitute Default Forward. Fixing and saving the active source invalidates the failed state and requests another build.</p>
 <h2 id="mixed-pipeline">Mix Forward, Forward+, and Deferred</h2>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span><span class="p">,</span> <span class="n">Queue</span><span class="p">,</span> <span class="n">RenderPipeline</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">MixedArtPipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">MixedArtPipeline</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">RenderPipeline</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="s2">"Mixed Art Pipeline"</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">define</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pipeline</span><span class="p">):</span>
@@ -137,12 +134,12 @@
         <span class="k">with</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">opaque</span><span class="p">()</span> <span class="k">as</span> <span class="n">opaque</span><span class="p">:</span>
             <span class="k">with</span> <span class="n">opaque</span><span class="o">.</span><span class="n">layer</span><span class="p">(</span><span class="s2">"Stylized Objects"</span><span class="p">)</span> <span class="k">as</span> <span class="n">layer</span><span class="p">:</span>
                 <span class="n">layer</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span>
-                    <span class="n">Queue</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span>
+                    <span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Queue</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span>
                 <span class="p">)</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"low_queue"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Stylized Forward"</span><span class="p">)</span>
 
                 <span class="n">layer</span><span class="o">.</span><span class="n">deferred</span><span class="p">(</span>
-                    <span class="n">Queue</span><span class="p">(</span><span class="mi">101</span><span class="p">,</span> <span class="mi">200</span><span class="p">),</span>
-                    <span class="n">fallback</span><span class="o">=</span><span class="n">Path</span><span class="o">.</span><span class="n">FORWARD_PLUS</span><span class="p">,</span>
+                    <span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Queue</span><span class="p">(</span><span class="mi">101</span><span class="p">,</span> <span class="mi">200</span><span class="p">),</span>
+                    <span class="n">fallback</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Path</span><span class="o">.</span><span class="n">FORWARD_PLUS</span><span class="p">,</span>
                 <span class="p">)</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"middle_queue"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Deferred Objects"</span><span class="p">)</span>
 
                 <span class="n">layer</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"stylized_combined"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Stylized Combined"</span><span class="p">)</span>
@@ -181,13 +178,13 @@
 <p>Shadow casting uses its own queue. The declarative compiler draws shadow casters for Queue <code>0..2999</code>, and the built-in pipelines read the same defaults from <code>EngineConfig</code> (<code>shadow_caster_queue_min/max</code>). Materials with Queue <code>3000..9999</code> therefore do not cast shadows under the default settings, and route ownership does not change that. A project can adjust the engine queue bounds through <code>EngineConfig</code>; the DSL compiler currently keeps its own fixed range.</p>
 <p>Two failure probes make the edge behavior reproducible:</p>
 <div class="highlight"><pre><span></span><code><span class="k">with</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">opaque</span><span class="p">()</span> <span class="k">as</span> <span class="n">opaque</span><span class="p">:</span>
-    <span class="n">opaque</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">Queue</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">100</span><span class="p">))</span>
-    <span class="n">opaque</span><span class="o">.</span><span class="n">forward_plus</span><span class="p">(</span><span class="n">Queue</span><span class="p">(</span><span class="mi">100</span><span class="p">,</span> <span class="mi">200</span><span class="p">))</span>  <span class="c1"># ValueError: routes overlap</span>
+    <span class="n">opaque</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Queue</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">100</span><span class="p">))</span>
+    <span class="n">opaque</span><span class="o">.</span><span class="n">forward_plus</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Queue</span><span class="p">(</span><span class="mi">100</span><span class="p">,</span> <span class="mi">200</span><span class="p">))</span>  <span class="c1"># ValueError: routes overlap</span>
 </code></pre></div>
 
 <p>The shared endpoint <code>100</code> is enough to overlap because ranges are inclusive. <code>Queue(20, 10)</code> is rejected when the selector is created because its minimum exceeds its maximum.</p>
 <div class="highlight"><pre><span></span><code><span class="k">with</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">opaque</span><span class="p">()</span> <span class="k">as</span> <span class="n">opaque</span><span class="p">:</span>
-    <span class="n">opaque</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">Queue</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">))</span>
+    <span class="n">opaque</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Queue</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">))</span>
     <span class="n">opaque</span><span class="o">.</span><span class="n">otherwise</span><span class="p">()</span><span class="o">.</span><span class="n">forward_plus</span><span class="p">()</span>  <span class="c1"># accepted, complement is empty</span>
 </code></pre></div>
 
@@ -196,8 +193,7 @@
 <p>Pipeline policy can be edited below the selected pipeline in the RenderStack Inspector:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">enum</span><span class="w"> </span><span class="kn">import</span> <span class="n">IntEnum</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">serialized_field</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderPipeline</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Samples</span><span class="p">(</span><span class="n">IntEnum</span><span class="p">):</span>
@@ -207,10 +203,10 @@
     <span class="n">X8</span> <span class="o">=</span> <span class="mi">8</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">AdjustablePipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">AdjustablePipeline</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">RenderPipeline</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="s2">"Adjustable Pipeline"</span>
 
-    <span class="n">msaa</span><span class="p">:</span> <span class="n">Samples</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span>
+    <span class="n">msaa</span><span class="p">:</span> <span class="n">Samples</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
         <span class="n">default</span><span class="o">=</span><span class="n">Samples</span><span class="o">.</span><span class="n">X4</span><span class="p">,</span>
         <span class="n">enum_labels</span><span class="o">=</span><span class="p">[</span><span class="s2">"Off"</span><span class="p">,</span> <span class="s2">"2x"</span><span class="p">,</span> <span class="s2">"4x"</span><span class="p">,</span> <span class="s2">"8x"</span><span class="p">],</span>
         <span class="n">header</span><span class="o">=</span><span class="s2">"Anti-Aliasing"</span><span class="p">,</span>
@@ -240,17 +236,17 @@
 <h2 id="discover-pipeline_1">发现并选择管线</h2>
 <p>在项目中创建 <code>Assets/Rendering/simple_forward_pipeline.py</code>。无需注册调用，也无需添加包级 <code>__init__.py</code>：发现器会扫描 <code>Assets</code> 目录树，先读取 <code>.py</code> 文件中的类继承关系，不导入无关脚本；确认某个文件通向 <code>RenderPipeline</code> 子类后，才会导入它。间接继承的子类、继承内置管线的子类也能被发现。以下划线开头的文件、隐藏目录，以及常见的构建目录和虚拟环境目录会被跳过。</p>
 <p>类必须提供非空且不以下划线开头的 <code>name</code>：</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderPipeline</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">SimpleForwardPipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">SimpleForwardPipeline</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">RenderPipeline</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="s2">"Simple Forward"</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">define</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pipeline</span><span class="p">):</span>
         <span class="o">...</span>
 </code></pre></div>
 
-<p>文件应直接从 <code>Infernux.renderstack</code> 导入公开基类；不要仅为触发注册而经由另一个项目脚本转接导入。保存后等待资产刷新完成，选中场景中挂有 <code>RenderStack</code> 组件的 GameObject，在 RenderStack Inspector 的 <strong>Pipeline</strong> 下拉框中选择 <strong>Simple Forward</strong>。拓扑显示后保存场景。列表显示 <code>name</code>；Python 类名留在代码中。</p>
+<p>文件应通过 <code>inx.renderstack.RenderPipeline</code> 使用公开基类；不要仅为触发注册而经由另一个项目脚本转接导入。保存后等待资产刷新完成，选中场景中挂有 <code>RenderStack</code> 组件的 GameObject，在 RenderStack Inspector 的 <strong>Pipeline</strong> 下拉框中选择 <strong>Simple Forward</strong>。拓扑显示后保存场景。列表显示 <code>name</code>；Python 类名留在代码中。</p>
 <p>这三个名字各有用途：</p>
 <ul>
 <li><code>SimpleForwardPipeline</code> 是 Python 类名，用于在代码中标识实现。</li>
@@ -260,30 +256,27 @@
 <p>当前管线本身没有另一套 stable ID。虽然序列化字段名叫 <code>pipeline_class_name</code>，RenderStack 实际保存的是管线 <code>name</code>。</p>
 <p>候选模块导入失败时，Editor 仍会保留其它可用管线，只暂时不列出出错的类。修好脚本后再次保存即可重新发现。创建、保存、移动或删除管线脚本都会使目录缓存失效；Editor 也会监听当前管线源码并重新加载。</p>
 <p>可以在 Editor Console 中运行下列代码，把导入失败与目录问题分开检查。这些函数也由 RenderStack 的发现流程使用：</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack.discovery</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">discover_pipelines</span><span class="p">,</span>
-    <span class="n">discovery_import_failures</span><span class="p">,</span>
-<span class="p">)</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
-<span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">discover_pipelines</span><span class="p">()))</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">discovery_import_failures</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discover_pipelines</span><span class="p">()))</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discovery_import_failures</span><span class="p">())</span>
 </code></pre></div>
 
 <p>导入失败表以源码路径为键，值中包含异常类型和消息。失败表为空且名称缺失时，应检查文件是否被跳过、类继承能否被识别，以及 <code>name</code> 是否为空或以下划线开头。</p>
 <p>同名管线的当前诊断范围更窄。发现结果保存为 <code>{pipeline.name: class}</code>，后遍历到的子类会静默覆盖同一个键中的早期子类。Pipeline 菜单只显示一项，也不会给出冲突诊断或候选列表。可在 Console 中确认当前胜出的类型与源码路径：</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">inspect</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack.discovery</span><span class="w"> </span><span class="kn">import</span> <span class="n">discover_pipelines</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
-<span class="n">pipeline_type</span> <span class="o">=</span> <span class="n">discover_pipelines</span><span class="p">()[</span><span class="s2">"Simple Forward"</span><span class="p">]</span>
+<span class="n">pipeline_type</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">discover_pipelines</span><span class="p">()[</span><span class="s2">"Simple Forward"</span><span class="p">]</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">pipeline_type</span><span class="o">.</span><span class="vm">__module__</span><span class="p">,</span> <span class="n">inspect</span><span class="o">.</span><span class="n">getsourcefile</span><span class="p">(</span><span class="n">pipeline_type</span><span class="p">))</span>
 </code></pre></div>
 
 <p>项目中的每条管线都应使用唯一且稳定的 <code>name</code>。改名后需要选择新名称并重新保存场景；旧选择与旧参数存储键不会自动迁移。</p>
 <h2 id="minimal-pipeline_1">最小管线</h2>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderPipeline</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">SimpleForwardPipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">SimpleForwardPipeline</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">RenderPipeline</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="s2">"Simple Forward"</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">define</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pipeline</span><span class="p">):</span>
@@ -316,10 +309,10 @@
 </ol>
 <p>恢复结果取决于失败时机。脚本导入被拒绝时，编辑后的模块不会发布。已发布的拓扑重建失败且当前 RenderStack 已有有效 Graph 时，Console 会报告 <code>Pipeline graph rebuild rejected</code>，上一份有效 Graph 会继续渲染，直到下一次失效触发。Editor 首次构建失败时会尝试 <code>DefaultForwardPipeline</code>；打包 Player 会报告自定义管线缺失或失败，并保持错误可见，不会替换成 Default Forward。修复并保存活动源码会清除失败状态并请求再次构建。</p>
 <h2 id="mixed-pipeline_1">混合 Forward、Forward+ 与 Deferred</h2>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span><span class="p">,</span> <span class="n">Queue</span><span class="p">,</span> <span class="n">RenderPipeline</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">MixedArtPipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">MixedArtPipeline</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">RenderPipeline</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="s2">"Mixed Art Pipeline"</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">define</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pipeline</span><span class="p">):</span>
@@ -330,12 +323,12 @@
         <span class="k">with</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">opaque</span><span class="p">()</span> <span class="k">as</span> <span class="n">opaque</span><span class="p">:</span>
             <span class="k">with</span> <span class="n">opaque</span><span class="o">.</span><span class="n">layer</span><span class="p">(</span><span class="s2">"Stylized Objects"</span><span class="p">)</span> <span class="k">as</span> <span class="n">layer</span><span class="p">:</span>
                 <span class="n">layer</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span>
-                    <span class="n">Queue</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span>
+                    <span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Queue</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span>
                 <span class="p">)</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"low_queue"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Stylized Forward"</span><span class="p">)</span>
 
                 <span class="n">layer</span><span class="o">.</span><span class="n">deferred</span><span class="p">(</span>
-                    <span class="n">Queue</span><span class="p">(</span><span class="mi">101</span><span class="p">,</span> <span class="mi">200</span><span class="p">),</span>
-                    <span class="n">fallback</span><span class="o">=</span><span class="n">Path</span><span class="o">.</span><span class="n">FORWARD_PLUS</span><span class="p">,</span>
+                    <span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Queue</span><span class="p">(</span><span class="mi">101</span><span class="p">,</span> <span class="mi">200</span><span class="p">),</span>
+                    <span class="n">fallback</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Path</span><span class="o">.</span><span class="n">FORWARD_PLUS</span><span class="p">,</span>
                 <span class="p">)</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"middle_queue"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Deferred Objects"</span><span class="p">)</span>
 
                 <span class="n">layer</span><span class="o">.</span><span class="n">effects</span><span class="p">(</span><span class="s2">"stylized_combined"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Stylized Combined"</span><span class="p">)</span>
@@ -374,13 +367,13 @@
 <p>阴影投射使用独立的队列区间。声明式编译器为 Queue <code>0..2999</code> 绘制阴影投射体，内置管线从 <code>EngineConfig</code>（<code>shadow_caster_queue_min/max</code>）读取相同默认值。因此默认设置下 Queue <code>3000..9999</code> 的材质不投射阴影，路由归属不会改变这一点。项目可以通过 <code>EngineConfig</code> 调整引擎队列边界；DSL 编译器目前使用自己的固定区间。</p>
 <p>下面两个探针可以复现边界行为：</p>
 <div class="highlight"><pre><span></span><code><span class="k">with</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">opaque</span><span class="p">()</span> <span class="k">as</span> <span class="n">opaque</span><span class="p">:</span>
-    <span class="n">opaque</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">Queue</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">100</span><span class="p">))</span>
-    <span class="n">opaque</span><span class="o">.</span><span class="n">forward_plus</span><span class="p">(</span><span class="n">Queue</span><span class="p">(</span><span class="mi">100</span><span class="p">,</span> <span class="mi">200</span><span class="p">))</span>  <span class="c1"># ValueError: routes overlap</span>
+    <span class="n">opaque</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Queue</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">100</span><span class="p">))</span>
+    <span class="n">opaque</span><span class="o">.</span><span class="n">forward_plus</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Queue</span><span class="p">(</span><span class="mi">100</span><span class="p">,</span> <span class="mi">200</span><span class="p">))</span>  <span class="c1"># ValueError: routes overlap</span>
 </code></pre></div>
 
 <p>区间采用闭区间，公共端点 <code>100</code> 已构成重叠。<code>Queue(20, 10)</code> 会在创建 Selector 时被拒绝，因为最小值大于最大值。</p>
 <div class="highlight"><pre><span></span><code><span class="k">with</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">opaque</span><span class="p">()</span> <span class="k">as</span> <span class="n">opaque</span><span class="p">:</span>
-    <span class="n">opaque</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">Queue</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">))</span>
+    <span class="n">opaque</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">Queue</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">))</span>
     <span class="n">opaque</span><span class="o">.</span><span class="n">otherwise</span><span class="p">()</span><span class="o">.</span><span class="n">forward_plus</span><span class="p">()</span>  <span class="c1"># 合法，但补集为空</span>
 </code></pre></div>
 
@@ -389,8 +382,7 @@
 <p>管线策略可以显示在 RenderStack Inspector 的所选管线下方：</p>
 <div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">enum</span><span class="w"> </span><span class="kn">import</span> <span class="n">IntEnum</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">serialized_field</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="n">RenderPipeline</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Samples</span><span class="p">(</span><span class="n">IntEnum</span><span class="p">):</span>
@@ -400,10 +392,10 @@
     <span class="n">X8</span> <span class="o">=</span> <span class="mi">8</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">AdjustablePipeline</span><span class="p">(</span><span class="n">RenderPipeline</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">AdjustablePipeline</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">RenderPipeline</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="s2">"Adjustable Pipeline"</span>
 
-    <span class="n">msaa</span><span class="p">:</span> <span class="n">Samples</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span>
+    <span class="n">msaa</span><span class="p">:</span> <span class="n">Samples</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
         <span class="n">default</span><span class="o">=</span><span class="n">Samples</span><span class="o">.</span><span class="n">X4</span><span class="p">,</span>
         <span class="n">enum_labels</span><span class="o">=</span><span class="p">[</span><span class="s2">"Off"</span><span class="p">,</span> <span class="s2">"2x"</span><span class="p">,</span> <span class="s2">"4x"</span><span class="p">,</span> <span class="s2">"8x"</span><span class="p">],</span>
         <span class="n">header</span><span class="o">=</span><span class="s2">"Anti-Aliasing"</span><span class="p">,</span>

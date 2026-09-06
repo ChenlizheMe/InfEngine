@@ -57,52 +57,17 @@ void ValidateImportedDependencyIdentities(const ImportArtifact &artifact, const 
     }
 }
 
-bool LoadCurrentMetadataDocument(const std::string &path, InxResourceMeta &metadata, std::string &recoveredGuid,
-                                 std::string &error) noexcept
+InxResourceMeta LoadMetadataDocument(const std::string &path)
 {
-    try {
-        std::ifstream file(ToFsPath(path));
-        if (!file)
-            throw std::runtime_error("metadata sidecar cannot be opened");
-        const nlohmann::json document = nlohmann::json::parse(file);
-        const auto entries = document.find("metadata");
-        if (entries != document.end() && entries->is_object()) {
-            const auto guid = entries->find("guid");
-            if (guid != entries->end() && guid->is_object()) {
-                const auto value = guid->find("value");
-                if (value != guid->end() && value->is_string())
-                    recoveredGuid = value->get<std::string>();
-            }
-        }
-        metadata.DeserializeDocument(document);
-        return true;
-    } catch (const std::exception &exception) {
-        error = exception.what();
-    } catch (...) {
-        error = "metadata sidecar raised a non-standard parsing exception";
-    }
-    return false;
-}
-
-bool HasValidContentHash(const InxResourceMeta &metadata) noexcept
-{
-    if (!metadata.HasKey("content_hash"))
-        return false;
-    try {
-        return !metadata.GetDataAs<std::string>("content_hash").empty();
-    } catch (...) {
-        return false;
-    }
-}
-
-void RemoveInvalidMetadataDocument(const std::string &path, const std::string &reason)
-{
-    std::error_code error;
-    const bool removed = std::filesystem::remove(ToFsPath(path), error);
-    if (error)
-        throw std::runtime_error("failed to remove incompatible metadata sidecar '" + path + "': " + error.message());
-    INXLOG_WARN("AssetDatabase: ", removed ? "removed" : "discarded", " incompatible metadata sidecar '", path,
-                "' and will regenerate it: ", reason);
+    std::ifstream file(ToFsPath(path));
+    if (!file)
+        throw std::runtime_error("metadata sidecar cannot be opened: " + path);
+    const nlohmann::json document = nlohmann::json::parse(file);
+    InxResourceMeta metadata;
+    metadata.DeserializeDocument(document);
+    if (!metadata.HasKey("content_hash") || metadata.GetDataAs<std::string>("content_hash").empty())
+        throw std::invalid_argument("metadata sidecar has no current content_hash: " + path);
+    return metadata;
 }
 
 std::string
@@ -349,7 +314,6 @@ AssetDatabase::AssetDatabase()
     m_querySnapshot = std::make_shared<const QuerySnapshot>();
     // Loaders are populated later by AssetRegistry::PopulateAssetDatabaseLoaders()
     // after all IAssetLoader plug-ins have been registered.
-    INXLOG_DEBUG("AssetDatabase created (loaders pending)");
 }
 
 AssetDatabase::~AssetDatabase()
@@ -372,6 +336,34 @@ std::string AssetDatabase::GetSkinnedMeshArtifactPath(const std::string &guid) c
     if (m_projectRoot.empty())
         return {};
     return FromFsPath(ToFsPath(m_projectRoot) / std::filesystem::u8path(relative));
+}
+
+bool AssetDatabase::EnsureRuntimeArtifactCurrent(const std::string &guid, ResourceType type)
+{
+    AssertMutationThread("EnsureRuntimeArtifactCurrent");
+    AssertNoPendingCommit("EnsureRuntimeArtifactCurrent");
+    const auto path = m_guidToPath.find(guid);
+    if (path == m_guidToPath.end() || path->second.empty())
+        return false;
+    const std::string normalizedPath = FilesystemPathKey(path->second);
+    const std::string primary = GetRuntimeArtifactPath(guid, type);
+    std::error_code error;
+    bool reusable =
+        !primary.empty() && std::filesystem::is_regular_file(ToFsPath(primary), error) && !error &&
+        HasCurrentRuntimeArtifactHeader(ToFsPath(primary), type, ImportArtifact::RuntimeArtifactKind::Primary);
+    if (reusable && type == ResourceType::Mesh) {
+        error.clear();
+        const std::string skinned = GetSkinnedMeshArtifactPath(guid);
+        reusable =
+            !skinned.empty() && std::filesystem::is_regular_file(ToFsPath(skinned), error) && !error &&
+            HasCurrentRuntimeArtifactHeader(ToFsPath(skinned), type, ImportArtifact::RuntimeArtifactKind::SkinnedMesh);
+    }
+    if (reusable)
+        return true;
+    if (IsReadOnlyPath(normalizedPath))
+        return false;
+    const AssetMutationResult rebuilt = ReimportAsset(path->second);
+    return rebuilt.succeeded;
 }
 
 void AssetDatabase::AssertMutationThread(const char *operation) const
@@ -585,8 +577,25 @@ void AssetDatabase::Initialize(const std::string &projectRoot)
     m_ownerThread = std::this_thread::get_id();
     m_initialized = true;
     PublishQuerySnapshot();
+}
 
-    INXLOG_DEBUG("AssetDatabase initialized. ProjectRoot=", m_projectRoot, ", AssetsRoot=", m_assetsRoot);
+void AssetDatabase::InitializeRuntime(const std::string &projectRoot)
+{
+    if (m_initialized)
+        throw std::logic_error("AssetDatabase::InitializeRuntime may only be called once");
+    m_projectRoot = FromFsPath(ToFsPath(projectRoot));
+    if (m_projectRoot.empty())
+        throw std::invalid_argument("AssetDatabase runtime project root cannot be empty");
+    if (m_projectRoot.back() == '/')
+        m_projectRoot.pop_back();
+
+    m_assetsRoot = FromFsPath(ToFsPath(m_projectRoot) / "Assets");
+    m_assetIndexPath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetIndex.json");
+    m_assetStartupCachePath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetIndex.startup-cache.json");
+    m_assetTransactionJournalPath = FromFsPath(ToFsPath(m_projectRoot) / "Library" / "AssetRefresh.transaction");
+    m_ownerThread = std::this_thread::get_id();
+    m_initialized = true;
+    PublishQuerySnapshot(false);
 }
 
 void AssetDatabase::AddScanRoot(const std::string &path)
@@ -601,7 +610,6 @@ void AssetDatabase::AddScanRoot(const std::string &path)
             return;
     }
     m_extraScanRoots.push_back(std::move(norm));
-    INXLOG_DEBUG("AssetDatabase: added extra scan root: ", m_extraScanRoots.back());
 }
 
 void AssetDatabase::AddReadOnlyScanRoot(const std::string &path)
@@ -634,39 +642,16 @@ bool AssetDatabase::RestoreCachedCatalog()
     };
 
     AssetIndex cached;
-    std::string restoredPath = m_assetIndexPath;
     try {
-        if (!cached.Load(restoredPath, FilesystemPathKey(m_projectRoot))) {
-            restoredPath = m_assetStartupCachePath;
-            if (!cached.Load(restoredPath, FilesystemPathKey(m_projectRoot))) {
-                INXLOG_INFO("AssetDatabase: no committed startup catalog is available");
-                return false;
-            }
+        if (!cached.Load(m_assetStartupCachePath, FilesystemPathKey(m_projectRoot))) {
+            INXLOG_INFO("AssetDatabase: no committed startup catalog is available");
+            return false;
         }
     } catch (const std::exception &exception) {
         INXLOG_WARN("AssetDatabase: discarded cached startup catalog: ", exception.what());
         return false;
     }
     reportPhase("load_index");
-
-    // Projects created before the dedicated startup cache already have a
-    // valid live index but no fallback copy. Seed it once while that committed
-    // snapshot is in hand; later refreshes keep it current on a worker.
-    if (restoredPath == m_assetIndexPath) {
-        std::error_code startupCacheError;
-        const bool hasStartupCache =
-            std::filesystem::is_regular_file(ToFsPath(m_assetStartupCachePath), startupCacheError) &&
-            !startupCacheError;
-        if (!hasStartupCache) {
-            try {
-                cached.Save(m_assetStartupCachePath);
-            } catch (const std::exception &exception) {
-                // Startup remains valid with the live index. Failure to seed a
-                // resilience copy must not make the editor unavailable.
-                INXLOG_WARN("AssetDatabase: could not seed startup catalog: ", exception.what());
-            }
-        }
-    }
 
     WorkingSet restored;
     restored.assetIndex = cached;
@@ -712,7 +697,8 @@ bool AssetDatabase::RestoreCachedCatalog()
     InstallQuerySnapshot(std::move(query));
     reportPhase("publish");
     m_assetIndexDirty = false;
-    INXLOG_INFO("AssetDatabase: restored ", cached.Size(), " cached editor asset identities from ", restoredPath);
+    INXLOG_INFO("AssetDatabase: restored ", cached.Size(), " cached editor asset identities from ",
+                m_assetStartupCachePath);
     return true;
 }
 
@@ -1125,6 +1111,10 @@ bool AssetDatabase::TryCommitRefresh()
         std::rethrow_exception(failure);
     if (!artifact)
         throw std::logic_error("AssetDatabase scan completed without an artifact");
+    if (state->expectedQueryGeneration != m_queryGeneration) {
+        BeginRefresh();
+        return false;
+    }
     return CommitScanArtifact(std::move(*artifact), state->expectedQueryGeneration);
 }
 
@@ -1176,6 +1166,14 @@ void AssetDatabase::Refresh()
 {
     AssertMutationThread("Refresh");
     BeginRefresh();
+    CompletePendingRefresh();
+}
+
+void AssetDatabase::CompletePendingRefresh()
+{
+    AssertMutationThread("CompletePendingRefresh");
+    if (!IsRefreshPending())
+        throw std::logic_error("AssetDatabase has no pending refresh");
     while (!TryCommitRefresh())
         WaitForPendingWork();
 }
@@ -1197,34 +1195,17 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
         // Read-only package roots never consume sidecars. They are derived
         // project state and may have been produced by a different engine.
         if (sidecarExists && !item.file.readOnly) {
-            InxResourceMeta loadedMetadata;
-            std::string recoveredGuid;
-            std::string loadError;
-            if (LoadCurrentMetadataDocument(metaPath, loadedMetadata, recoveredGuid, loadError)) {
-                if (!HasValidContentHash(loadedMetadata)) {
-                    // Early sidecars did not always persist the source hash.  They
-                    // are parseable, but cannot back a current AssetIndex entry.
-                    // Rebuild the derived fields while preserving the GUID and any
-                    // importer settings carried by the sidecar.
-                    item.mode = WorkerMetadataPrepare::Mode::Rebuild;
-                    previousMetadata = std::move(loadedMetadata);
-                    previousMetadataLoaded = true;
-                    preservedGuid = previousMetadata.GetGuid();
-                } else if (item.mode == WorkerMetadataPrepare::Mode::LoadExisting ||
-                           item.mode == WorkerMetadataPrepare::Mode::CreateOrLoad) {
-                    RequireUnchangedFingerprint(item.file.path, item.file.source);
-                    item.metadata = std::move(loadedMetadata);
-                    return;
-                } else {
-                    previousMetadata = std::move(loadedMetadata);
-                    previousMetadataLoaded = true;
-                    preservedGuid = previousMetadata.GetGuid();
-                }
-            } else {
-                if (preservedGuid.empty())
-                    preservedGuid = std::move(recoveredGuid);
-                RemoveInvalidMetadataDocument(metaPath, loadError);
+            InxResourceMeta loadedMetadata = LoadMetadataDocument(metaPath);
+            if (item.mode == WorkerMetadataPrepare::Mode::LoadExisting ||
+                item.mode == WorkerMetadataPrepare::Mode::CreateOrLoad) {
+                // The current source fingerprint is authoritative. Rebuild
+                // derived fields while preserving stable identity and importer
+                // settings from the current metadata document.
+                item.mode = WorkerMetadataPrepare::Mode::Rebuild;
             }
+            previousMetadata = std::move(loadedMetadata);
+            previousMetadataLoaded = true;
+            preservedGuid = previousMetadata.GetGuid();
         }
 
         const std::vector<char> content = ReadExactSourceBytes(item.file.path);
@@ -1298,8 +1279,6 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
     for (const auto &tempPath : artifact.orphanedTempFiles) {
         std::error_code error;
         std::filesystem::remove(ToFsPath(tempPath), error);
-        if (!error)
-            INXLOG_DEBUG("AssetDatabase.Refresh: cleaned orphaned temp file: ", tempPath);
     }
 
     bool unchanged = !m_assetIndexDirty && artifact.files.size() == artifact.index.Size() &&
@@ -1938,9 +1917,18 @@ void AssetDatabase::RebuildDerivedIndex()
     restoreWorkingSet.Release();
 }
 
-void AssetDatabase::FlushDerivedIndex()
+void AssetDatabase::FlushDerivedIndex(bool waitForPendingScan)
 {
     AssertMutationThread("FlushDerivedIndex");
+    if (!waitForPendingScan && (m_pendingAssetScan || m_pendingRefreshCommit)) {
+        // Shutdown path: the derived index is a startup cache, and the next
+        // launch revalidates it against the real asset state anyway. Blocking
+        // engine teardown on a full background project scan (worst case:
+        // quitting right after startup) trades seconds of exit latency for a
+        // cache write we can simply skip.
+        INXLOG_INFO("FlushDerivedIndex skipped: background asset scan still pending at shutdown");
+        return;
+    }
     while (m_pendingAssetScan || m_pendingRefreshCommit) {
         WaitForPendingWork();
         TryCommitRefresh();
@@ -2062,18 +2050,39 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path)
 
     if (result.resourceType == ResourceType::Script) {
         // Python owns script parsing, dependency analysis, and live class
-        // publication. Rebuilding native script metadata here reparsed the
-        // same source with several std::regex passes on the render thread,
-        // even though a source edit cannot change this asset's identity or
-        // catalog position. Keep the source fingerprint authoritative and let
-        // explicit/full refreshes materialize the derived sidecar fields.
-        //
-        // ScriptDependencyGraph also owns Python-to-Python propagation. A
-        // second AssetDependencyGraph notification duplicated that traversal
-        // and could synchronously wake unrelated runtime callbacks before the
-        // validated script transaction was ready to publish.
+        // publication, so native reimport must not invoke ScriptImporter or
+        // publish a second dependency event. It still has to rebuild the
+        // lightweight source metadata: keeping only size/mtime current while
+        // retaining an old content_hash produces an internally inconsistent
+        // AssetIndex and makes strict Player cooks reject the edited script.
+        const auto previousMeta = GetMetaByGuid(guid);
+        if (!previousMeta)
+            throw std::logic_error("Registered script has no metadata snapshot");
+        const auto restoreMetadata = [&]() {
+            m_metas[guid] = std::make_shared<InxResourceMeta>(*previousMeta);
+            const std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
+            if (!previousMeta->SaveToFile(metaPath))
+                throw std::runtime_error("Failed to restore script metadata after reimport failure: " + metaPath);
+        };
+        std::string rebuiltGuid;
+        try {
+            rebuiltGuid = RebuildMetadata(path);
+        } catch (...) {
+            restoreMetadata();
+            throw;
+        }
+        if (rebuiltGuid.empty() || rebuiltGuid != guid) {
+            if (!rebuiltGuid.empty() && rebuiltGuid != guid)
+                m_metas.erase(rebuiltGuid);
+            restoreMetadata();
+            result.errorCode = AssetMutationErrorCode::ImportFailed;
+            result.error = "script metadata rebuild did not preserve the registered GUID";
+            return result;
+        }
+        UpdateMapping(guid, path);
         UpdateCachedFileState(path, IsReadOnlyPath(FilesystemPathKey(path)));
         m_assetIndexDirty = true;
+        PublishQuerySnapshotForPaths({path});
         result.succeeded = true;
         result.databaseCommitted = true;
         result.changed = true;
@@ -2192,42 +2201,27 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
     const std::string normalizedOldPath = FilesystemPathKey(oldPath);
     std::string guid = GetGuidFromPath(oldPath);
     if (guid.empty()) {
-        // Try to recover guid from old .meta file
-        const std::string metaPath = InxResourceMeta::GetMetaFilePath(oldPath);
-        if (std::filesystem::exists(ToFsPath(metaPath))) {
-            InxResourceMeta meta;
-            if (meta.LoadFromFile(metaPath)) {
-                guid = meta.GetGuid();
-            }
-        }
+        result.errorCode = AssetMutationErrorCode::NotFound;
+        result.error = "asset relocation source has no registered GUID";
+        return result;
     }
     MoveMetadata(oldPath, newPath);
 
-    if (!guid.empty()) {
-        UpdateMapping(guid, newPath);
-        RemoveMappingByPath(oldPath);
-        m_fileStates.erase(normalizedOldPath);
-        UpdateCachedFileState(newPath, IsReadOnlyPath(FilesystemPathKey(newPath)));
-        m_assetIndexDirty = true;
-        PublishQuerySnapshotForPaths({oldPath, newPath});
-        // Notify dependents — GUID unchanged, but path changed
-        ResourceType type = GetResourceTypeForPath(newPath);
-        AssetDependencyGraph::Instance().NotifyEvent(guid, type, AssetEvent::Moved);
-        result.succeeded = true;
-        result.databaseCommitted = true;
-        result.changed = true;
-        result.guid = std::move(guid);
-        result.resourceType = type;
-        result.queryGeneration = GetQueryGeneration();
-        return result;
-    }
-
-    // If GUID not found, attempt to re-import
-    result = ImportAsset(newPath);
-    result.operation = "move";
-    result.previousPath = oldPath;
-    if (!result)
-        result.error = "move could not recover metadata and reimport failed: " + result.error;
+    UpdateMapping(guid, newPath);
+    RemoveMappingByPath(oldPath);
+    m_fileStates.erase(normalizedOldPath);
+    UpdateCachedFileState(newPath, IsReadOnlyPath(FilesystemPathKey(newPath)));
+    m_assetIndexDirty = true;
+    PublishQuerySnapshotForPaths({oldPath, newPath});
+    // Notify dependents — GUID unchanged, but path changed
+    ResourceType type = GetResourceTypeForPath(newPath);
+    AssetDependencyGraph::Instance().NotifyEvent(guid, type, AssetEvent::Moved);
+    result.succeeded = true;
+    result.databaseCommitted = true;
+    result.changed = true;
+    result.guid = std::move(guid);
+    result.resourceType = type;
+    result.queryGeneration = GetQueryGeneration();
     return result;
 }
 
@@ -2760,8 +2754,6 @@ ResourceType AssetDatabase::GetResourceTypeForPath(const std::string &filePath) 
 std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
                                                 bool persistMetadata, const std::string &identityKey)
 {
-    INXLOG_DEBUG("Registering resource: filePath = ", filePath, ", type = ", static_cast<int>(type));
-
     if (filePath.empty()) {
         INXLOG_ERROR("Received empty filePath!");
         return "";
@@ -2788,14 +2780,8 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
     bool loadedExistingMeta = false;
     std::string preservedGuid = GetGuidFromPath(filePath);
     if (!readOnly && std::filesystem::is_regular_file(ToFsPath(metaFilePath))) {
-        std::string recoveredGuid;
-        std::string loadError;
-        loadedExistingMeta = LoadCurrentMetadataDocument(metaFilePath, metaFile, recoveredGuid, loadError);
-        if (!loadedExistingMeta) {
-            if (preservedGuid.empty())
-                preservedGuid = std::move(recoveredGuid);
-            RemoveInvalidMetadataDocument(metaFilePath, loadError);
-        }
+        metaFile = LoadMetadataDocument(metaFilePath);
+        loadedExistingMeta = true;
     }
     if (!loadedExistingMeta) {
         m_loaders[type]->CreateMeta(contentPtr, content.size(), filePath, metaFile);
@@ -2818,7 +2804,6 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
     std::string guid = metaFile.GetGuid();
     m_metas[guid] = std::make_shared<InxResourceMeta>(metaFile);
     UpdateMapping(guid, filePath);
-    INXLOG_DEBUG("Resource metadata registered with GUID: ", guid);
 
     return guid;
 }
@@ -2907,7 +2892,6 @@ void AssetDatabase::DeleteMetadata(const std::string &path)
     auto metaFsPath = ToFsPath(metaPath);
     if (fs::exists(metaFsPath)) {
         fs::remove(metaFsPath);
-        INXLOG_DEBUG("AssetDatabase: deleted metadata file: ", metaPath);
     }
 }
 
@@ -2955,30 +2939,6 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
     }
 }
 
-namespace
-{
-
-// Shader ids were migrated from snake_case / hyphenated / "Infernux/"-prefixed
-// forms to "Title Case With Spaces". Materials saved before the migration
-// still reference the old spellings, so lookups fall back to a normalized
-// comparison: lowercase, separators stripped, legacy namespace prefix dropped.
-std::string NormalizeShaderIdForLookup(const std::string &shaderId)
-{
-    std::string normalized;
-    normalized.reserve(shaderId.size());
-    for (const char character : shaderId) {
-        if (character == ' ' || character == '_' || character == '-')
-            continue;
-        normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
-    }
-    constexpr std::string_view legacyPrefix = "infernux/";
-    if (normalized.rfind(legacyPrefix, 0) == 0)
-        normalized.erase(0, legacyPrefix.size());
-    return normalized;
-}
-
-} // namespace
-
 std::string AssetDatabase::FindShaderPathById(const std::string &shaderId, const std::string &shaderType) const
 {
     std::string expectedExt;
@@ -2989,9 +2949,6 @@ std::string AssetDatabase::FindShaderPathById(const std::string &shaderId, const
     } else {
         return "";
     }
-
-    const std::string normalizedQuery = NormalizeShaderIdForLookup(shaderId);
-    std::string normalizedMatch;
 
     const auto snapshot = LoadQuerySnapshot();
     for (const auto &[guid, meta] : snapshot->metas) {
@@ -3014,13 +2971,10 @@ std::string AssetDatabase::FindShaderPathById(const std::string &shaderId, const
             if (metaShaderId == shaderId) {
                 return runtimePath->second;
             }
-            if (normalizedMatch.empty() && NormalizeShaderIdForLookup(metaShaderId) == normalizedQuery) {
-                normalizedMatch = runtimePath->second;
-            }
         }
     }
 
-    return normalizedMatch;
+    return "";
 }
 
 } // namespace infernux

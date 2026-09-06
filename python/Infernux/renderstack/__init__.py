@@ -88,7 +88,11 @@ from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline
 from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
 from Infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
 from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
-from Infernux.renderstack.discovery import discover_pipelines, discover_passes
+from Infernux.renderstack.discovery import (
+    discover_passes,
+    discover_pipelines,
+    discovery_import_failures,
+)
 
 __all__ = [
     # Core
@@ -156,4 +160,5 @@ __all__ = [
     # Discovery
     "discover_pipelines",
     "discover_passes",
+    "discovery_import_failures",
 ]

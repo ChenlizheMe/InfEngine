@@ -46,7 +46,7 @@ class TextureImporter final : public AssetImporter
             meta.AddMetadata("srgb", true);
         if (!meta.HasKey("max_size"))
             meta.AddMetadata("max_size", 2048);
-        if (!meta.HasKey("aniso_level") || meta.GetDataAs<int>("aniso_level") == 1)
+        if (!meta.HasKey("aniso_level"))
             meta.AddMetadata("aniso_level", -1);
         if (!meta.HasKey("texture_compression"))
             meta.AddMetadata("texture_compression", std::string("auto"));

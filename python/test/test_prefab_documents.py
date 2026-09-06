@@ -63,6 +63,25 @@ def test_link_created_prefab_source_stamps_root_and_children(scene, tmp_path):
     assert child.prefab_root is False
 
 
+def test_prefab_save_fails_when_asset_registration_fails(scene, tmp_path, monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    class FailedMutation:
+        error = "registration rejected"
+
+        def __bool__(self):
+            return False
+
+    monkeypatch.setattr(
+        AssetManager,
+        "import_asset",
+        staticmethod(lambda _path, *, database: FailedMutation()),
+    )
+    root = scene.create_game_object("StrictPrefab")
+
+    assert save_prefab(root, str(tmp_path / "strict.prefab"), object()) is False
+
+
 def test_authoritative_object_snapshot_overlays_live_component_data():
     class _Component:
         component_id = 7
@@ -289,6 +308,19 @@ def test_prefab_child_overrides_resolve_instance_root(scene, tmp_path):
     assert instance.transform.position.x == pytest.approx(5.0)
     assert instance.get_child(0).get_component("BoxCollider").is_trigger is False
     assert compute_overrides(instance, str(path)) == []
+
+
+def test_prefab_instance_requires_an_explicit_root_marker():
+    class LinkedObject:
+        prefab_guid = "checkpoint-guid"
+        prefab_root = False
+
+        @staticmethod
+        def get_parent():
+            return None
+
+    with pytest.raises(LookupError, match="checkpoint-guid"):
+        resolve_prefab_instance_root(LinkedObject())
 
 
 def test_prefab_revert_command_restores_complete_subtree_on_undo(scene, tmp_path):

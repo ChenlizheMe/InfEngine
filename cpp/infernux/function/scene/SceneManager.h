@@ -1,6 +1,8 @@
 #pragma once
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
 #include "EditorCameraController.h"
+#endif
 #include "Scene.h"
 #include <algorithm>
 #include <chrono>
@@ -165,6 +167,14 @@ class SceneManager
         return m_lastFrameProfile;
     }
 
+    /// Number of gameplay frames completed for the current active runtime
+    /// scene. The counter advances only when Update() actually runs the play
+    /// graph; editor, loading, and paused render frames do not affect it.
+    [[nodiscard]] uint64_t GetRuntimeFrameCount() const noexcept
+    {
+        return m_runtimeFrameCount;
+    }
+
     [[nodiscard]] size_t GetLastColliderSyncCandidateCount() const
     {
         return static_cast<size_t>(m_lastFrameProfile.colliderSyncCandidates);
@@ -233,11 +243,13 @@ class SceneManager
     // Editor support
     // ========================================================================
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     /// @brief Get the editor camera controller
     [[nodiscard]] EditorCameraController &GetEditorCameraController()
     {
         return m_editorCamera;
     }
+#endif
 
     /// @brief Is the scene in play mode?
     [[nodiscard]] bool IsPlaying() const
@@ -430,6 +442,11 @@ class SceneManager
     /// Bump dynamic render content without forcing a structural rebuild.
     void NotifyMeshRendererContentChanged(MeshRenderer *renderer);
 
+    /// Publish procedural vertex/bounds changes without rebuilding the
+    /// renderer registry. Camera caches must recull these updates even when
+    /// the owning Transform did not move.
+    void NotifyMeshRendererGeometryChanged(MeshRenderer *renderer);
+
     /// Read-only access to the active mesh renderers registry.
     [[nodiscard]] const std::vector<MeshRenderer *> &GetActiveMeshRenderers() const
     {
@@ -501,10 +518,12 @@ class SceneManager
     std::vector<std::unique_ptr<Scene>> m_scenes;
     Scene *m_activeScene = nullptr;
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Editor camera (exists even when no scene is loaded)
     std::unique_ptr<GameObject> m_editorCameraObject;
     Camera *m_editorCameraComponent = nullptr;
     EditorCameraController m_editorCamera;
+#endif
 
     // Unity-style runtime-only DontDestroyOnLoad Scene. It is deliberately
     // excluded from m_scenes and from authored Scene serialization.
@@ -525,6 +544,7 @@ class SceneManager
     // Play mode state
     bool m_isPlaying = false;
     bool m_isPaused = false;
+    uint64_t m_runtimeFrameCount = 0;
 
     // Callbacks
     SceneCallback m_onSceneLoaded;

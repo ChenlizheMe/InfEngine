@@ -44,8 +44,6 @@ struct CullingResults
 {
     RendererList visibleRenderers;
     RendererList shadowCasters;
-    const void *visibleListIdentity = nullptr;
-    const void *shadowListIdentity = nullptr;
     uint64_t visibleListRevision = 0;
     uint64_t shadowListRevision = 0;
     std::shared_ptr<const void> renderWorldOwner;

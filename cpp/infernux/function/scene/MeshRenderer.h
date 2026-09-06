@@ -307,7 +307,7 @@ class MeshRenderer : public Component
     }
 
     /// @brief Get world-space bounding box (transformed by GameObject)
-    [[nodiscard]] void GetWorldBounds(glm::vec3 &outMin, glm::vec3 &outMax) const;
+    void GetWorldBounds(glm::vec3 &outMin, glm::vec3 &outMax) const;
 
     /// @brief Compute world bounds from a pre-computed world matrix (avoids double GetWorldMatrix)
     virtual void ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &outMin, glm::vec3 &outMax) const;
@@ -356,6 +356,11 @@ class MeshRenderer : public Component
     void SetProceduralMesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices);
 
   private:
+    /// Populate otherwise-empty renderer slots from material data embedded in
+    /// the imported mesh. This is a renderer invariant rather than a Python
+    /// binding convenience so scene restore, Player and Web builds agree.
+    void ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh> &mesh);
+
     MeshRef m_mesh;
 
     // Material slots — one per submesh, GUID-based, resolved via AssetRegistry

@@ -494,7 +494,7 @@ InxScreenUIRenderer::~InxScreenUIRenderer()
 // ============================================================================
 
 bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat,
-                                     VkSampleCountFlagBits msaaSamples, bool useDynamicRendering)
+                                     VkSampleCountFlagBits msaaSamples)
 {
     if (m_initialized)
         return true;
@@ -503,13 +503,6 @@ bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator, Vk
     m_allocator = allocator;
     m_colorFormat = colorFormat;
     m_msaaSamples = msaaSamples;
-    m_useDynamicRendering = useDynamicRendering;
-
-    if (!m_useDynamicRendering && !CreateCompatibleRenderPass()) {
-        INXLOG_ERROR("InxScreenUIRenderer: Failed to create compatible render pass");
-        return false;
-    }
-
     if (!CreatePipeline()) {
         INXLOG_ERROR("InxScreenUIRenderer: Failed to create pipeline");
         return false;
@@ -552,8 +545,6 @@ void InxScreenUIRenderer::Destroy()
             vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
         if (m_descriptorSetLayout)
             vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
-        if (m_renderPass)
-            vkDestroyRenderPass(m_device, m_renderPass, nullptr);
         if (m_vertShader)
             vkDestroyShaderModule(m_device, m_vertShader, nullptr);
         if (m_fragShader)
@@ -566,10 +557,8 @@ void InxScreenUIRenderer::Destroy()
     m_pipelineLayout = VK_NULL_HANDLE;
     m_descriptorSetLayout = VK_NULL_HANDLE;
     m_fontDescriptorSet = VK_NULL_HANDLE;
-    m_renderPass = VK_NULL_HANDLE;
     m_vertShader = VK_NULL_HANDLE;
     m_fragShader = VK_NULL_HANDLE;
-    m_useDynamicRendering = false;
     m_device = VK_NULL_HANDLE;
     m_allocator = VK_NULL_HANDLE;
     m_initialized = false;
@@ -716,6 +705,9 @@ const std::vector<InxScreenUIRenderer::HDRColorRange> &InxScreenUIRenderer::GetH
 
 void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint32_t width, uint32_t height)
 {
+    const int listIndex = (list == ScreenUIList::Camera) ? 0 : 1;
+    m_lastSubmittedDrawCounts[listIndex] = 0;
+    m_lastSubmittedIndexCounts[listIndex] = 0;
     if (!m_initialized || !m_pipeline || width == 0 || height == 0 || !m_enabled)
         return;
 
@@ -815,6 +807,8 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
     const float frameWidth = static_cast<float>(width);
     const float frameHeight = static_cast<float>(height);
 
+    uint32_t submittedDraws = 0;
+    uint64_t submittedIndices = 0;
     for (int cmdI = 0; cmdI < dl->CmdBuffer.Size; cmdI++) {
         const ImDrawCmd &cmd = dl->CmdBuffer[cmdI];
 
@@ -866,39 +860,23 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
         vkCmdDrawIndexed(cmdBuf, cmd.ElemCount, 1, cmd.IdxOffset, static_cast<int32_t>(cmd.VtxOffset), 0);
+        ++submittedDraws;
+        submittedIndices += cmd.ElemCount;
     }
+
+    if (!m_reportedFirstDraw && submittedDraws > 0) {
+        m_reportedFirstDraw = true;
+        INXLOG_INFO("INFERNUX_SCREEN_UI_READY list=", list == ScreenUIList::Camera ? "camera" : "overlay",
+                    " width=", width, " height=", height, " vertices=", dl->VtxBuffer.Size,
+                    " indices=", submittedIndices, " draws=", submittedDraws);
+    }
+    m_lastSubmittedDrawCounts[listIndex] = submittedDraws;
+    m_lastSubmittedIndexCounts[listIndex] = submittedIndices;
 }
 
 // ============================================================================
 // Pipeline Creation
 // ============================================================================
-
-bool InxScreenUIRenderer::CreateCompatibleRenderPass()
-{
-    // Create a render pass compatible with the scene MSAA backbuffer.
-    // This is only used for pipeline creation — the actual render pass
-    // is created by the RenderGraph and must be compatible.
-    const VkAttachmentDescription colorAttachment =
-        MakeColorAttachmentDescription(m_colorFormat, m_msaaSamples, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    const VkAttachmentReference colorRef = MakeColorAttachmentReference();
-    const VkSubpassDescription subpass = MakeSingleColorSubpass(colorRef);
-
-    // Subpass dependency must match VkPipelineManager::CreateRenderPass so that
-    // pipelines compiled against this render pass are compatible with the render
-    // graph's actual render passes.
-    const VkSubpassDependency dependency = vkrender::MakePipelineCompatibleSubpassDependency();
-
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = 1;
-    rpInfo.pAttachments = &colorAttachment;
-    rpInfo.subpassCount = 1;
-    rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = 1;
-    rpInfo.pDependencies = &dependency;
-
-    return vkCreateRenderPass(m_device, &rpInfo, nullptr, &m_renderPass) == VK_SUCCESS;
-}
 
 bool InxScreenUIRenderer::CreatePipeline()
 {
@@ -965,15 +943,11 @@ bool InxScreenUIRenderer::CreatePipeline()
     pipeInfo.pDynamicState = &dynInfo;
     pipeInfo.layout = m_pipelineLayout;
     VkPipelineRenderingCreateInfo renderingInfo{};
-    if (m_useDynamicRendering) {
-        renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-        renderingInfo.colorAttachmentCount = 1;
-        renderingInfo.pColorAttachmentFormats = &m_colorFormat;
-        pipeInfo.pNext = &renderingInfo;
-        pipeInfo.renderPass = VK_NULL_HANDLE;
-    } else {
-        pipeInfo.renderPass = m_renderPass;
-    }
+    renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachmentFormats = &m_colorFormat;
+    pipeInfo.pNext = &renderingInfo;
+    pipeInfo.renderPass = VK_NULL_HANDLE;
     pipeInfo.subpass = 0;
 
     return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &m_pipeline) == VK_SUCCESS;

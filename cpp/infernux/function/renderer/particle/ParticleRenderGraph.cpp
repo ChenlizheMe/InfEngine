@@ -19,7 +19,10 @@ std::string StageName(const std::string &prefix, const char *stage)
 
 bool IsShaderBytecodeValid(const ShaderBytecode &bytecode) noexcept
 {
-    return bytecode.words && bytecode.wordCount >= 5 && bytecode.words[0] == 0x07230203u;
+    // The desktop spawn domain still enters Vulkan RenderGraph and therefore
+    // intentionally accepts SPIR-V only. Portable runtimes may use WGSL for
+    // emitter kernels without pretending this Vulkan-owned path is portable.
+    return bytecode.IsSpirV();
 }
 
 } // namespace
@@ -110,6 +113,7 @@ layout(local_size_x = 1) in;
 layout(std430, set = 0, binding = 0) buffer ConsumingCounts { uint consumingCounts[]; };
 layout(std430, set = 0, binding = 1) buffer SpawnMetadata { uint metadata[]; };
 layout(std430, set = 0, binding = 4) readonly buffer EmitterPlayingStates { uint playingStates[]; };
+layout(std430, set = 0, binding = 5) readonly buffer ParticleCapacityCounters { uint freeCount; } capacityCounters;
 layout(push_constant) uniform SpawnDomainConstants {
     uint slotCount;
     uint targetSlot;
@@ -127,7 +131,7 @@ void main() {
         atomicExchange(consumingCounts[pc.targetSlot], 0u);
         bool playing = playingStates[pc.targetSlot] != 0u;
         uint requested = playing ? pc.cpuSpawnCount : 0u;
-        uint accepted = min(requested, pc.capacity);
+        uint accepted = min(requested, min(pc.capacity, capacityCounters.freeCount));
         metadata[base + 0u] = accepted;
         metadata[base + 1u] = pc.spawnBaseId;
         metadata[base + 2u] = pc.spawnGeneration;
@@ -145,7 +149,7 @@ void main() {
         : pc.cpuSpawnCount > 0xffffffffu - gpuCount
             ? 0xffffffffu
             : pc.cpuSpawnCount + gpuCount;
-    uint accepted = min(requested, pc.capacity);
+    uint accepted = min(requested, min(pc.capacity, capacityCounters.freeCount));
     metadata[base + 0u] = accepted;
     metadata[base + 1u] = pc.spawnBaseId;
     metadata[base + 2u] = pc.spawnGeneration;
@@ -232,7 +236,8 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
     layoutDesc.entries[2] = {2, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     layoutDesc.entries[3] = {3, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     layoutDesc.entries[4] = {4, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
-    layoutDesc.entryCount = 5;
+    layoutDesc.entries[5] = {5, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    layoutDesc.entryCount = 6;
     m_domainLayout = device.CreateBindingLayout(layoutDesc);
     if (!m_domainLayout.IsValid()) {
         Destroy();
@@ -246,7 +251,10 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
         desc.buffers[2] = {2, rhi::BindingType::StorageBuffer, m_acceptingRequestSlots};
         desc.buffers[3] = {3, rhi::BindingType::StorageBuffer, m_emitterPlayingRequests};
         desc.buffers[4] = {4, rhi::BindingType::StorageBuffer, m_emitterPlayingStates};
-        desc.bufferCount = 5;
+        // Advance does not consume the capacity counter, but Vulkan requires
+        // every descriptor declared by the shared layout to be populated.
+        desc.buffers[5] = {5, rhi::BindingType::StorageBuffer, m_consumingCounts};
+        desc.bufferCount = 6;
         return device.CreateBindGroup(desc);
     };
     m_advanceGroup = createGroup(m_burstRequestCounts, m_consumingCounts);
@@ -259,7 +267,8 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
     const std::array<ShaderBytecode, 2> shaders = {program.advance, program.prepare};
     std::array<rhi::ComputePipelineHandle *, 2> pipelines = {&m_advancePipeline, &m_preparePipeline};
     for (size_t index = 0; index < shaders.size(); ++index) {
-        const auto module = device.CreateShaderModule({shaders[index].words, shaders[index].wordCount});
+        const auto module =
+            device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(shaders[index].words, shaders[index].wordCount));
         if (!module.IsValid()) {
             Destroy();
             return false;
@@ -277,6 +286,7 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
         }
     }
     m_runtimeGroups.resize(slotCount);
+    m_prepareRuntimeGroups.resize(slotCount);
     m_resetPending = true;
     return true;
 }
@@ -285,6 +295,8 @@ void ParticleGpuGraphSpawnDomain::Destroy() noexcept
 {
     if (m_device) {
         for (const auto group : m_runtimeGroups)
+            m_device->Release(group);
+        for (const auto group : m_prepareRuntimeGroups)
             m_device->Release(group);
         m_device->Release(m_preparePipeline);
         m_device->Release(m_advancePipeline);
@@ -318,6 +330,7 @@ void ParticleGpuGraphSpawnDomain::Destroy() noexcept
     m_resetPending = true;
     m_framePending = false;
     m_runtimeGroups.clear();
+    m_prepareRuntimeGroups.clear();
     m_burstRequestResource = {};
     m_consumingResource = {};
     m_metadataResource = {};
@@ -329,7 +342,7 @@ void ParticleGpuGraphSpawnDomain::Destroy() noexcept
 bool ParticleGpuGraphSpawnDomain::RegisterEmitter(uint32_t targetSlot, const ParticleGpuRuntime &runtime)
 {
     if (!IsValid() || targetSlot >= m_slotCount || !runtime.IsValid() || !runtime.GraphSpawnLayout().IsValid() ||
-        m_runtimeGroups[targetSlot].IsValid())
+        m_runtimeGroups[targetSlot].IsValid() || m_prepareRuntimeGroups[targetSlot].IsValid())
         return false;
     rhi::BindGroupDesc desc;
     desc.layout = runtime.GraphSpawnLayout();
@@ -342,9 +355,28 @@ bool ParticleGpuGraphSpawnDomain::RegisterEmitter(uint32_t targetSlot, const Par
                        uint64_t(m_slotCount) * sizeof(uint32_t)};
     desc.buffers[4] = {4, rhi::BindingType::StorageBuffer, m_emitterPlayingStates, 0,
                        uint64_t(m_slotCount) * sizeof(uint32_t)};
-    desc.bufferCount = 5;
+    desc.buffers[5] = {5, rhi::BindingType::StorageBuffer, runtime.CounterBuffer(), 0, runtime.CounterBufferByteSize()};
+    desc.bufferCount = 6;
     m_runtimeGroups[targetSlot] = m_device->CreateBindGroup(desc);
-    return m_runtimeGroups[targetSlot].IsValid();
+    rhi::BindGroupDesc prepareDesc;
+    prepareDesc.layout = m_domainLayout;
+    prepareDesc.buffers[0] = {0, rhi::BindingType::StorageBuffer, m_consumingCounts};
+    prepareDesc.buffers[1] = {1, rhi::BindingType::StorageBuffer, m_spawnMetadata};
+    prepareDesc.buffers[2] = {2, rhi::BindingType::StorageBuffer, m_acceptingRequestSlots};
+    prepareDesc.buffers[3] = {3, rhi::BindingType::StorageBuffer, m_emitterPlayingRequests};
+    prepareDesc.buffers[4] = {4, rhi::BindingType::StorageBuffer, m_emitterPlayingStates};
+    prepareDesc.buffers[5] = {5, rhi::BindingType::StorageBuffer, runtime.CounterBuffer(), 0,
+                              runtime.CounterBufferByteSize()};
+    prepareDesc.bufferCount = 6;
+    m_prepareRuntimeGroups[targetSlot] = m_device->CreateBindGroup(prepareDesc);
+    if (!m_runtimeGroups[targetSlot].IsValid() || !m_prepareRuntimeGroups[targetSlot].IsValid()) {
+        m_device->Release(m_runtimeGroups[targetSlot]);
+        m_device->Release(m_prepareRuntimeGroups[targetSlot]);
+        m_runtimeGroups[targetSlot] = {};
+        m_prepareRuntimeGroups[targetSlot] = {};
+        return false;
+    }
+    return true;
 }
 
 bool ParticleGpuGraphSpawnDomain::UpdateParameters(const std::vector<uint32_t> &parameterWords)
@@ -451,7 +483,7 @@ void ParticleGpuGraphSpawnDomain::RecordPrepare(const rhi::ComputeCommandEncoder
                                                 uint32_t capacity, const GpuParticleFrameRequest &request,
                                                 bool discardCpuSpawn, bool resetPreviousState) const
 {
-    if (!IsValid() || !encoder.IsValid() || targetSlot >= m_slotCount)
+    if (!IsValid() || !encoder.IsValid() || targetSlot >= m_slotCount || !m_prepareRuntimeGroups[targetSlot].IsValid())
         return;
     GpuParticleSpawnDomainConstants constants;
     constants.slotCount = m_slotCount;
@@ -462,7 +494,7 @@ void ParticleGpuGraphSpawnDomain::RecordPrepare(const rhi::ComputeCommandEncoder
     constants.spawnGeneration = request.spawnGeneration;
     constants.reset = resetPreviousState ? 1u : 0u;
     encoder.BindPipeline(m_preparePipeline);
-    encoder.BindGroup(m_preparePipeline, 0, m_prepareGroup);
+    encoder.BindGroup(m_preparePipeline, 0, m_prepareRuntimeGroups[targetSlot]);
     encoder.PushConstants(m_preparePipeline, sizeof(constants), &constants);
     encoder.Dispatch(1, 1, 1);
 }
@@ -770,6 +802,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
 
     graph.AddComputePass(StageName(namePrefix, "SpawnPrepare"), [&](vk::PassBuilder &builder) {
         m_spawnDomain->DeclarePrepare(builder);
+        builder.ReadStorageBuffer(counters);
         return [this](vk::RenderContext &context) {
             if (!m_framePending || !m_runtime || !m_spawnDomain)
                 return;

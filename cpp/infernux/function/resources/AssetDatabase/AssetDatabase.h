@@ -123,6 +123,13 @@ class AssetDatabase
     /// Also creates and registers all built-in importers.
     void Initialize(const std::string &projectRoot);
 
+    /// @brief Initialize the immutable Player-side database without editor importers.
+    ///
+    /// Platform Players consume build-authored RuntimeAssetRecords and never
+    /// scan or mutate source assets. Keeping this entry point separate avoids
+    /// linking the authoring/import pipeline into constrained platform hosts.
+    void InitializeRuntime(const std::string &projectRoot);
+
     /// @brief Refresh all assets by scanning the Assets folder
     void Refresh();
 
@@ -141,11 +148,21 @@ class AssetDatabase
     /// @return false while either worker phase is incomplete.
     bool TryCommitRefresh();
 
+    /// @brief Complete the currently pending refresh on the mutation thread.
+    ///
+    /// Waits on each native worker phase and advances the same commit state
+    /// machine used by TryCommitRefresh. A pending refresh is required.
+    void CompletePendingRefresh();
+
     [[nodiscard]] bool IsRefreshPending() const;
     [[nodiscard]] bool IsOwnerThread() const;
 
     /// @brief Persist the current derived index if runtime CRUD made it dirty.
-    void FlushDerivedIndex();
+    /// @brief Persist a dirty derived AssetIndex. With waitForPendingScan set
+    /// to false (engine shutdown), a still-running background scan skips the
+    /// flush instead of blocking teardown; the next startup revalidates the
+    /// cache regardless.
+    void FlushDerivedIndex(bool waitForPendingScan = true);
 
     /// @brief Add an extra directory to scan during Refresh (e.g. Library/Resources).
     void AddScanRoot(const std::string &path);
@@ -364,6 +381,11 @@ class AssetDatabase
     /// Returns empty for resource types that do not produce a runtime artifact.
     [[nodiscard]] std::string GetRuntimeArtifactPath(const std::string &guid, ResourceType type) const;
     [[nodiscard]] std::string GetSkinnedMeshArtifactPath(const std::string &guid) const;
+
+    /// Ensure a GUID's imported CPU artifact is reusable before a worker load.
+    /// Corrupt or obsolete authoring artifacts are rebuilt on the owner thread;
+    /// immutable Player catalogs fail instead of attempting source import.
+    [[nodiscard]] bool EnsureRuntimeArtifactCurrent(const std::string &guid, ResourceType type);
 
     /// @brief Access the dependency graph (singleton shorthand)
     [[nodiscard]] static AssetDependencyGraph &GetDependencyGraph()

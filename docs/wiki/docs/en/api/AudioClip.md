@@ -14,7 +14,7 @@ wrapper (or ``clip.native``) to ``AudioSource.set_track_clip`` or
 still using it.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.7
+**Status:** Preview · **Verified with:** 0.4.0
 
 The current reliable decoder supports WAV. Keep a loaded clip alive while an AudioSource track or one-shot may still reference it.
 <!-- USER CONTENT END -->
@@ -81,9 +81,9 @@ The current reliable decoder supports WAV. Keep a loaded clip alive while an Aud
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux.core.audio_clip import AudioClip
+import infernux as inx
 
-clip = AudioClip.load("Assets/Audio/click.wav")
+clip = inx.AudioClip.load("Assets/Audio/click.wav")
 if clip is not None:
     print(clip.name, clip.duration, clip.sample_rate, clip.channels)
 ```

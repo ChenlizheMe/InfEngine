@@ -31,6 +31,87 @@ def _list_to_vec2(value):
     return value
 
 
+def _get_width_curve(cpp):
+    from Infernux.graph.ramp import AnimationCurve, Keyframe
+
+    wrap_names = ("clamp", "repeat", "ping_pong")
+    return AnimationCurve(
+        tuple(
+            Keyframe(key.time, key.value, key.in_tangent, key.out_tangent)
+            for key in cpp.width_curve
+        ),
+        wrap_names[int(cpp.width_curve_pre_wrap)],
+        wrap_names[int(cpp.width_curve_post_wrap)],
+    )
+
+
+def _set_width_curve(cpp, value) -> None:
+    from Infernux.graph.ramp import AnimationCurve
+    from Infernux.lib import LineCurveWrapMode, LineWidthKey
+
+    curve = (
+        value
+        if isinstance(value, AnimationCurve)
+        else AnimationCurve.from_dict(value)
+    )
+    cpp.width_curve = [
+        LineWidthKey(key.time, key.value, key.in_tangent, key.out_tangent)
+        for key in curve.keys
+    ]
+    modes = (
+        LineCurveWrapMode.Clamp,
+        LineCurveWrapMode.Repeat,
+        LineCurveWrapMode.PingPong,
+    )
+    wrap_names = ("clamp", "repeat", "ping_pong")
+    cpp.width_curve_pre_wrap = modes[wrap_names.index(curve.pre_wrap)]
+    cpp.width_curve_post_wrap = modes[wrap_names.index(curve.post_wrap)]
+
+
+def _get_color_gradient(cpp):
+    from Infernux.graph.ramp import Gradient, GradientKey
+
+    return Gradient(
+        tuple(
+            GradientKey(key.time, tuple(float(channel) for channel in key.color))
+            for key in cpp.color_gradient
+        ),
+        ("linear", "fixed", "perceptual_blend")[int(cpp.color_gradient_mode)],
+    )
+
+
+def _set_color_gradient(cpp, value) -> None:
+    from Infernux.graph.ramp import Gradient
+    from Infernux.lib import LineColorKey, LineGradientMode
+
+    gradient = value if isinstance(value, Gradient) else Gradient.from_dict(value)
+    cpp.color_gradient = [
+        LineColorKey(key.time, _color_to_vec4(key.color)) for key in gradient.keys
+    ]
+    cpp.color_gradient_mode = {
+        "linear": LineGradientMode.Linear,
+        "fixed": LineGradientMode.Fixed,
+        "perceptual_blend": LineGradientMode.PerceptualBlend,
+    }[gradient.mode]
+
+
+def _get_positions(cpp):
+    return list(cpp.get_positions())
+
+
+def _set_positions(cpp, values) -> None:
+    from Infernux.lib import Vector3
+
+    cpp.set_positions(
+        [
+            value
+            if isinstance(value, Vector3)
+            else Vector3(float(value[0]), float(value[1]), float(value[2]))
+            for value in values
+        ]
+    )
+
+
 class LineRenderer(MeshRenderer):
     """Draw a continuous 3D ribbon through an ordered list of positions."""
 
@@ -46,11 +127,35 @@ class LineRenderer(MeshRenderer):
         range=(0, 1_000_000),
         tooltip="Number of control points in the line",
     )
+    positions = CppProperty(
+        "positions",
+        FieldType.LIST,
+        default=[],
+        element_type=FieldType.VEC3,
+        native_getter=_get_positions,
+        native_setter=_set_positions,
+    )
     width_multiplier = CppProperty(
         "width_multiplier", FieldType.FLOAT, default=1.0, range=(0.0, 1000.0)
     )
+    width_curve = CppProperty(
+        "width_curve",
+        FieldType.ANIMATION_CURVE,
+        default=None,
+        native_getter=_get_width_curve,
+        native_setter=_set_width_curve,
+        curve_non_negative=True,
+    )
+    color_gradient = CppProperty(
+        "color_gradient",
+        FieldType.GRADIENT,
+        default=None,
+        native_getter=_get_color_gradient,
+        native_setter=_set_color_gradient,
+        hdr=True,
+    )
     loop = CppProperty("loop", FieldType.BOOL, default=False)
-    use_world_space = CppProperty("use_world_space", FieldType.BOOL, default=False)
+    use_world_space = CppProperty("use_world_space", FieldType.BOOL, default=True)
     alignment = CppProperty(
         "alignment",
         FieldType.ENUM,
@@ -123,91 +228,6 @@ class LineRenderer(MeshRenderer):
     def end_color(self, value) -> None:
         self._require_cpp_component().end_color = _color_to_vec4(value)
 
-    @property
-    def width_curve(self):
-        from Infernux.graph.ramp import Curve, CurveKey
-
-        cpp = self._require_cpp_component()
-        wrap_names = ("clamp", "repeat", "ping_pong")
-        keys = tuple(
-            CurveKey(key.time, key.value, key.in_tangent, key.out_tangent)
-            for key in cpp.width_curve
-        )
-        return Curve(
-            keys,
-            wrap_names[int(cpp.width_curve_pre_wrap)],
-            wrap_names[int(cpp.width_curve_post_wrap)],
-        )
-
-    @width_curve.setter
-    def width_curve(self, value) -> None:
-        from Infernux.graph.ramp import Curve
-        from Infernux.lib import LineCurveWrapMode, LineWidthKey
-
-        curve = value if isinstance(value, Curve) else Curve.from_dict(value)
-        cpp = self._require_cpp_component()
-        cpp.width_curve = [
-            LineWidthKey(key.time, key.value, key.in_tangent, key.out_tangent)
-            for key in curve.keys
-        ]
-        modes = (
-            LineCurveWrapMode.Clamp,
-            LineCurveWrapMode.Repeat,
-            LineCurveWrapMode.PingPong,
-        )
-        wrap_names = ("clamp", "repeat", "ping_pong")
-        cpp.width_curve_pre_wrap = modes[wrap_names.index(curve.pre_wrap)]
-        cpp.width_curve_post_wrap = modes[wrap_names.index(curve.post_wrap)]
-
-    @property
-    def color_gradient(self):
-        from Infernux.graph.ramp import Gradient, GradientKey
-
-        cpp = self._require_cpp_component()
-        keys = tuple(
-            GradientKey(key.time, tuple(float(channel) for channel in key.color))
-            for key in cpp.color_gradient
-        )
-        return Gradient(
-            keys,
-            ("linear", "fixed", "perceptual_blend")[
-                int(cpp.color_gradient_mode)
-            ],
-        )
-
-    @color_gradient.setter
-    def color_gradient(self, value) -> None:
-        from Infernux.graph.ramp import Gradient
-        from Infernux.lib import LineColorKey, LineGradientMode
-
-        gradient = value if isinstance(value, Gradient) else Gradient.from_dict(value)
-        cpp = self._require_cpp_component()
-        cpp.color_gradient = [
-            LineColorKey(key.time, _color_to_vec4(key.color)) for key in gradient.keys
-        ]
-        modes = {
-            "linear": LineGradientMode.Linear,
-            "fixed": LineGradientMode.Fixed,
-            "perceptual_blend": LineGradientMode.PerceptualBlend,
-        }
-        cpp.color_gradient_mode = modes[gradient.mode]
-
-    @property
-    def positions(self):
-        return list(self._require_cpp_component().get_positions())
-
-    @positions.setter
-    def positions(self, values):
-        from Infernux.lib import Vector3
-
-        converted = []
-        for value in values:
-            if isinstance(value, Vector3):
-                converted.append(value)
-            else:
-                converted.append(Vector3(float(value[0]), float(value[1]), float(value[2])))
-        self._require_cpp_component().set_positions(converted)
-
     def get_position(self, index: int):
         return self._require_cpp_component().get_position(index)
 
@@ -238,79 +258,3 @@ class LineRenderer(MeshRenderer):
         self._require_cpp_component().bake_mesh(
             target_cpp, camera_cpp, bool(use_transform)
         )
-
-    def render_inspector(self, ctx) -> None:
-        from Infernux.engine.ui._inspector_undo import _record_property
-        from Infernux.engine.ui.inspector_components import render_builtin_via_setters
-        from Infernux.engine.ui.inspector_utils import (
-            DRAG_SPEED_DEFAULT,
-            float_close,
-            max_label_w,
-        )
-
-        from Infernux.engine.ui.particle_graph_editor_panel import (
-            ParticleGraphEditorPanel,
-        )
-
-        render_builtin_via_setters(ctx, self, type(self))
-        if ctx.collapsing_header("Width Curve"):
-            old_curve = self.width_curve
-            new_curve_document = ParticleGraphEditorPanel._render_curve_property(
-                ctx,
-                f"line_renderer_{self.component_id}",
-                "width_curve",
-                old_curve.to_dict(),
-                semantic_prefix=f"inspector.line_renderer.{self.component_id}.width_curve",
-            )
-            if new_curve_document != old_curve.to_dict():
-                from Infernux.graph.ramp import Curve
-
-                _record_property(
-                    self,
-                    "width_curve",
-                    old_curve,
-                    Curve.from_dict(new_curve_document),
-                    "Set Line Width Curve",
-                )
-        if ctx.collapsing_header("Color Gradient"):
-            old_gradient = self.color_gradient
-            new_gradient_document = ParticleGraphEditorPanel._render_gradient_property(
-                ctx,
-                f"line_renderer_{self.component_id}",
-                "color_gradient",
-                old_gradient.to_dict(),
-                semantic_prefix=f"inspector.line_renderer.{self.component_id}.color_gradient",
-            )
-            if new_gradient_document != old_gradient.to_dict():
-                from Infernux.graph.ramp import Gradient
-
-                _record_property(
-                    self,
-                    "color_gradient",
-                    old_gradient,
-                    Gradient.from_dict(new_gradient_document),
-                    "Set Line Color Gradient",
-                )
-        if not ctx.collapsing_header("Positions"):
-            return
-
-        old_positions = self.positions
-        label_width = max_label_w(ctx, [f"Position {index}" for index in range(len(old_positions))])
-        new_positions = list(old_positions)
-        changed = False
-        for index, position in enumerate(old_positions):
-            value = ctx.vector3(
-                f"Position {index}",
-                float(position[0]),
-                float(position[1]),
-                float(position[2]),
-                DRAG_SPEED_DEFAULT,
-                label_width,
-            )
-            candidate = tuple(float(channel) for channel in value)
-            original = tuple(float(position[channel]) for channel in range(3))
-            if any(not float_close(a, b) for a, b in zip(candidate, original)):
-                new_positions[index] = candidate
-                changed = True
-        if changed:
-            _record_property(self, "positions", old_positions, new_positions, "Set Line Positions")

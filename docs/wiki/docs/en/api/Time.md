@@ -9,7 +9,7 @@ class in <b>Infernux.timing</b>
 Provides access to time information for the current frame.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.7
+**Status:** Preview · **Verified with:** 0.4.0
 
 Use scaled time for gameplay and unscaled time for UI or diagnostics that continue while paused. Physics work belongs to fixed updates.
 <!-- USER CONTENT END -->
@@ -38,13 +38,13 @@ Use scaled time for gameplay and unscaled time for UI or diagnostics that contin
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import InxComponent, Time
+import infernux as inx
 
 
-class PauseClock(InxComponent):
+class PauseClock(inx.InxComponent):
     def update(self, delta_time: float) -> None:
-        gameplay_seconds = Time.time
-        menu_step = Time.unscaled_delta_time
+        gameplay_seconds = inx.Time.time
+        menu_step = inx.Time.unscaled_delta_time
         print(gameplay_seconds, menu_step)
 ```
 <!-- USER CONTENT END -->

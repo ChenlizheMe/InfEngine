@@ -1,80 +1,125 @@
 {
   "schema_version": 1,
-  "version": "0.3.7",
-  "tag": "v0.3.7",
-  "title": "Infernux v0.3.7 · Plugins and Skeletal Animation",
-  "codename": "Plugins and Skeletal Animation",
+  "version": "0.4.0",
+  "tag": "v0.4.0",
+  "title": "Infernux v0.4.0 · Multiplatform Builds and Distribution",
+  "codename": "Multiplatform Builds and Distribution",
   "language": "en",
-  "published_at": "2026-08-27T11:35:29Z",
-  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.3.7",
+  "published_at": "2026-09-06T17:56:54Z",
+  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.0",
   "source": "UpdateLog.md",
-  "summary": "0.3.7 adds the InxPackage plugin system, moves MCP out of the engine core, and fixes skeletal animation imported from separate FBX files.",
+  "summary": "0.4.0 adds Windows, Linux, Android, and Web Player builds, expands InxPackage authoring and runtime asset delivery, and puts shared build environments under Hub management.",
   "comparison": {
-    "from": "0.3.6",
-    "to": "0.3.7",
-    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.3.6...v0.3.7"
+    "from": "0.3.7",
+    "to": "0.4.0",
+    "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.3.7...v0.4.0"
   },
   "section_count": 3,
-  "item_count": 8,
+  "item_count": 17,
   "sections": [
     {
-      "id": "plugins",
-      "title": "Plugins",
+      "id": "multiplatform",
+      "title": "Multiplatform",
       "kind": "changes",
       "items": [
         {
-          "title": "Install from a .inxpkg, a local folder, Git, or the official list.",
+          "title": "Build Windows and Linux Editors and Players, Android APK/AAB packages, and Web Players from the shared build service.",
           "detail": "",
-          "text": "Install from a .inxpkg, a local folder, Git, or the official list."
+          "text": "Build Windows and Linux Editors and Players, Android APK/AAB packages, and Web Players from the shared build service."
         },
         {
-          "title": "Runtime/ ships with the game. Editor/ stays in the Editor.",
+          "title": "Deliver precompiled Players, runtimes, and target tools in the four platform plugins; normal exports require no engine checkout, submodules, CMake, or native engine compilation.",
           "detail": "",
-          "text": "Runtime/ ships with the game. Editor/ stays in the Editor."
+          "text": "Deliver precompiled Players, runtimes, and target tools in the four platform plugins; normal exports require no engine checkout, submodules, CMake, or native engine compilation."
         },
         {
-          "title": "Package docs come from README.md, LICENSE, and InxPluginPages/.",
+          "title": "Run native targets on Vulkan and browser targets on WebGPU, including Python gameplay, rendering, input, UI, audio, and particles.",
           "detail": "",
-          "text": "Package docs come from README.md, LICENSE, and InxPluginPages/."
+          "text": "Run native targets on Vulkan and browser targets on WebGPU, including Python gameplay, rendering, input, UI, audio, and particles."
         },
         {
-          "title": "MCP moved to the default official plugin infernux/mcp. New projects include it. You can disable or uninstall it.",
+          "title": "Exercise the same MultiPlatform040 project across targets, including button-triggered reads of packaged text assets.",
           "detail": "",
-          "text": "MCP moved to the default official plugin infernux/mcp. New projects include it. You can disable or uninstall it."
+          "text": "Exercise the same MultiPlatform040 project across targets, including button-triggered reads of packaged text assets."
+        },
+        {
+          "title": "Add Windows/Linux desktop and platform Player CI builds, plus Web browser acceptance.",
+          "detail": "",
+          "text": "Add Windows/Linux desktop and platform Player CI builds, plus Web browser acceptance."
         }
       ]
     },
     {
-      "id": "skeletal-animation",
-      "title": "Skeletal Animation",
+      "id": "plugins-and-assets",
+      "title": "Plugins and Assets",
       "kind": "changes",
       "items": [
         {
-          "title": "Retarget animation-only FBX files through exact joint identities while accepting Assimp-generated pivot and helper nodes between mapped joints.",
+          "title": "Package only a repository's package/ directory using a standalone package.py; keep README and language-specific build configuration outside the archive.",
           "detail": "",
-          "text": "Retarget animation-only FBX files through exact joint identities while accepting Assimp-generated pivot and helper nodes between mapped joints."
+          "text": "Package only a repository's package/ directory using a standalone package.py; keep README and language-specific build configuration outside the archive."
         },
         {
-          "title": "Reject renamed or structurally incompatible rigs instead of guessing from geometry and silently driving the wrong limbs.",
+          "title": "Preserve direct local-folder authoring and generate default package metadata from the output filename when no manifest is supplied.",
           "detail": "",
-          "text": "Reject renamed or structurally incompatible rigs instead of guessing from geometry and silently driving the wrong limbs."
+          "text": "Preserve direct local-folder authoring and generate default package metadata from the output filename when no manifest is supplied."
+        },
+        {
+          "title": "Include scripts, materials, shaders, and arbitrary runtime files in plugins, with explicit asset metadata and live refresh under Packages/.",
+          "detail": "",
+          "text": "Include scripts, materials, shaders, and arbitrary runtime files in plugins, with explicit asset metadata and live refresh under Packages/."
+        },
+        {
+          "title": "Keep Player assets in Content.inxpkg instead of expanding the project's authoring directory tree. Resolve engine asset paths through cooked GUID identities and provide filesystem access for payloads that need it.",
+          "detail": "",
+          "text": "Keep Player assets in Content.inxpkg instead of expanding the project's authoring directory tree. Resolve engine asset paths through cooked GUID identities and provide filesystem access for payloads that need it."
+        },
+        {
+          "title": "Separate editor-only content from Player payloads and distribute platform build support as optional packages.",
+          "detail": "",
+          "text": "Separate editor-only content from Player payloads and distribute platform build support as optional packages."
+        },
+        {
+          "title": "Check compatible GitHub releases and explicitly select plugin updates while preserving GUIDs, enabled state, and user-added files; require consent before replacing local edits.",
+          "detail": "",
+          "text": "Check compatible GitHub releases and explicitly select plugin updates while preserving GUIDs, enabled state, and user-added files; require consent before replacing local edits."
+        },
+        {
+          "title": "Refresh the independent official catalog without upgrading project-pinned packages, and resolve former platform sources to their independent repositories.",
+          "detail": "",
+          "text": "Refresh the independent official catalog without upgrading project-pinned packages, and resolve former platform sources to their independent repositories."
         }
       ]
     },
     {
-      "id": "editor-and-authoring",
-      "title": "Editor and Authoring",
+      "id": "hub-and-build-environments",
+      "title": "Hub and Build Environments",
       "kind": "changes",
       "items": [
         {
-          "title": "Use the Plugins window to install, enable, disable, reload, and uninstall packages with visible progress from download through activation.",
+          "title": "Provide Windows and Linux Hub distributions and managed Python 3.13 environments.",
           "detail": "",
-          "text": "Use the Plugins window to install, enable, disable, reload, and uninstall packages with visible progress from download through activation."
+          "text": "Provide Windows and Linux Hub distributions and managed Python 3.13 environments."
         },
         {
-          "title": "Keep Headless and MCP authoring on the same scene, command, permission, and undo paths used by the Editor.",
+          "title": "Install Android support from the Hub channel on Windows and Linux, sharing SDK, NDK, JDK, Gradle, and target Python dependencies; supply toolchain paths automatically and require installed support before enabling Android plugin import.",
           "detail": "",
-          "text": "Keep Headless and MCP authoring on the same scene, command, permission, and undo paths used by the Editor."
+          "text": "Install Android support from the Hub channel on Windows and Linux, sharing SDK, NDK, JDK, Gradle, and target Python dependencies; supply toolchain paths automatically and require installed support before enabling Android plugin import."
+        },
+        {
+          "title": "Reuse downloads through the Hub Library while keeping project build caches inside the project.",
+          "detail": "",
+          "text": "Reuse downloads through the Hub Library while keeping project build caches inside the project."
+        },
+        {
+          "title": "Group engine, Python, and Android installations into tabs under Installs, with background jobs, a compact progress strip, an expandable queue, and system-tray support.",
+          "detail": "",
+          "text": "Group engine, Python, and Android installations into tabs under Installs, with background jobs, a compact progress strip, an expandable queue, and system-tray support."
+        },
+        {
+          "title": "Keep interrupted Android kit downloads in Hub's shared cache so an explicitly restarted installation resumes the download; remove the download cache after successful installation.",
+          "detail": "",
+          "text": "Keep interrupted Android kit downloads in Hub's shared cache so an explicitly restarted installation resumes the download; remove the download cache after successful installation."
         }
       ]
     }

@@ -91,6 +91,9 @@ class JobHandle
 
     [[nodiscard]] bool IsComplete() const noexcept;
 
+    /** Request cooperative cancellation. Queued callbacks are skipped; a
+     * callback that has already begun is not
+     * preempted. */
     bool Cancel() noexcept;
 
     [[nodiscard]] bool IsCancellationRequested() const noexcept
@@ -145,6 +148,9 @@ class TaskGroup
     [[nodiscard]] bool IsClosed() const noexcept;
     [[nodiscard]] bool IsComplete() const noexcept;
     [[nodiscard]] bool IsCancellationRequested() const noexcept;
+    /** Request cooperative cancellation for the group. Queued callbacks are
+     * skipped; callbacks that have already
+     * begun are not preempted. */
     bool Cancel() noexcept;
 
     /** Returns a fence that completes only after Close() and all jobs. */
@@ -181,6 +187,8 @@ class JobSystem
     };
 
     static void Initialize(uint32_t workerCount = 0);
+    /** Initialize an owner-thread executor for platforms without worker threads. */
+    static void InitializeInline();
     static void Shutdown();
     [[nodiscard]] static JobSystem &Get();
     [[nodiscard]] static bool IsAvailable() noexcept;
@@ -224,6 +232,14 @@ class JobSystem
     [[nodiscard]] JobProfilerCounters GetProfilerCounters() const;
     [[nodiscard]] JobProfilerCounters GetProfilerCounters(JobDomain domain) const;
     void ResetProfilerCounters();
+
+    /** Execute queued work on the calling thread. Zero drains the queue. */
+    uint32_t RunPendingJobs(uint32_t maxJobs = 0);
+
+    [[nodiscard]] bool IsInline() const noexcept
+    {
+        return m_inline;
+    }
 
     [[nodiscard]] uint32_t GetWorkerCount() const noexcept
     {
@@ -312,6 +328,7 @@ class JobSystem
     std::atomic<uint32_t> m_activeTasks{0};
     bool m_accepting = true;
     bool m_stopRequested = false;
+    bool m_inline = false;
     uint64_t m_nextSequence = 0;
     std::unordered_map<uint16_t, uint32_t> m_domainLimits;
     std::unordered_map<uint16_t, uint32_t> m_domainActive;

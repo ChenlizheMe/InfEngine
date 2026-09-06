@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
+import tarfile
+import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import Infernux.plugins.manager as plugin_manager_module
 import Infernux.plugins.preload as preload_module
+import Infernux.plugins.github_releases as github_releases_module
+import Infernux.plugins.cache as plugin_cache_module
 from Infernux.engine import player_package_native
+from Infernux.application import Application
+from Infernux.engine.project_context import set_project_root
 from Infernux.plugins import (
     InxPackage,
+    SharedPackageCache,
     PackageConflictError,
     PluginManager,
     PluginRegistry,
@@ -21,9 +30,22 @@ from Infernux.plugins import (
     player_file_exported,
     split_markdown_images,
 )
-from Infernux.plugins.official import OfficialCatalogError, sync_official_registry
+from Infernux.plugins.official import (
+    OfficialCatalogError,
+    bootstrap_new_project,
+    install_bundled_packages,
+    sync_official_registry,
+)
 from Infernux.plugins.content import normalize_page_descriptor
 from Infernux.plugins.project_index import project_guid_paths
+from Infernux.plugins.github_releases import (
+    RELEASE_MANIFEST_NAME,
+    download_github_source,
+    release_manifest_name,
+    resolve_github_release,
+)
+from Infernux.plugins.cli import main as package_cli_main
+from Infernux.ui import UIButton
 
 
 class _FakeInxPack:
@@ -37,7 +59,7 @@ class _FakeInxPack:
         }
         path = os.path.abspath(destination)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_bytes(b"INXPKG-v2-test")
+        Path(path).write_bytes(b"INXPKG-test")
         cls.archives[path] = entries
         return cls._manifest(path)
 
@@ -46,14 +68,12 @@ class _FakeInxPack:
         entries = cls.archives[os.path.abspath(path)]
         return {
             "format": "infernux-native-inxpack",
-            "revision": 0x00010000,
             "file_count": len(entries),
             "files": [
                 {
                     "path": name,
                     "raw_bytes": len(payload),
                     "stored_bytes": len(payload),
-                    "sha256": hashlib.sha256(payload).hexdigest(),
                 }
                 for name, payload in entries.items()
             ],
@@ -73,7 +93,14 @@ class _FakeInxPack:
 
 
 @pytest.fixture(autouse=True)
-def _fake_inxpack():
+def _fake_inxpack(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "INFERNUX_PACKAGE_CACHE_ROOT",
+        str(tmp_path / "hub-package-cache"),
+    )
+    engine_resources = tmp_path / "engine-resources"
+    engine_resources.mkdir()
+    monkeypatch.setattr("Infernux.resources._package_dir", str(engine_resources))
     _FakeInxPack.archives.clear()
     player_package_native.set_test_backend(_FakeInxPack)
     yield
@@ -93,18 +120,25 @@ def _meta(guid: str) -> str:
     return json.dumps({"metadata": {"guid": {"type": "string", "value": guid}}})
 
 
+def _fnv1a64(payload: bytes) -> str:
+    value = 14695981039346656037
+    for byte in payload:
+        value ^= byte
+        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
 def _source(
     path: Path, reference: str, *, version: str = "1.0.0", engine: str = ""
 ) -> Path:
     path.mkdir(parents=True)
-    (path / "InxPackage.json").write_text(
+    (path / "inx_package.json").write_text(
         json.dumps(
             {
                 "reference": reference,
                 "name": reference,
                 "version": version,
                 "engine": engine,
-                "requirements": "requirements.txt",
             }
         ),
         encoding="utf-8",
@@ -117,56 +151,477 @@ def _export(source: Path, package: Path) -> Path:
     return package
 
 
-def test_manifestless_folder_export_has_one_generated_plugin_directory(tmp_path):
+def test_manifestless_folder_is_the_package_root_and_uses_output_name(tmp_path):
     project = _project(tmp_path / "project")
-    materials = project / "Assets" / "Materials"
-    materials.mkdir()
+    plugin_root = project / "Packages" / "abc"
+    materials = plugin_root / "materials"
+    materials.mkdir(parents=True)
     asset = materials / "Neon.mat"
     asset.write_text("material", encoding="utf-8")
     guid = "0123456789abcdef0123456789abcdef"
     (materials / "Neon.mat.meta").write_text(_meta(guid), encoding="utf-8")
 
-    package = tmp_path / "Materials.inxpkg"
-    preview = InxPackage.export(str(project), [str(materials)], str(package))
+    package = tmp_path / "abc.inxpkg"
+    preview = InxPackage.export(str(project), [str(plugin_root)], str(package))
 
-    assert preview.metadata["reference"] == "materials"
-    assert preview.logical_entries == ("Neon.mat",)
+    assert preview.metadata["reference"] == "abc"
+    assert preview.metadata["name"] == "abc"
+    assert preview.logical_entries == ("materials/Neon.mat",)
     assert preview.project_entries == ("Assets/Plugins/materials/Neon.mat",)
     assert preview.file_records[0]["guid"] == guid
 
+    archived_meta = json.loads(
+        player_package_native.read_entry(
+            str(package), preview.file_records[0]["meta_archive_path"]
+        ).decode("utf-8")
+    )
+    assert archived_meta["metadata"]["content_hash"] == {
+        "type": "string",
+        "value": _fnv1a64(asset.read_bytes()),
+    }
 
-def test_v2_layout_routes_code_control_content_and_nested_packages(tmp_path):
+
+def test_local_folder_never_guesses_a_nested_repository_wrapper(tmp_path):
+    project = _project(tmp_path / "project")
+    plugin_root = project / "Packages" / "abc"
+    nested = plugin_root / "package"
+    nested.mkdir(parents=True)
+    (nested / "inx_package.json").write_text("{}", encoding="utf-8")
+    (nested / "payload.bin").write_bytes(b"payload")
+
+    preview = InxPackage.export(
+        str(project),
+        [str(plugin_root)],
+        str(tmp_path / "abc.inxpkg"),
+    )
+
+    assert preview.metadata["reference"] == "abc"
+    assert preview.logical_entries == (
+        "package/inx_package.json",
+        "package/payload.bin",
+    )
+
+
+def test_manifestless_multi_selection_expands_directly_under_plugins(tmp_path):
+    project = _project(tmp_path / "project")
+    first = project / "Assets" / "First"
+    second = project / "Assets" / "Second"
+    first.mkdir()
+    second.mkdir()
+    (first / "one.txt").write_text("one", encoding="utf-8")
+    (second / "two.txt").write_text("two", encoding="utf-8")
+
+    preview = InxPackage.export(
+        str(project),
+        [str(first), str(second)],
+        str(tmp_path / "Selection.inxpkg"),
+    )
+
+    assert preview.logical_entries == ("First/one.txt", "Second/two.txt")
+    assert preview.project_entries == (
+        "Assets/Plugins/First/one.txt",
+        "Assets/Plugins/Second/two.txt",
+    )
+
+
+def test_selective_reimport_adds_missing_files_without_replacing_existing_ownership(tmp_path, monkeypatch):
+    source = _source(tmp_path / "source", "vendor/partial")
+    (source / "first.txt").write_text("first", encoding="utf-8")
+    (source / "second.txt").write_text("second", encoding="utf-8")
+    package = _export(source, tmp_path / "partial.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), selected=("first.txt",))
+    before = manager.registry.installed_record("vendor/partial")
+    assert before is not None
+    first = project / "Assets/Plugins/first.txt"
+    first.write_text("user edit", encoding="utf-8")
+    manager.set_enabled("vendor/partial", False)
+    monkeypatch.setattr(manager, "_install_requirements", lambda *_args, **_kwargs: pytest.fail("Reimport must not reinstall dependencies"))
+
+    manager.install_package(str(package), selected=("second.txt",))
+
+    after = manager.registry.installed_record("vendor/partial")
+    assert after["enabled"] is False
+    assert first.read_text() == "user edit"
+    assert (project / "Assets/Plugins/second.txt").read_text() == "second"
+    assert after["files"][0] == before["files"][0]
+    assert after["control"] == before["control"]
+    assert {item["logical_path"] for item in after["files"]} == {"first.txt", "second.txt"}
+
+
+@pytest.mark.parametrize("change", ["version", "members"])
+def test_selective_reimport_does_not_treat_another_release_as_missing_members(tmp_path, change):
+    source = _source(tmp_path / "source", "vendor/partial-release")
+    (source / "first.txt").write_text("first", encoding="utf-8")
+    (source / "second.txt").write_text("second", encoding="utf-8")
+    package = _export(source, tmp_path / "original.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), selected=("first.txt",))
+    before = manager.registry.load()
+    if change == "version":
+        manifest = source / "inx_package.json"
+        document = json.loads(manifest.read_text())
+        document["version"] = "99.0.0"
+        manifest.write_text(json.dumps(document), encoding="utf-8")
+    else:
+        (source / "third.txt").write_text("new release", encoding="utf-8")
+    incoming = _export(source, tmp_path / "different.inxpkg")
+    with pytest.raises(RuntimeError, match="different content"):
+        manager.install_package(str(incoming))
+    assert manager.registry.load() == before
+    assert not (project / "Assets/Plugins/second.txt").exists()
+
+
+def test_selective_reimport_conflict_keeps_the_existing_install(tmp_path):
+    source = _source(tmp_path / "source", "vendor/partial-conflict")
+    (source / "first.txt").write_text("first", encoding="utf-8")
+    (source / "second.txt").write_text("second", encoding="utf-8")
+    package = _export(source, tmp_path / "partial-conflict.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), selected=("first.txt",))
+    before = manager.registry.load()
+    blocked = project / "Assets/Plugins/second.txt"
+    blocked.write_text("another asset", encoding="utf-8")
+    with pytest.raises(PackageConflictError, match="another GUID"):
+        manager.install_package(str(package), selected=("second.txt",))
+    assert manager.registry.load() == before
+    assert blocked.read_text() == "another asset"
+    assert (project / "Assets/Plugins/first.txt").read_text() == "first"
+
+
+def test_selective_reimport_rollback_retains_previous_files_and_registry(tmp_path, monkeypatch):
+    source = _source(tmp_path / "source", "vendor/partial-rollback")
+    for name in ("first.txt", "second.txt", "third.txt"):
+        (source / name).write_text(name, encoding="utf-8")
+    package = _export(source, tmp_path / "partial-rollback.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), selected=("first.txt",))
+    before = manager.registry.load()
+    write = plugin_manager_module._InstallTransaction.write
+
+    def fail_third(transaction, destination, payload):
+        if destination.endswith("third.txt"):
+            raise OSError("simulated write failure")
+        return write(transaction, destination, payload)
+
+    monkeypatch.setattr(plugin_manager_module._InstallTransaction, "write", fail_third)
+    with pytest.raises(OSError, match="simulated write failure"):
+        manager.install_package(str(package))
+    assert manager.registry.load() == before
+    assert (project / "Assets/Plugins/first.txt").read_text() == "first.txt"
+    assert not (project / "Assets/Plugins/second.txt").exists()
+    assert not (project / "Assets/Plugins/second.txt.meta").exists()
+    assert not (project / "Assets/Plugins/third.txt").exists()
+
+
+@pytest.mark.parametrize("new_scripts", [False, True])
+@pytest.mark.parametrize("partial_install", [False, True])
+def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
+    tmp_path,
+    monkeypatch,
+    new_scripts,
+    partial_install,
+):
+    source = _source(tmp_path / "source", "vendor/runtime-component")
+    runtime = source / "runtime"
+    runtime.mkdir()
+    (runtime / "component.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source / "seed.txt").write_text("non-script initial selection", encoding="utf-8")
+    package = _export(source, tmp_path / "RuntimeComponent.inxpkg")
+    project = _project(tmp_path / "project")
+    published = []
+
+    class _Resources:
+        _project_path = str(project.resolve())
+
+        def begin_script_transaction(self, paths):
+            published.append(("begin", tuple(Path(path) for path in paths)))
+            return "package-runtime"
+
+        def submit_script_change(self, path, **kwargs):
+            published.append((Path(path), kwargs))
+            return object()
+
+        def process_pending_reloads(self, *, force=False):
+            published.append(("drain", force))
+            return 0
+
+        def retire_script_paths(self, paths):
+            published.append(("retire", tuple(Path(path) for path in paths)))
+
+    monkeypatch.setattr(
+        "Infernux.engine.resources_manager.ResourcesManager.instance",
+        classmethod(lambda _cls: _Resources()),
+    )
+
+    manager = PluginManager(str(project))
+    if partial_install:
+        manager.install_package(str(package), selected=("seed.txt",), install_dependencies=False)
+        assert published == []
+    manager.install_package(
+        str(package),
+        install_dependencies=False,
+    )
+
+    runtime_path = project / "Packages/vendor/runtime-component/runtime/component.py"
+    assert published[0] == ("begin", (runtime_path,))
+    assert published[1][0] == runtime_path
+    assert published[1][1]["force"] is True
+    assert published[1][1]["transaction_id"] == "package-runtime"
+    assert published[2] == ("drain", True)
+    assert not (project / "Library" / "InxPackageStaging").exists()
+    expected_paths = {runtime_path}
+    if new_scripts:
+        added = runtime_path.with_name("added.py")
+        added.write_text("ADDED = True\n", encoding="utf-8")
+        added.with_suffix(".py.meta").write_text(_meta("c" * 32), encoding="utf-8")
+        editor = runtime_path.parent.parent / "editor" / "panel.py"
+        editor.parent.mkdir()
+        editor.write_text("EDITOR = True\n", encoding="utf-8")
+        editor.with_suffix(".py.meta").write_text(_meta("d" * 32), encoding="utf-8")
+        expected_paths.add(added)
+    installed_files = manager.registry.installed_record("vendor/runtime-component")["files"]
+    published.clear()
+    manager.set_enabled("vendor/runtime-component", False)
+    assert published[0][0] == "retire"
+    assert set(published[0][1]) == expected_paths
+    published.clear()
+    manager.set_enabled("vendor/runtime-component", True)
+    assert published[0][0] == "begin"
+    assert set(published[0][1]) == expected_paths
+    assert manager.registry.installed_record("vendor/runtime-component")["files"] == installed_files
+    published.clear()
+    manager.uninstall("vendor/runtime-component")
+    assert published[0][0] == "retire"
+    assert set(published[0][1]) == expected_paths
+    if new_scripts:
+        assert added.is_file() and editor.is_file()
+
+
+@pytest.mark.parametrize("mutation", ["delete", "editor", "rename"])
+def test_package_enable_uses_live_scripts_and_retire_keeps_previous_paths(
+    tmp_path, monkeypatch, request, mutation
+):
+    source = _source(tmp_path / "source", "vendor/mutable-component")
+    (source / "runtime").mkdir()
+    (source / "runtime/component.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "MutableComponent.inxpkg")
+    project = _project(tmp_path / "project")
+    submitted, retired = [], []
+
+    class Resources:
+        _project_path = str(project.resolve())
+
+        def begin_script_transaction(self, paths):
+            return "mutable-component"
+
+        def submit_script_change(self, path, **kwargs):
+            submitted.append(Path(path))
+            return object()
+
+        def process_pending_reloads(self, *, force=False):
+            return 0
+
+        def retire_script_paths(self, paths):
+            retired.extend(Path(path) for path in paths)
+
+    monkeypatch.setattr(
+        "Infernux.engine.resources_manager.ResourcesManager.instance",
+        classmethod(lambda _cls: Resources()),
+    )
+    manager = PluginManager(str(project))
+    request.addfinalizer(manager.preloads.unload_all)
+    manager.install_package(str(package), install_dependencies=False)
+    reference = "vendor/mutable-component"
+    root = project / "Packages" / reference
+    previous = root / "runtime/component.py"
+    before = manager.registry.installed_record(reference)["files"]
+    submitted.clear()
+    if mutation == "delete":
+        previous.unlink()
+        previous.with_suffix(".py.meta").unlink()
+        current = None
+    else:
+        current = root / ("editor/component.py" if mutation == "editor" else "runtime/renamed.py")
+        current.parent.mkdir(parents=True, exist_ok=True)
+        previous.replace(current)
+        previous.with_suffix(".py.meta").replace(current.with_suffix(".py.meta"))
+
+    manager.set_enabled(reference, False)
+
+    assert previous in retired  # retire the old module, not an Editor replacement
+    if mutation == "editor":
+        assert current not in retired
+    if mutation == "rename":
+        assert current in retired
+    manager.set_enabled(reference, True)
+    assert submitted == ([current] if mutation == "rename" else [])
+    assert manager.registry.installed_record(reference)["files"] == before
+
+
+def test_install_writes_current_hashes_for_payload_and_control_assets(tmp_path):
+    source = _source(tmp_path / "source", "vendor/current-meta")
+    asset = source / "runtime" / "plugin.py"
+    asset.parent.mkdir()
+    asset.write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "CurrentMeta.inxpkg")
+    project = _project(tmp_path / "project")
+
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), install_dependencies=False)
+
+    for installed in (
+        project / "Packages/vendor/current-meta/runtime/plugin.py",
+        project / "Packages/vendor/current-meta/inx_package.json",
+    ):
+        metadata = json.loads(
+            installed.with_name(installed.name + ".meta").read_text(encoding="utf-8")
+        )
+        assert metadata["metadata"]["content_hash"] == {
+            "type": "string",
+            "value": _fnv1a64(installed.read_bytes()),
+        }
+
+
+def test_current_layout_routes_code_control_content_and_nested_packages(tmp_path):
     source = _source(tmp_path / "source", "aabbc/physics/jolt")
-    (source / "Runtime").mkdir()
-    (source / "Runtime" / "backend.py").write_text("BACKEND = 'jolt'\n", encoding="utf-8")
-    (source / "Editor").mkdir()
-    (source / "Editor" / "panel.py").write_text("PANEL = True\n", encoding="utf-8")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "backend.py").write_text("BACKEND = 'jolt'\n", encoding="utf-8")
+    (source / "editor").mkdir()
+    (source / "editor" / "panel.py").write_text("PANEL = True\n", encoding="utf-8")
     (source / "README.md").write_text("# Jolt\n\nPhysics backend.\n", encoding="utf-8")
     (source / "LICENSE").write_text("license", encoding="utf-8")
     (source / "Scenes").mkdir()
     (source / "Scenes" / "Demo.scene").write_text("scene", encoding="utf-8")
     (source / "Variants").mkdir()
-    (source / "Variants" / "Legacy.inxpkg").write_bytes(b"opaque nested package")
+    (source / "Variants" / "Alternative.inxpkg").write_bytes(b"opaque nested package")
 
     preview = InxPackage.inspect(str(_export(source, tmp_path / "Jolt.inxpkg")))
 
     assert preview.metadata["$schema"] == "infernux.inxpackage"
-    assert preview.metadata["format_version"] == 2
     assert len({item["guid"] for item in preview.file_records}) == len(preview.file_records)
-    assert "Packages/aabbc/physics/jolt/Runtime/backend.py" in preview.project_entries
-    assert "Packages/aabbc/physics/jolt/Editor/panel.py" in preview.project_entries
-    assert "Packages/aabbc/physics/jolt/README.md" in preview.project_entries
-    assert "Assets/Plugins/aabbc/physics/jolt/Scenes/Demo.scene" in preview.project_entries
-    assert "Assets/Plugins/aabbc/physics/jolt/Variants/Legacy.inxpkg" in preview.project_entries
+    assert "Packages/aabbc/physics/jolt/runtime/backend.py" in preview.project_entries
+    assert "Packages/aabbc/physics/jolt/editor/panel.py" in preview.project_entries
+    assert "Assets/Plugins/README.md" in preview.project_entries
+    assert "Assets/Plugins/Scenes/Demo.scene" in preview.project_entries
+    assert "Assets/Plugins/Variants/Alternative.inxpkg" in preview.project_entries
 
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(tmp_path / "Jolt.inxpkg"), install_dependencies=False)
-    assert (project / "Packages/aabbc/physics/jolt/Runtime/backend.py").is_file()
-    assert (project / "Assets/Plugins/aabbc/physics/jolt/Scenes/Demo.scene").is_file()
+    assert (project / "Packages/aabbc/physics/jolt/runtime/backend.py").is_file()
+    assert (project / "Assets/Plugins/Scenes/Demo.scene").is_file()
     assert {item["reference"] for item in manager.registry.installed()} == {
         "aabbc/physics/jolt"
     }
+
+
+def test_repository_export_archives_only_pythonic_package_tree_and_any_payload(tmp_path):
+    repository = tmp_path / "repository"
+    package_source = _source(repository / "package", "vendor/mixed-payload")
+    (repository / "README.md").write_text("repository only", encoding="utf-8")
+    (repository / "CMakeLists.txt").write_text("project(plugin)", encoding="utf-8")
+    (repository / "build.gradle").write_text("plugins {}", encoding="utf-8")
+    payloads = {
+        "runtime/native_backend.pyd": b"pyd",
+        "runtime/web_backend.wasm": b"wasm",
+        "editor/compiler.dll": b"dll",
+        "materials/neon.mat": b"material",
+        "shaders/neon.frag": b"shader",
+        "web/index.html": b"<button>plugin page</button>",
+        "build/generated_backend.wasm": b"generated-wasm",
+        ".well-known/plugin.json": b"{}",
+    }
+    for relative, payload in payloads.items():
+        path = package_source.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    preview = InxPackage.export_source(
+        str(repository), str(tmp_path / "mixed.inxpkg")
+    )
+
+    assert set(preview.logical_entries) == set(payloads)
+    assert "README.md" not in preview.logical_entries
+    assert "CMakeLists.txt" not in preview.logical_entries
+    assert "build.gradle" not in preview.logical_entries
+    assert player_file_exported(preview.metadata, "runtime/native_backend.pyd")
+    assert player_file_exported(preview.metadata, "runtime/web_backend.wasm")
+    assert not player_file_exported(preview.metadata, "editor/compiler.dll")
+    assert player_file_exported(preview.metadata, "materials/neon.mat")
+    assert player_file_exported(preview.metadata, "shaders/neon.frag")
+    assert player_file_exported(preview.metadata, "web/index.html")
+
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(tmp_path / "mixed.inxpkg"), install_dependencies=False)
+    installed_page = project / "Assets" / "Plugins" / "web" / "index.html"
+    assert installed_page.read_bytes() == payloads["web/index.html"]
+
+    class _UrlEngine:
+        def __init__(self):
+            self.urls = []
+
+        def open_url(self, url):
+            self.urls.append(url)
+            return True
+
+    engine = _UrlEngine()
+    set_project_root(str(project))
+    Application._bind_engine(engine, "player")
+    try:
+        button = UIButton()
+        button.on_click.add_listener(
+            lambda: Application.open_url(
+                Application.asset_path("Assets/Plugins/web/index.html")
+            )
+        )
+        button.on_pointer_click(None)
+        assert engine.urls == [installed_page.resolve().as_uri()]
+    finally:
+        Application._unbind_engine(engine)
+        set_project_root(None)
+
+
+def test_player_export_uses_persisted_role_for_pre_pythonic_installed_record():
+    assert not player_file_exported(
+        {"role": "editor"}, "Editor/legacy_plugin/compiler.py"
+    )
+    assert not player_file_exported(
+        {"role": "control"}, "InxPluginPages/README.md"
+    )
+    assert player_file_exported(
+        {"role": "runtime"}, "Runtime/legacy_plugin/server.jar"
+    )
+
+
+def test_package_metadata_schema_rejects_unknown_fields(tmp_path):
+    source = _source(tmp_path / "source", "vendor/current-format")
+    (source / "Data.bin").write_bytes(b"payload")
+    package = _export(source, tmp_path / "current.inxpkg")
+    archive = _FakeInxPack.archives[str(package.resolve())]
+    document = json.loads(archive["inx_package.json"].decode("utf-8"))
+    document["unexpected"] = True
+    archive["inx_package.json"] = (
+        json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+    ).encode("utf-8")
+
+    with pytest.raises(ValueError, match="Unsupported InxPackage metadata schema"):
+        InxPackage.inspect(str(package))
+
+
+def test_plugin_source_descriptor_rejects_unknown_fields(tmp_path):
+    manager = PluginManager(str(_project(tmp_path / "project")))
+
+    with pytest.raises(ValueError, match="unknown fields: unexpected"):
+        manager.install_source(
+            {"type": "local", "location": "plugin.inxpkg", "unexpected": True},
+            install_dependencies=False,
+        )
 
 
 def test_export_preserves_meta_guid_and_is_deterministic(tmp_path):
@@ -185,6 +640,30 @@ def test_export_preserves_meta_guid_and_is_deterministic(tmp_path):
     assert first.metadata["control_guid"] == second.metadata["control_guid"]
 
 
+def test_generated_guid_is_stable_when_package_content_changes(tmp_path):
+    source = _source(tmp_path / "source", "vendor/stable-identity")
+    asset = source / "runtime" / "backend.py"
+    asset.parent.mkdir()
+    asset.write_text("VALUE = 1\n", encoding="utf-8")
+
+    first = InxPackage.inspect(str(_export(source, tmp_path / "first.inxpkg")))
+    first_record = next(
+        item
+        for item in first.file_records
+        if item["logical_path"] == "runtime/backend.py"
+    )
+    asset.write_text("VALUE = 2\n", encoding="utf-8")
+    second = InxPackage.inspect(str(_export(source, tmp_path / "second.inxpkg")))
+    second_record = next(
+        item
+        for item in second.file_records
+        if item["logical_path"] == "runtime/backend.py"
+    )
+
+    assert first_record["guid"] == second_record["guid"]
+    assert first_record == second_record
+
+
 def test_engine_compatibility_is_validated_and_enforced_before_install(tmp_path):
     invalid = _source(tmp_path / "invalid", "vendor/invalid-engine", engine=">=oops")
     (invalid / "Data.bin").write_bytes(b"payload")
@@ -198,13 +677,13 @@ def test_engine_compatibility_is_validated_and_enforced_before_install(tmp_path)
     package = _export(incompatible, tmp_path / "future.inxpkg")
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
-    with pytest.raises(RuntimeError, match="current engine is 0.3.7"):
+    with pytest.raises(RuntimeError, match="current engine is 0.4.0"):
         manager.install_package(str(package), install_dependencies=False)
     assert manager.registry.installed() == ()
-    assert not (project / "Assets/Plugins/vendor/future-engine/Data.bin").exists()
+    assert not (project / "Assets/Plugins/Data.bin").exists()
 
 
-@pytest.mark.parametrize("directory", ["runtime", "RUNTIME", "editor"])
+@pytest.mark.parametrize("directory", ["Runtime", "RUNTIME", "Editor"])
 def test_reserved_layout_requires_canonical_casing(tmp_path, directory):
     source = _source(tmp_path / "source", "vendor/case")
     (source / directory).mkdir()
@@ -219,7 +698,7 @@ def test_docs_has_no_special_layout_role(tmp_path):
     (source / "Docs" / "Guide.md").write_text("ordinary asset", encoding="utf-8")
     package = _export(source, tmp_path / "docs.inxpkg")
     preview = InxPackage.inspect(str(package))
-    assert "Assets/Plugins/vendor/docs/Docs/Guide.md" in preview.project_entries
+    assert "Assets/Plugins/Docs/Guide.md" in preview.project_entries
     assert all(page["path"] != "Docs/Guide.md" for page in preview.metadata["pages"])
 
 
@@ -227,7 +706,7 @@ def test_manifest_cannot_register_information_pages_outside_fixed_layout(tmp_pat
     source = _source(tmp_path / "source", "vendor/strict-pages")
     (source / "Docs").mkdir()
     (source / "Docs" / "Guide.md").write_text("not a plugin page", encoding="utf-8")
-    manifest_path = source / "InxPackage.json"
+    manifest_path = source / "inx_package.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["pages"] = [
         {"id": "guide", "title": "Guide", "path": "Docs/Guide.md"}
@@ -244,7 +723,7 @@ def test_plugin_page_descriptor_rejects_locale_aliases(locale):
             {
                 "id": "intro",
                 "title": "Description",
-                "path": "README.zh-CN.md",
+                "path": "plugin_pages/intro.zh-CN.md",
                 "locale": locale,
             }
         )
@@ -264,7 +743,7 @@ def test_guid_reuse_transfers_ownership_on_uninstall(tmp_path):
     manager = PluginManager(str(project))
     manager.install_package(str(packages[0]), install_dependencies=False)
     manager.install_package(str(packages[1]), install_dependencies=False)
-    original = project / "Assets/Plugins/aabbc/physics/Shared.bin"
+    original = project / "Assets/Plugins/Shared.bin"
     child_record = manager.registry.installed_record("aabbc/physics/jolt")
     shared = next(item for item in child_record["files"] if item["guid"] == guid)
     assert shared["owned"] is False
@@ -286,7 +765,7 @@ def test_uninstall_dependency_blocker_is_case_insensitive(tmp_path):
         files=[],
         control={
             "guid": "dependency-control-guid",
-            "path_hint": "Packages/vendor/x/InxPackage.json",
+            "path_hint": "Packages/vendor/x/inx_package.json",
             "owned": False,
         },
     )
@@ -295,7 +774,7 @@ def test_uninstall_dependency_blocker_is_case_insensitive(tmp_path):
         files=[],
         control={
             "guid": "consumer-control-guid",
-            "path_hint": "Packages/vendor/consumer/InxPackage.json",
+            "path_hint": "Packages/vendor/consumer/inx_package.json",
             "owned": False,
         },
         dependencies=["Vendor/X"],
@@ -326,12 +805,12 @@ def test_invalid_official_catalog_does_not_mutate_project_registry(tmp_path):
         json.dumps(
             {
                 "$schema": "infernux.official_plugin_registry",
-                "catalog_version": 1,
                 "packages": [
                     {
                         "reference": "infernux/broken",
+                        "version": "1.0.0",
+                        "engine": ">=0.4,<0.5",
                         "artifact": "broken.inxpkg",
-                        "artifact_sha256": "0" * 64,
                     }
                 ],
             }
@@ -340,10 +819,56 @@ def test_invalid_official_catalog_does_not_mutate_project_registry(tmp_path):
     )
     before = registry.load()
 
-    with pytest.raises(OfficialCatalogError, match="hash mismatch"):
+    with pytest.raises(OfficialCatalogError, match="artifact is invalid"):
         sync_official_registry(str(project), resources_root=str(resources))
 
     assert registry.load() == before
+
+
+def test_official_registry_publishes_remote_entry_without_bundled_artifact(tmp_path):
+    project = _project(tmp_path / "project")
+    resources = tmp_path / "resources"
+    official = resources / "official_packages"
+    official.mkdir(parents=True)
+    (official / "official-registry.json").write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.official_plugin_registry",
+                "packages": [
+                    {
+                        "reference": "infernux/platform-web",
+                        "name": "Infernux Web Platform",
+                        "version": "0.1.0",
+                        "engine": ">=0.4,<0.5",
+                        "artifact": "infernux.platform-web.inxpkg",
+                        "dependencies": [],
+                        "pages": [],
+                        "intros": {},
+                        "category": "Platform",
+                        "targets": ["web-wasm32"],
+                        "source": {
+                            "type": "github",
+                            "location": "https://github.com/example/infernux-web",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    added = sync_official_registry(str(project), resources_root=str(resources))
+
+    assert len(added) == 1
+    entry = PluginRegistry(str(project)).find("infernux/platform-web")
+    assert entry["category"] == "Platform"
+    assert entry["targets"] == ["web-wasm32"]
+    assert entry["source"] == {
+        "type": "github",
+        "location": "https://github.com/example/infernux-web",
+        "official": True,
+        "reference": "infernux/platform-web",
+    }
 
 
 def test_startup_degrades_when_official_catalog_is_unavailable(tmp_path):
@@ -360,7 +885,254 @@ def test_startup_degrades_when_official_catalog_is_unavailable(tmp_path):
     assert manager.registry.find("vendor/local") is not None
 
 
-def test_guid_conflict_is_rejected_without_partial_files(tmp_path):
+def test_startup_restores_requirements_before_single_preload_catchup(
+    tmp_path, monkeypatch
+):
+    project = _project(tmp_path / "project")
+    events: list[str] = []
+    monkeypatch.setattr(
+        "Infernux.plugins.official.sync_official_registry",
+        lambda _project, *, resources_root=None: events.append("sync"),
+    )
+    monkeypatch.setattr(
+        "Infernux.plugins.official.install_bundled_packages",
+        lambda _project, *, manager=None: events.append("bundled") or (),
+    )
+    monkeypatch.setattr(
+        PluginManager,
+        "_reconcile_python_requirements_for_startup",
+        lambda self: events.append("requirements") or (),
+    )
+    monkeypatch.setattr(
+        preload_module.PreloadManager,
+        "catch_up",
+        lambda self: events.append("catchup") or (),
+    )
+
+    manager = PluginManager.startup(str(project), runtime=False)
+    try:
+        assert events == [
+            "sync",
+            "requirements",
+            "bundled",
+            "catchup",
+        ]
+    finally:
+        manager.shutdown()
+
+
+def test_resources_root_inxpackages_are_mandatory_and_idempotent(tmp_path):
+    source = _source(tmp_path / "source", "infernux/platform-fixture")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "fixture.py").write_text(
+        "PLATFORM_FIXTURE = True\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    package = _export(source, resources / "infernux.platform-fixture.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=False)
+
+    first = install_bundled_packages(
+        str(project), resources_root=str(resources), manager=manager
+    )
+    second = install_bundled_packages(
+        str(project), resources_root=str(resources), manager=manager
+    )
+
+    assert [state.reference for state in first] == ["infernux/platform-fixture"]
+    assert second == ()
+    record = manager.registry.installed_record("infernux/platform-fixture")
+    assert record is not None
+    assert record["source"]["location"] == str(package.resolve())
+    assert record["source"]["builtin"] is True
+    assert (project / "Packages/infernux/platform-fixture/runtime/fixture.py").is_file()
+
+
+def test_resources_root_package_ignores_an_older_shared_cache_entry(tmp_path):
+    stale_source = _source(tmp_path / "stale", "infernux/platform-fixture")
+    (stale_source / "runtime").mkdir()
+    (stale_source / "runtime" / "fixture.py").write_text(
+        "RELEASE = 'stale-cache'\n", encoding="utf-8"
+    )
+    stale_package = _export(stale_source, tmp_path / "stale.inxpkg")
+    SharedPackageCache().store(
+        str(stale_package),
+        reference="infernux/platform-fixture",
+        version="1.0.0",
+    )
+
+    bundled_source = _source(tmp_path / "bundled", "infernux/platform-fixture")
+    (bundled_source / "runtime").mkdir()
+    (bundled_source / "runtime" / "fixture.py").write_text(
+        "RELEASE = 'bundled'\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    bundled_package = _export(
+        bundled_source, resources / "infernux.platform-fixture.inxpkg"
+    )
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=False)
+
+    states = install_bundled_packages(
+        str(project), resources_root=str(resources), manager=manager
+    )
+
+    assert [state.reference for state in states] == ["infernux/platform-fixture"]
+    assert (
+        project / "Packages/infernux/platform-fixture/runtime/fixture.py"
+    ).read_text(encoding="utf-8") == "RELEASE = 'bundled'\n"
+    record = manager.registry.installed_record("infernux/platform-fixture")
+    assert record is not None
+    assert record["source"]["location"] == str(bundled_package.resolve())
+    assert record["source"]["builtin"] is True
+
+
+def test_resources_root_preserves_existing_project_plugin_release(tmp_path):
+    bundled_source = _source(tmp_path / "bundled", "infernux/platform-fixture")
+    (bundled_source / "runtime").mkdir()
+    (bundled_source / "runtime" / "fixture.py").write_text(
+        "RELEASE = 'bundled'\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    _export(bundled_source, resources / "infernux.platform-fixture.inxpkg")
+
+    project_source = _source(tmp_path / "project-release", "infernux/platform-fixture")
+    (project_source / "runtime").mkdir()
+    (project_source / "runtime" / "fixture.py").write_text(
+        "RELEASE = 'project'\n", encoding="utf-8"
+    )
+    project_package = _export(project_source, tmp_path / "project-release.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=False)
+    manager.install_package(str(project_package), install_dependencies=False)
+
+    states = install_bundled_packages(
+        str(project), resources_root=str(resources), manager=manager
+    )
+
+    assert states == ()
+    assert (
+        project / "Packages/infernux/platform-fixture/runtime/fixture.py"
+    ).read_text(encoding="utf-8") == "RELEASE = 'project'\n"
+    record = manager.registry.installed_record("infernux/platform-fixture")
+    assert record is not None
+    assert record["source"]["location"] == str(project_package.resolve())
+    assert record["source"].get("builtin") is not True
+
+
+def test_startup_installs_resources_root_inxpackages_without_official_catalog(
+    tmp_path, monkeypatch
+):
+    source = _source(tmp_path / "source", "infernux/platform-fixture")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "fixture.py").write_text(
+        "PLATFORM_FIXTURE = True\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    _export(source, resources / "infernux.platform-fixture.inxpkg")
+    project = _project(tmp_path / "project")
+    monkeypatch.setattr(
+        "Infernux.resources.get_package_resources_path", lambda: str(resources)
+    )
+
+    manager = PluginManager.startup(str(project), runtime=False)
+
+    assert manager.registry.installed_record("infernux/platform-fixture") is not None
+    assert "Official plugin catalog is unavailable" in manager.official_catalog_error
+
+
+def test_new_project_installs_builtins_before_resolving_default_registry(
+    tmp_path, monkeypatch
+):
+    source = _source(tmp_path / "source", "infernux/default-fixture")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "fixture.py").write_text(
+        "DEFAULT_FIXTURE = True\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    package = _export(source, resources / "infernux.default-fixture.inxpkg")
+    project = _project(tmp_path / "project")
+    official = resources / "official_packages"
+    official.mkdir(parents=True)
+    (official / "official-registry.json").write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.official_plugin_registry",
+                "packages": [
+                    {
+                        "reference": "infernux/default-fixture",
+                        "name": "Default Fixture",
+                        "version": "1.0.0",
+                        "artifact": "infernux.default-fixture.inxpkg",
+                        "dependencies": [],
+                        "pages": [],
+                        "intros": {},
+                        "source": {
+                            "type": "git",
+                            "location": "https://example.invalid/must-not-clone.git",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (official / "default-libraries.json").write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.default_libraries",
+                "libraries": ["infernux/default-fixture"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "Infernux.resources.get_package_resources_path", lambda: str(resources)
+    )
+    monkeypatch.setattr("Infernux.engine.library_sync.sync_resources", lambda _root: None)
+    monkeypatch.setattr(
+        PluginManager,
+        "_run_process",
+        staticmethod(lambda *_args, **_kwargs: pytest.fail("default cloned remotely")),
+    )
+
+    states = bootstrap_new_project(str(project))
+
+    assert [state.reference for state in states] == ["infernux/default-fixture"]
+    assert PluginRegistry(str(project)).installed_record(
+        "infernux/default-fixture"
+    ) is not None
+
+
+def test_duplicate_resources_root_package_reference_is_rejected_before_install(
+    tmp_path,
+):
+    source = _source(tmp_path / "source", "infernux/platform-fixture")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "fixture.py").write_text(
+        "PLATFORM_FIXTURE = True\n", encoding="utf-8"
+    )
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    _export(source, resources / "first.inxpkg")
+    _export(source, resources / "second.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=False)
+
+    with pytest.raises(OfficialCatalogError, match="duplicated"):
+        install_bundled_packages(
+            str(project), resources_root=str(resources), manager=manager
+        )
+
+    assert manager.registry.installed() == ()
+
+
+def test_shared_guid_reuses_existing_asset_without_duplicate_import(tmp_path):
     first = _source(tmp_path / "first", "vendor/first")
     (first / "Shared.bin").write_bytes(b"one")
     (first / "Shared.bin.meta").write_text(
@@ -376,10 +1148,11 @@ def test_guid_conflict_is_rejected_without_partial_files(tmp_path):
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(first_package), install_dependencies=False)
-    with pytest.raises(PackageConflictError, match="different content"):
-        manager.install_package(str(second_package), install_dependencies=False)
-    assert manager.registry.installed_record("vendor/second") is None
-    assert not (project / "Assets/Plugins/vendor/second/Shared.bin").exists()
+    manager.install_package(str(second_package), install_dependencies=False)
+    second_record = manager.registry.installed_record("vendor/second")
+    assert second_record is not None
+    assert second_record["files"][0]["owned"] is False
+    assert (project / "Assets/Plugins/Shared.bin").read_bytes() == b"one"
 
 
 def test_target_path_with_different_guid_is_rejected_without_overwrite(tmp_path):
@@ -391,7 +1164,7 @@ def test_target_path_with_different_guid_is_rejected_without_overwrite(tmp_path)
     )
     package = _export(source, tmp_path / "path-conflict.inxpkg")
     project = _project(tmp_path / "project")
-    occupied = project / "Assets/Plugins/vendor/path-conflict/Data.bin"
+    occupied = project / "Assets/Plugins/Data.bin"
     occupied.parent.mkdir(parents=True)
     occupied.write_bytes(b"user bytes")
     Path(str(occupied) + ".meta").write_text(
@@ -404,6 +1177,33 @@ def test_target_path_with_different_guid_is_rejected_without_overwrite(tmp_path)
 
     assert occupied.read_bytes() == b"user bytes"
     assert manager.registry.installed() == ()
+
+
+def test_identical_bytes_with_different_guid_are_not_adopted(tmp_path):
+    source = _source(tmp_path / "source", "vendor/adopt-identical")
+    payload = source / "runtime" / "backend.py"
+    payload.parent.mkdir()
+    payload.write_text("VALUE = 7\n", encoding="utf-8")
+    package = _export(source, tmp_path / "adopt-identical.inxpkg")
+
+    project = _project(tmp_path / "project")
+    occupied = project / "Packages/vendor/adopt-identical/runtime/backend.py"
+    occupied.parent.mkdir(parents=True)
+    occupied.write_bytes(payload.read_bytes())
+    previous_guid = "22222222222222222222222222222222"
+    Path(str(occupied) + ".meta").write_text(
+        _meta(previous_guid), encoding="utf-8"
+    )
+    manager = PluginManager(str(project))
+
+    with pytest.raises(PackageConflictError, match="occupied by another GUID"):
+        manager.install_package(str(package), install_dependencies=False)
+
+    document = json.loads(
+        Path(str(occupied) + ".meta").read_text(encoding="utf-8")
+    )
+    assert document["metadata"]["guid"]["value"] == previous_guid
+    assert manager.registry.installed_record("vendor/adopt-identical") is None
 
 
 def test_install_rolls_back_files_and_registry_if_registration_fails(tmp_path, monkeypatch):
@@ -422,8 +1222,8 @@ def test_install_rolls_back_files_and_registry_if_registration_fails(tmp_path, m
     with pytest.raises(RuntimeError, match="post-save"):
         manager.install_package(str(package), install_dependencies=False)
     assert manager.registry.installed() == ()
-    assert not (project / "Assets/Plugins/vendor/rollback/Data.bin").exists()
-    assert not (project / "Packages/vendor/rollback/InxPackage.json").exists()
+    assert not (project / "Assets/Plugins/Data.bin").exists()
+    assert not (project / "Packages/vendor/rollback/inx_package.json").exists()
 
 
 def test_rejected_parent_install_removes_new_plugin_dependencies(tmp_path, monkeypatch):
@@ -455,11 +1255,11 @@ def test_rejected_parent_install_removes_new_plugin_dependencies(tmp_path, monke
         manager.install_package(str(parent_package))
 
     assert manager.registry.installed() == ()
-    assert not (project / "Assets/Plugins/vendor/child/Child.bin").exists()
-    assert not (project / "Assets/Plugins/vendor/parent/Parent.bin").exists()
+    assert not (project / "Assets/Plugins/Child.bin").exists()
+    assert not (project / "Assets/Plugins/Parent.bin").exists()
 
 
-def test_direct_package_uses_verified_cache_for_offline_reinstall_and_lock(tmp_path):
+def test_direct_package_uses_hub_library_for_offline_reinstall_and_lock(tmp_path):
     source = _source(tmp_path / "source", "vendor/offline")
     (source / "Data.bin").write_bytes(b"offline payload")
     package = _export(source, tmp_path / "offline.inxpkg")
@@ -467,19 +1267,23 @@ def test_direct_package_uses_verified_cache_for_offline_reinstall_and_lock(tmp_p
     manager = PluginManager(str(project))
     first = manager.install_package(str(package), install_dependencies=False)
     record = manager.registry.installed_record("vendor/offline")
-    digest = hashlib.sha256(package.read_bytes()).hexdigest()
-    cache = project / f"Library/InxPackageCache/{digest}.inxpkg"
+    package_cache = SharedPackageCache()
+    cache = Path(package_cache.path("vendor/offline", str(record["version"])))
     assert first.loaded is True
     assert cache.is_file()
     _FakeInxPack.archives[str(cache.resolve())] = dict(
         _FakeInxPack.archives[str(package.resolve())]
     )
-    assert record["package_sha256"] == digest
     assert record["transaction_id"]
     lock = json.loads(
         (project / "ProjectSettings/InxPackages.lock.json").read_text(encoding="utf-8")
     )
-    assert lock["packages"][0]["package_sha256"] == digest
+    assert set(lock) == {
+        "$schema",
+        "packages",
+        "python",
+        "python_dependencies",
+    }
 
     manager.uninstall("vendor/offline")
     package.unlink()
@@ -487,7 +1291,711 @@ def test_direct_package_uses_verified_cache_for_offline_reinstall_and_lock(tmp_p
     assert reinstalled.loaded is True
     assert manager.registry.installed_record("vendor/offline")["source"][
         "cache_location"
-    ].endswith(f"{digest}.inxpkg")
+    ] == package_cache.relative_path("vendor/offline", str(record["version"]))
+    assert manager.registry.installed_record("vendor/offline")["source"][
+        "cache_scope"
+    ] == "hub"
+
+
+def test_projects_share_one_downloaded_package_in_the_hub_library(tmp_path):
+    source = _source(tmp_path / "source", "vendor/shared")
+    (source / "Data.bin").write_bytes(b"shared payload")
+    package = _export(source, tmp_path / "shared.inxpkg")
+    first_project = _project(tmp_path / "first-project")
+    second_project = _project(tmp_path / "second-project")
+    first = PluginManager(str(first_project))
+    second = PluginManager(str(second_project))
+
+    first.install_package(str(package), install_dependencies=False)
+    second.install_package(str(package), install_dependencies=False)
+
+    first_source = first.registry.installed_record("vendor/shared")["source"]
+    second_source = second.registry.installed_record("vendor/shared")["source"]
+    assert first_source["cache_scope"] == "hub"
+    assert second_source["cache_scope"] == "hub"
+    assert first_source["cache_location"] == second_source["cache_location"]
+    hub_library = Path(plugin_cache_module.package_cache_root())
+    assert len(list((hub_library / "packages").rglob("*.inxpkg"))) == 1
+    assert not (first_project / "Cache/Plugins/packages").exists()
+    assert not (second_project / "Cache/Plugins/packages").exists()
+
+    first.uninstall("vendor/shared")
+    assert Path(hub_library / first_source["cache_location"]).is_file()
+    assert second.registry.installed_record("vendor/shared") is not None
+
+
+def test_project_cache_cleanup_preserves_registered_reference(tmp_path):
+    source = _source(tmp_path / "source", "vendor/shared-cleanup")
+    (source / "Data.bin").write_bytes(b"shared cleanup payload")
+    package = _export(source, tmp_path / "shared-cleanup.inxpkg")
+    first_project = _project(tmp_path / "first-project")
+    first = PluginManager(str(first_project))
+    first.install_package(str(package), install_dependencies=False)
+    cache = SharedPackageCache()
+    version = str(first.registry.installed_record("vendor/shared-cleanup")["version"])
+    cache_path = cache.path("vendor/shared-cleanup", version)
+
+    first.uninstall("vendor/shared-cleanup")
+    assert cache.prune_unreferenced((first_project,)) == ()
+    assert Path(cache_path).is_file()
+
+    document = first.registry.load()
+    document["packages"] = []
+    first.registry.save(document)
+    removed = cache.prune_unreferenced((first_project,))
+    assert removed == (cache_path,)
+    assert not Path(cache_path).exists()
+
+
+def test_cache_cleanup_fails_closed_when_registered_project_is_unavailable(tmp_path):
+    cache = SharedPackageCache(tmp_path / "project/Cache/Plugins")
+    blob = tmp_path / "unused.inxpkg"
+    blob.write_bytes(b"unused")
+    destination = Path(
+        cache.store(str(blob), reference="vendor/unused", version="1.0.0")
+    )
+
+    with pytest.raises(FileNotFoundError, match="registered project is unavailable"):
+        cache.prune_unreferenced((tmp_path / "missing-project",))
+
+    assert destination.is_file()
+
+
+def test_plugin_staging_is_owned_by_shared_cache_and_reaps_dead_processes(
+    tmp_path,
+    monkeypatch,
+):
+    cache = SharedPackageCache(tmp_path / "packages")
+    stale = Path(cache.staging_root) / "download-41-dead"
+    stale.mkdir(parents=True)
+    (stale / "partial.inxpkg").write_bytes(b"partial")
+    monkeypatch.setattr(plugin_cache_module, "_process_is_alive", lambda _pid: False)
+
+    with cache.workspace("download") as workspace:
+        active = Path(workspace)
+        assert active.parent == Path(cache.staging_root)
+        assert not stale.exists()
+        (active / "package.inxpkg").write_bytes(b"package")
+
+    assert not active.exists()
+
+
+def test_default_plugin_cache_is_owned_by_hub(tmp_path):
+    assert plugin_cache_module.package_cache_root() == str(
+        (tmp_path / "hub-package-cache").resolve()
+    )
+
+
+def test_explicit_data_root_owns_default_plugin_library(tmp_path, monkeypatch):
+    root = tmp_path / "HubData"
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT", raising=False)
+    monkeypatch.setenv("INFERNUX_DATA_ROOT", str(root))
+
+    assert plugin_cache_module.package_cache_root() == str(
+        (root / "Library" / "Plugins").resolve()
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Hub data layout")
+def test_windows_default_plugin_library_lives_under_local_hub_data(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+
+    assert plugin_cache_module.package_cache_root() == str(
+        (tmp_path / "local/InfernuxHub/Library/Plugins").resolve()
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="XDG Hub data layout")
+def test_linux_default_plugin_library_lives_under_xdg_hub_data(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("INFERNUX_PACKAGE_CACHE_ROOT")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+
+    assert plugin_cache_module.package_cache_root() == str(
+        (tmp_path / "xdg-data/InfernuxHub/Library/Plugins").resolve()
+    )
+
+
+def test_plugin_manager_separates_hub_packages_from_project_staging(tmp_path):
+    project = _project(tmp_path / "project")
+    cache = PluginManager(str(project))._package_cache()
+
+    assert cache.root == str((tmp_path / "hub-package-cache").resolve())
+    assert cache.staging_root == str(
+        (project / "Cache/Plugins/.staging").resolve()
+    )
+
+
+def test_download_and_import_are_separate_registry_actions(tmp_path):
+    source = _source(tmp_path / "source", "vendor/preloaded")
+    (source / "Data.bin").write_bytes(b"preloaded payload")
+    package = _export(source, tmp_path / "preloaded.inxpkg")
+    archive = dict(_FakeInxPack.archives[str(package.resolve())])
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.registry.add_package(
+        "vendor/preloaded",
+        source={"type": "local", "location": str(package)},
+        version="1.0.0",
+    )
+
+    downloaded = manager.download_reference("vendor/preloaded")
+
+    assert downloaded["cached"] is False
+    assert manager.registry.installed() == ()
+    cached = Path(downloaded["path"])
+    assert cached.is_file()
+    _FakeInxPack.archives[str(cached.resolve())] = archive
+    package.unlink()
+
+    installed = manager.install_reference(
+        "vendor/preloaded", install_dependencies=False
+    )
+    assert installed.reference == "vendor/preloaded"
+    assert manager.registry.installed_record("vendor/preloaded") is not None
+
+
+def test_second_project_reuses_downloaded_hub_package_without_source_access(tmp_path):
+    source = _source(tmp_path / "source", "vendor/shared-download")
+    (source / "Data.bin").write_bytes(b"shared download")
+    package = _export(source, tmp_path / "shared-download.inxpkg")
+    archive = dict(_FakeInxPack.archives[str(package.resolve())])
+    first = PluginManager(str(_project(tmp_path / "first")))
+    first.registry.add_package(
+        "vendor/shared-download",
+        source={"type": "local", "location": str(package)},
+        version="1.0.0",
+    )
+    first_result = first.download_reference("vendor/shared-download")
+    cached = Path(first_result["path"])
+    _FakeInxPack.archives[str(cached.resolve())] = archive
+    package.unlink()
+
+    second = PluginManager(str(_project(tmp_path / "second")))
+    second.registry.add_package(
+        "vendor/shared-download",
+        source={"type": "local", "location": str(package)},
+        version="1.0.0",
+    )
+    second_result = second.download_reference("vendor/shared-download")
+
+    assert second_result == {
+        "reference": "vendor/shared-download",
+        "path": str(cached),
+        "cached": True,
+    }
+
+
+def test_github_source_prefers_highest_compatible_protocol_release(
+    tmp_path, monkeypatch
+):
+    artifact = b"released inxpackage"
+    manifest = {
+        "$schema": "infernux.plugin_release",
+        "reference": "vendor/released",
+        "version": "2.0.0",
+        "engine": ">=0.4,<0.5",
+        "artifact": {
+            "name": "vendor.released.inxpkg",
+        },
+        "generator": {"name": "Infernux", "version": "0.4.0"},
+    }
+    releases = [
+        {
+            "tag_name": "v2.0.0",
+            "draft": False,
+            "prerelease": False,
+            "html_url": "https://github.com/vendor/released/releases/tag/v2.0.0",
+            "assets": [
+                {
+                    "name": RELEASE_MANIFEST_NAME,
+                    "browser_download_url": "https://downloads.invalid/manifest",
+                },
+                {
+                    "name": "vendor.released.inxpkg",
+                    "browser_download_url": "https://downloads.invalid/package",
+                },
+            ],
+        }
+    ]
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+            self.offset = 0
+            self.headers = {"Content-Length": str(len(payload))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size=-1):
+            if size < 0:
+                return self.payload
+            chunk = self.payload[self.offset : self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+    def open_request(request, *, timeout):
+        assert timeout == 30
+        url = request.full_url
+        if url.startswith("https://api.github.com/"):
+            return Response(json.dumps(releases).encode("utf-8"))
+        if url.endswith("/manifest"):
+            return Response(json.dumps(manifest).encode("utf-8"))
+        if url.endswith("/package"):
+            return Response(artifact)
+        raise AssertionError(url)
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_request)
+    monkeypatch.setattr(
+        "Infernux.plugins.github_releases.InxPackage.inspect",
+        lambda _path: SimpleNamespace(
+            metadata={
+                "reference": "vendor/released",
+                "version": "2.0.0",
+                "engine": ">=0.4,<0.5",
+            }
+        ),
+    )
+
+    result = resolve_github_release(
+        "https://github.com/vendor/released",
+        str(tmp_path / "downloads"),
+        expected_reference="vendor/released",
+    )
+
+    assert Path(result.path).read_bytes() == artifact
+    assert result.source["type"] == "github-release"
+    assert result.source["release_tag"] == "v2.0.0"
+
+
+def test_release_protocol_names_support_multiple_plugins_in_one_repository():
+    manifest = release_manifest_name("infernux/platform-web")
+    assert manifest == "infernux.platform-web.release.json"
+    assert release_manifest_name() == RELEASE_MANIFEST_NAME
+
+
+def test_github_source_snapshot_downloads_only_selected_subdirectory(
+    tmp_path,
+    monkeypatch,
+):
+    commit = "a" * 40
+    archive_buffer = io.BytesIO()
+    with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
+        for name, payload in (
+            (
+                "Infernux-a/external/plugins/infernux_linux/package/inx_package.json",
+                b"{}",
+            ),
+            (
+                "Infernux-a/external/plugins/infernux_linux/README.md",
+                b"Linux plugin",
+            ),
+            ("Infernux-a/README.md", b"repository root"),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    archive_payload = archive_buffer.getvalue()
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+            self.offset = 0
+            self.headers = {"Content-Length": str(len(payload))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size=-1):
+            if size < 0:
+                return self.payload
+            chunk = self.payload[self.offset : self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+    def open_request(request, *, timeout):
+        assert timeout == 30
+        if request.full_url.startswith("https://api.github.com/"):
+            return Response(json.dumps({"sha": commit}).encode("utf-8"))
+        if request.full_url.startswith("https://codeload.github.com/"):
+            return Response(archive_payload)
+        raise AssertionError(request.full_url)
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_request)
+    progress = []
+    result = download_github_source(
+        "https://github.com/vendor/Infernux",
+        str(tmp_path / "download"),
+        revision="040/multiplatform_build",
+        subdirectory="external/plugins/infernux_linux",
+        progress=lambda stage, value, detail: progress.append(
+            (stage, value, detail)
+        ),
+    )
+
+    root = Path(result.root)
+    assert result.commit == commit
+    assert (root / "package" / "inx_package.json").read_bytes() == b"{}"
+    assert (root / "README.md").read_bytes() == b"Linux plugin"
+    assert not (root / "external").exists()
+    assert any(stage == "download_source" and detail for stage, _, detail in progress)
+
+
+def test_github_source_selects_reference_scoped_manifest_from_shared_release(
+    tmp_path, monkeypatch
+):
+    artifact = b"web platform package"
+    web_manifest_name = release_manifest_name("infernux/platform-web")
+    releases = [
+        {
+            "tag_name": "v0.4.0",
+            "draft": False,
+            "prerelease": False,
+            "html_url": "https://github.com/vendor/engine/releases/tag/v0.1.0",
+            "assets": [
+                {
+                    "name": web_manifest_name,
+                    "browser_download_url": "https://downloads.invalid/web-manifest",
+                },
+                {
+                    "name": release_manifest_name("infernux/platform-android"),
+                    "browser_download_url": "https://downloads.invalid/android-manifest",
+                },
+                {
+                    "name": "infernux.platform-web.inxpkg",
+                    "browser_download_url": "https://downloads.invalid/web-package",
+                },
+                {
+                    "name": "infernux.platform-android.inxpkg",
+                    "browser_download_url": "https://downloads.invalid/android-package",
+                },
+            ],
+        }
+    ]
+    manifest = {
+        "$schema": "infernux.plugin_release",
+        "reference": "infernux/platform-web",
+        "version": "0.1.0",
+        "release_tag": "v0.4.0",
+        "engine": ">=0.4,<0.5",
+        "artifact": {
+            "name": "infernux.platform-web.inxpkg",
+        },
+        "generator": {"name": "Infernux", "version": "0.4.0"},
+    }
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+            self.offset = 0
+            self.headers = {"Content-Length": str(len(payload))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, size=-1):
+            if size < 0:
+                return self.payload
+            chunk = self.payload[self.offset : self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+    def open_request(request, *, timeout):
+        assert timeout == 30
+        url = request.full_url
+        if url.startswith("https://api.github.com/"):
+            return Response(json.dumps(releases).encode("utf-8"))
+        if url.endswith("/web-manifest"):
+            return Response(json.dumps(manifest).encode("utf-8"))
+        if url.endswith("/web-package"):
+            return Response(artifact)
+        raise AssertionError(url)
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_request)
+    monkeypatch.setattr(
+        "Infernux.plugins.github_releases.InxPackage.inspect",
+        lambda _path: SimpleNamespace(metadata={
+            "reference": "infernux/platform-web",
+            "version": "0.1.0",
+            "engine": ">=0.4,<0.5",
+        }),
+    )
+
+    result = resolve_github_release(
+        "https://github.com/vendor/engine",
+        str(tmp_path / "downloads"),
+        expected_reference="infernux/platform-web",
+    )
+    assert Path(result.path).read_bytes() == artifact
+
+
+def test_official_release_downloads_to_project_cache_then_imports(
+    tmp_path,
+    monkeypatch,
+):
+    player_package_native.set_test_backend(None)
+    try:
+        source = _source(
+            tmp_path / "source",
+            "vendor/released-platform",
+            version="0.1.0",
+            engine=">=0.4,<0.5",
+        )
+        (source / "runtime").mkdir()
+        (source / "runtime" / "api.py").write_text(
+            "VALUE = 1\n",
+            encoding="utf-8",
+        )
+        package = _export(
+            source,
+            tmp_path / "vendor.released-platform.inxpkg",
+        )
+        artifact = package.read_bytes()
+
+        resources = tmp_path / "resources"
+        official = resources / "official_packages"
+        official.mkdir(parents=True)
+        (official / "official-registry.json").write_text(
+            json.dumps(
+                {
+                    "$schema": "infernux.official_plugin_registry",
+                    "packages": [
+                        {
+                            "reference": "vendor/released-platform",
+                            "name": "Released Platform",
+                            "version": "0.1.0",
+                            "intro": "Release-first test package",
+                            "intros": {},
+                            "artifact": "vendor.released-platform.inxpkg",
+                            "engine": ">=0.4,<0.5",
+                            "dependencies": [],
+                            "repository": "https://github.com/vendor/engine",
+                            "source": {
+                                "type": "github",
+                                "location": "https://github.com/vendor/engine",
+                                "revision": "040/multiplatform_build",
+                            },
+                            "category": "Platform",
+                            "targets": ["released-test"],
+                            "pages": [],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        manifest_name = release_manifest_name("vendor/released-platform")
+        release_manifest = {
+            "$schema": "infernux.plugin_release",
+            "reference": "vendor/released-platform",
+            "version": "0.1.0",
+            "release_tag": "v0.4.0",
+            "engine": ">=0.4,<0.5",
+            "artifact": {"name": "vendor.released-platform.inxpkg"},
+            "generator": "Infernux official plugin release assets",
+        }
+        releases = [
+            {
+                "tag_name": "v0.4.0",
+                "draft": False,
+                "prerelease": False,
+                "html_url": "https://github.com/vendor/engine/releases/tag/v0.4.0",
+                "assets": [
+                    {
+                        "name": manifest_name,
+                        "browser_download_url": "https://downloads.invalid/manifest",
+                    },
+                    {
+                        "name": "vendor.released-platform.inxpkg",
+                        "browser_download_url": "https://downloads.invalid/package",
+                    },
+                ],
+            }
+        ]
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+                self.offset = 0
+                self.headers = {"Content-Length": str(len(payload))}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, size=-1):
+                if size < 0:
+                    return self.payload
+                chunk = self.payload[self.offset : self.offset + size]
+                self.offset += len(chunk)
+                return chunk
+
+        def open_request(request, *, timeout):
+            assert timeout == 30
+            url = request.full_url
+            if url.startswith("https://api.github.com/"):
+                return Response(json.dumps(releases).encode("utf-8"))
+            if url.endswith("/manifest"):
+                return Response(json.dumps(release_manifest).encode("utf-8"))
+            if url.endswith("/package"):
+                return Response(artifact)
+            raise AssertionError(url)
+
+        monkeypatch.setattr(urllib.request, "urlopen", open_request)
+        project = _project(tmp_path / "project")
+        sync_official_registry(str(project), resources_root=str(resources))
+        manager = PluginManager(str(project))
+
+        downloaded = manager.download_reference("vendor/released-platform")
+
+        cached = Path(downloaded["path"])
+        assert cached.is_file()
+        assert cached.read_bytes() == artifact
+        assert manager.registry.installed() == ()
+        registry_entry = manager.registry.find("vendor/released-platform")
+        assert registry_entry["source"]["acquisition"] == "github-release"
+        assert registry_entry["source"]["release_tag"] == "v0.4.0"
+        assert registry_entry["source"]["cache_scope"] == "hub"
+        assert registry_entry["source"]["official"] is True
+        assert registry_entry["category"] == "Platform"
+        assert registry_entry["targets"] == ["released-test"]
+
+        installed = manager.install_reference(
+            "vendor/released-platform",
+            install_dependencies=False,
+        )
+        assert installed.reference == "vendor/released-platform"
+        assert manager.registry.installed_record("vendor/released-platform") is not None
+
+        manager.uninstall("vendor/released-platform")
+        assert manager.registry.installed() == ()
+        assert cached.is_file()
+    finally:
+        player_package_native.set_test_backend(_FakeInxPack)
+
+
+def test_incompatible_github_protocol_release_never_falls_back_to_head(
+    tmp_path, monkeypatch
+):
+    releases = [
+        {
+            "tag_name": "v1.0.0",
+            "draft": False,
+            "prerelease": False,
+            "assets": [
+                {
+                    "name": RELEASE_MANIFEST_NAME,
+                    "browser_download_url": "https://downloads.invalid/manifest",
+                },
+                {
+                    "name": "vendor.strict.inxpkg",
+                    "browser_download_url": "https://downloads.invalid/package",
+                },
+            ],
+        }
+    ]
+    monkeypatch.setattr(
+        github_releases_module,
+        "_request_bytes",
+        lambda *_args, **_kwargs: json.dumps(releases).encode("utf-8"),
+    )
+    monkeypatch.setattr(
+        github_releases_module,
+        "_release_manifest",
+        lambda _asset: {
+            "$schema": "infernux.plugin_release",
+            "reference": "vendor/strict",
+            "version": "1.0.0",
+            "engine": ">=9",
+            "artifact": {
+                "name": "vendor.strict.inxpkg",
+            },
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="No compatible Infernux plugin release"):
+        resolve_github_release(
+            "https://github.com/vendor/strict",
+            str(tmp_path / "downloads"),
+            expected_reference="vendor/strict",
+        )
+
+
+def test_package_cli_build_verify_and_release_manifest(tmp_path):
+    source = _source(tmp_path / "source", "vendor/cli", version="1.2.3")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "api.py").write_text("VALUE = 3\n", encoding="utf-8")
+    package = tmp_path / "vendor.cli.inxpkg"
+    manifest = tmp_path / RELEASE_MANIFEST_NAME
+
+    assert package_cli_main(
+        ["package", "build", str(source), str(package), "--profile", "release"]
+    ) == 0
+    assert package_cli_main(
+        ["package", "verify", str(package), "--engine", "0.4.0"]
+    ) == 0
+    assert package_cli_main(
+        [
+            "package",
+            "release-manifest",
+            str(package),
+            "--output",
+            str(manifest),
+            "--tag",
+            "v1.2.3",
+        ]
+    ) == 0
+
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    assert document["$schema"] == "infernux.plugin_release"
+    assert document["reference"] == "vendor/cli"
+    assert document["version"] == "1.2.3"
+    assert document["artifact"]["name"] == package.name
+    assert document["artifact"] == {"name": package.name}
+    assert package_cli_main(
+        [
+            "package",
+            "release-manifest",
+            str(package),
+            "--output",
+            str(manifest),
+            "--tag",
+            "v9.9.9",
+        ]
+    ) == 1
+
+    shared_manifest = tmp_path / "vendor.cli.release.json"
+    assert package_cli_main(
+        [
+            "package",
+            "release-manifest",
+            str(package),
+            "--output",
+            str(shared_manifest),
+            "--tag",
+            "v0.4.0",
+            "--shared-release",
+        ]
+    ) == 0
+    assert json.loads(shared_manifest.read_text(encoding="utf-8"))[
+        "release_tag"
+    ] == "v0.4.0"
 
 
 def test_arbitrary_pip_syntax_is_project_scoped_and_written_to_lock(tmp_path, monkeypatch):
@@ -533,17 +2041,19 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
     tmp_path, monkeypatch
 ):
     source = _source(tmp_path / "source", "vendor/distributed")
-    (source / "Runtime").mkdir()
-    (source / "Runtime" / "api.py").write_text("VALUE = 7\n", encoding="utf-8")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "api.py").write_text("VALUE = 7\n", encoding="utf-8")
     (source / "Scene.scene").write_text("scene", encoding="utf-8")
     package = _export(source, tmp_path / "distributed.inxpkg")
     expected_archive = dict(_FakeInxPack.archives[str(package.resolve())])
+    repository_source = tmp_path / "repository-source"
+    shutil.copytree(source, repository_source / "package")
 
     inventories = []
     cases = (
         ("direct", str(package)),
         ("local", {"type": "local", "location": str(source)}),
-        ("github", {"type": "github", "location": "https://github.test/vendor/repo.git"}),
+        ("github", {"type": "github", "location": "https://github.com/vendor/repo.git"}),
         ("git", {"type": "git", "location": "ssh://git.internal/vendor/repo.git"}),
         ("http", {"type": "url", "location": "https://packages.internal/distributed.inxpkg"}),
     )
@@ -554,10 +2064,25 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
         def run_process(command, cwd=None):
             if command[:2] == ["git", "clone"]:
                 checkout = Path(command[-1])
-                shutil.copytree(source, checkout, dirs_exist_ok=True)
-            return type("Result", (), {"stdout": ""})()
+                shutil.copytree(repository_source, checkout, dirs_exist_ok=True)
+            output = "a" * 40 if command[:3] == ["git", "rev-parse", "HEAD"] else ""
+            return type("Result", (), {"stdout": output})()
 
         monkeypatch.setattr(manager, "_run_process", run_process)
+        monkeypatch.setattr(
+            "Infernux.plugins.github_releases.resolve_github_release",
+            lambda *_args, **_kwargs: None,
+        )
+
+        def download_source(_location, destination, **_kwargs):
+            checkout = Path(destination) / "checkout"
+            shutil.copytree(repository_source, checkout, dirs_exist_ok=True)
+            return SimpleNamespace(root=str(checkout), commit="a" * 40)
+
+        monkeypatch.setattr(
+            "Infernux.plugins.github_releases.download_github_source",
+            download_source,
+        )
 
         def retrieve(_url, destination):
             shutil.copy2(package, destination)
@@ -570,7 +2095,7 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
         inventories.append(
             tuple(
                 sorted(
-                    (item["logical_path"], item["guid"], item["sha256"])
+                    (item["logical_path"], item["guid"])
                     for item in record["files"]
                 )
             )
@@ -602,7 +2127,7 @@ def test_http_package_download_streams_without_forced_time_or_size_limits(
         observed["url"] = request.full_url
         return Response((b"1234", b"5678", b"9"), content_length="999999999999")
 
-    monkeypatch.setattr(plugin_manager_module.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     destination = tmp_path / "download.inxpkg"
     plugin_manager_module._download_url_package(
         "https://packages.example/plugin.inxpkg",
@@ -622,7 +2147,7 @@ def test_http_package_download_streams_without_forced_time_or_size_limits(
         return FailedResponse((b"partial",))
 
     monkeypatch.setattr(
-        plugin_manager_module.urllib.request,
+        urllib.request,
         "urlopen",
         interrupted,
     )
@@ -634,14 +2159,14 @@ def test_http_package_download_streams_without_forced_time_or_size_limits(
     assert destination.read_bytes() == b"123456789"
 
 
-def test_uninstall_follows_guid_after_user_moves_asset_and_preserves_modification(tmp_path):
+def test_uninstall_follows_guid_and_removes_plugin_owned_modification(tmp_path):
     source = _source(tmp_path / "source", "vendor/movable")
     (source / "Data.bin").write_bytes(b"payload")
     package = _export(source, tmp_path / "movable.inxpkg")
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(package), install_dependencies=False)
-    old = project / "Assets/Plugins/vendor/movable/Data.bin"
+    old = project / "Assets/Plugins/Data.bin"
     moved = project / "Assets/UserLayout/Moved.bin"
     moved.parent.mkdir(parents=True)
     old.replace(moved)
@@ -652,8 +2177,8 @@ def test_uninstall_follows_guid_after_user_moves_asset_and_preserves_modificatio
     manager.install_package(str(package), install_dependencies=False)
     old.write_bytes(b"user modified")
     result = manager.uninstall("vendor/movable")
-    assert old.is_file()
-    assert str(old) in result["preserved_modified_files"]
+    assert not old.exists()
+    assert result["preserved_shared_files"] == []
 
 
 def test_uninstall_file_failure_rolls_back_payload_meta_and_registry(tmp_path, monkeypatch):
@@ -663,7 +2188,7 @@ def test_uninstall_file_failure_rolls_back_payload_meta_and_registry(tmp_path, m
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(package), install_dependencies=False)
-    payload = project / "Assets/Plugins/vendor/uninstall-rollback/Data.bin"
+    payload = project / "Assets/Plugins/Data.bin"
     meta = Path(str(payload) + ".meta")
     original_remove = os.remove
     failed = False
@@ -686,21 +2211,21 @@ def test_uninstall_file_failure_rolls_back_payload_meta_and_registry(tmp_path, m
 
 def test_runtime_native_payload_uses_package_route_and_player_policy(tmp_path):
     source = _source(tmp_path / "source", "vendor/native-runtime")
-    runtime = source / "Runtime"
+    runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "backend.pyd").write_bytes(b"native-extension-fixture")
     package = _export(source, tmp_path / "native-runtime.inxpkg")
     preview = InxPackage.inspect(str(package))
     record = next(
-        item for item in preview.file_records if item["logical_path"] == "Runtime/backend.pyd"
+        item for item in preview.file_records if item["logical_path"] == "runtime/backend.pyd"
     )
     assert record["role"] == "runtime"
-    assert player_file_exported(preview.metadata, "Runtime/backend.pyd") is True
+    assert player_file_exported(preview.metadata, "runtime/backend.pyd") is True
 
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(package), install_dependencies=False)
-    installed = project / "Packages/vendor/native-runtime/Runtime/backend.pyd"
+    installed = project / "Packages/vendor/native-runtime/runtime/backend.pyd"
     assert installed.read_bytes() == b"native-extension-fixture"
     assert Path(str(installed) + ".meta").is_file()
 
@@ -734,8 +2259,8 @@ def test_requirements_failure_rolls_back_new_plugin_dependencies(tmp_path, monke
         manager.install_package(str(parent_package))
 
     assert manager.registry.installed() == ()
-    assert not (project / "Assets/Plugins/vendor/requirement-child/Child.bin").exists()
-    assert not (project / "Assets/Plugins/vendor/requirement-parent/Parent.bin").exists()
+    assert not (project / "Assets/Plugins/Child.bin").exists()
+    assert not (project / "Assets/Plugins/Parent.bin").exists()
 
 
 def test_pip_side_effect_rolls_back_when_file_registry_transaction_fails(
@@ -782,7 +2307,7 @@ def test_pip_side_effect_rolls_back_when_file_registry_transaction_fails(
     assert environment == {}
     assert manager.registry.installed() == ()
     assert any(command[2:4] == ["pip", "uninstall"] for command in commands)
-    assert not (project / "Assets/Plugins/vendor/pip-rollback/Data.bin").exists()
+    assert not (project / "Assets/Plugins/Data.bin").exists()
 
 
 def test_shared_pip_distribution_is_removed_only_after_last_plugin_owner(
@@ -838,6 +2363,68 @@ def test_shared_pip_distribution_is_removed_only_after_last_plugin_owner(
     assert manager.registry.load()["python_dependencies"] == []
 
 
+def test_startup_restores_installed_plugin_requirements_in_new_environment(
+    tmp_path, monkeypatch
+):
+    source = _source(tmp_path / "source", "vendor/portable-python")
+    (source / "requirements.txt").write_text(
+        "shared-wheel>=1,<2\n", encoding="utf-8"
+    )
+    (source / "Data.bin").write_bytes(b"payload")
+    package = _export(source, tmp_path / "portable-python.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    environment: dict[str, str] = {}
+    commands: list[list[str]] = []
+
+    def run(command, cwd=None):
+        commands.append(list(command))
+        if command[2:5] == ["pip", "list", "--format=json"]:
+            return type(
+                "Result",
+                (),
+                {
+                    "stdout": json.dumps(
+                        [
+                            {"name": name, "version": version}
+                            for name, version in environment.items()
+                        ]
+                    )
+                },
+            )()
+        if command[2:4] == ["pip", "install"]:
+            environment["shared-wheel"] = "1.5"
+        return type("Result", (), {"stdout": "ok"})()
+
+    monkeypatch.setattr(manager, "_project_python_executable", lambda: "project-python")
+    monkeypatch.setattr(manager, "_run_process", run)
+    manager.install_package(str(package))
+    environment.clear()
+    commands.clear()
+
+    assert manager._reconcile_python_requirements_for_startup() == (
+        "vendor/portable-python",
+    )
+    assert environment == {"shared-wheel": "1.5"}
+    assert sum(command[2:4] == ["pip", "install"] for command in commands) == 1
+    ledger = manager.registry.load()["python_dependencies"]
+    assert ledger[0]["owners"] == [
+        {
+            "reference": "vendor/portable-python",
+            "requirements": ["shared-wheel>=1,<2"],
+        }
+    ]
+    assert ledger[0]["baseline_version"] == ""
+    assert ledger[0]["installed_version"] == "1.5"
+    assert manager.registry.installed_record("vendor/portable-python")[
+        "python_requirements"
+    ] == [{"name": "shared-wheel", "requirement": "shared-wheel>=1,<2"}]
+
+    commands.clear()
+    assert manager._reconcile_python_requirements_for_startup() == ()
+    assert not any(command[2:4] == ["pip", "install"] for command in commands)
+
+
 def test_reference_identity_is_casefolded_across_platforms(tmp_path):
     lower = _source(tmp_path / "lower", "Vendor/CaseIdentity")
     upper = _source(tmp_path / "upper", "vendor/caseidentity")
@@ -859,7 +2446,7 @@ def test_reference_identity_is_casefolded_across_platforms(tmp_path):
 
 def test_failed_preload_unload_aborts_uninstall_and_requires_restart(tmp_path):
     source = _source(tmp_path / "source", "vendor/stubborn")
-    runtime = source / "Runtime"
+    runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "service.py").write_text(
         "from Infernux.lifecycle import InxPreload\n"
@@ -872,7 +2459,7 @@ def test_failed_preload_unload_aborts_uninstall_and_requires_restart(tmp_path):
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
     manager.install_package(str(package), install_dependencies=False)
-    script = project / "Packages/vendor/stubborn/Runtime/service.py"
+    script = project / "Packages/vendor/stubborn/runtime/service.py"
 
     with pytest.raises(RuntimeError, match="uninstall aborted"):
         manager.uninstall("vendor/stubborn")
@@ -889,12 +2476,289 @@ def test_failed_preload_unload_aborts_uninstall_and_requires_restart(tmp_path):
     assert not script.exists()
 
 
+@pytest.mark.parametrize("keep_author", [False, True])
+@pytest.mark.parametrize("fail_uninstall", [False, True])
+def test_uninstall_removes_only_owned_script_caches_transactionally(
+    tmp_path, monkeypatch, keep_author, fail_uninstall
+):
+    import py_compile
+    from Infernux.core.assets import AssetManager
+
+    source = _source(tmp_path / "source", "vendor/cached")
+    (source / "editor").mkdir()
+    (source / "editor" / "owned.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "cached.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    manager.install_package(str(package), install_dependencies=False)
+    role = project / "Packages/vendor/cached/editor"
+    # Reproduce a legacy authored spelling on both case-sensitive and
+    # case-insensitive hosts. GUID-based uninstall must follow the moved file.
+    intermediate = role.with_name("role-moving")
+    role.rename(intermediate)
+    role = role.with_name("Editor")
+    intermediate.rename(role)
+    owned = role / "owned.py"
+    caches = [Path(py_compile.compile(str(owned), optimize=level, doraise=True)) for level in (0, 1, 2)]
+    author = role / "author.py"
+    if keep_author:
+        author.write_text("VALUE = 2\n", encoding="utf-8")
+        author_cache = Path(py_compile.compile(str(author), doraise=True))
+        author_bytes = author_cache.read_bytes()
+    if fail_uninstall:
+        echo_before = AssetManager.is_watcher_echo_suppressed("deleted", str(owned))
+        original_remove = plugin_manager_module._InstallTransaction.remove
+
+        def fail_after_cache(self, path):
+            if path == str(owned):
+                raise OSError("injected source removal failure")
+            return original_remove(self, path)
+
+        monkeypatch.setattr(plugin_manager_module._InstallTransaction, "remove", fail_after_cache)
+        with pytest.raises(OSError, match="injected source removal failure"):
+            manager.uninstall("vendor/cached")
+        assert owned.is_file()
+        assert all(cache.is_file() for cache in caches)
+        assert manager.registry.installed_record("vendor/cached") is not None
+        assert AssetManager.is_watcher_echo_suppressed("deleted", str(owned)) == echo_before
+    else:
+        manager.uninstall("vendor/cached")
+        assert not owned.exists()
+        assert not any(cache.exists() for cache in caches)
+        assert AssetManager.is_watcher_echo_suppressed("deleted", str(owned))
+        assert role.exists() == keep_author
+        manager.install_package(str(package), install_dependencies=False)
+        installed_role = role if keep_author else role.with_name("editor")
+        assert (installed_role / "owned.py").is_file()
+    if keep_author:
+        assert author.read_text(encoding="utf-8") == "VALUE = 2\n"
+        assert author_cache.read_bytes() == author_bytes
+
+
+def test_package_preload_supports_relative_imports(tmp_path):
+    source = _source(tmp_path / "source", "vendor/relative-preload")
+    package_module = source / "editor" / "infernux_relative_preload"
+    package_module.mkdir(parents=True)
+    (package_module / "__init__.py").write_text("", encoding="utf-8")
+    (package_module / "service.py").write_text(
+        "VALUE = 'relative-import-ready'\n", encoding="utf-8"
+    )
+    (package_module / "lifecycle.py").write_text(
+        "from pathlib import Path\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "from .service import VALUE\n"
+        "class RelativePreload(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        Path(context.project_root, 'relative-preload.txt').write_text(VALUE)\n",
+        encoding="utf-8",
+    )
+    package = _export(source, tmp_path / "relative-preload.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+
+    state = manager.install_package(str(package), install_dependencies=False)
+
+    assert state.loaded
+    assert state.error == ""
+    assert (project / "relative-preload.txt").read_text(encoding="utf-8") == (
+        "relative-import-ready"
+    )
+
+
+@pytest.mark.parametrize("role", ["editor", "runtime"])
+@pytest.mark.parametrize("extract_only", [False, True])
+def test_import_reuses_authored_role_root_without_moving_user_files(tmp_path, role, extract_only):
+    source = _source(tmp_path / "source", "vendor/authored-role")
+    module = source / role / "authored_role_probe"
+    module.mkdir(parents=True)
+    (module / "__init__.py").write_text("", encoding="utf-8")
+    (module / "service.py").write_text("VALUE = 'current'\n", encoding="utf-8")
+    (module / "lifecycle.py").write_text(
+        "from pathlib import Path\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "class AuthoredRolePreload(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        from authored_role_probe.service import VALUE\n"
+        "        Path(context.project_root, 'authored-role.txt').write_text(VALUE)\n",
+        encoding="utf-8",
+    )
+    package = _export(source, tmp_path / "authored-role.inxpkg")
+    project = _project(tmp_path / "project")
+    authored_root = project / "Packages/vendor/authored-role" / role.title()
+    authored_root.mkdir(parents=True)
+    author = authored_root / "UserKeep.py"
+    author.write_text("VALUE = 'author'\n", encoding="utf-8")
+    if extract_only:
+        InxPackage.extract(str(package), str(project))
+        manager = PluginManager.startup(str(project))
+    else:
+        manager = PluginManager.startup(str(project))
+        manager.install_package(str(package), install_dependencies=False)
+    try:
+        assert [p.name for p in authored_root.parent.iterdir() if p.is_dir() and p.name.casefold() == role] == [role.title()]
+        assert author.read_text(encoding="utf-8") == "VALUE = 'author'\n"
+        assert (authored_root / "authored_role_probe/service.py").is_file()
+        state = next(state for state in manager.preloads.states.values() if state.type_name == "AuthoredRolePreload")
+        assert state.loaded, state.error
+        assert (project / "authored-role.txt").read_text(encoding="utf-8") == "current"
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.skipif(os.path.normcase("Editor") == os.path.normcase("editor"), reason="case-sensitive filesystem boundary")
+@pytest.mark.parametrize("extract_only", [False, True])
+def test_import_rejects_ambiguous_authored_role_before_writing(tmp_path, extract_only):
+    source = _source(tmp_path / "source", "vendor/ambiguous")
+    (source / "editor").mkdir()
+    (source / "editor/new.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "ambiguous.inxpkg")
+    project = _project(tmp_path / "project")
+    root = project / "Packages/vendor/ambiguous"
+    for role in ("Editor", "editor"):
+        (root / role).mkdir(parents=True)
+        (root / role / "keep.txt").write_text(role, encoding="utf-8")
+    manager = PluginManager(str(project))
+    with pytest.raises(ValueError, match="Ambiguous package role 'editor'"):
+        if extract_only:
+            InxPackage.extract(str(package), str(project))
+        else:
+            manager.install_package(str(package), install_dependencies=False)
+    assert manager.registry.installed_record("vendor/ambiguous") is None
+    for role in ("Editor", "editor"):
+        assert (root / role / "keep.txt").read_text(encoding="utf-8") == role
+        assert not (root / role / "new.py").exists()
+
+
+@pytest.mark.parametrize("outside_package", [False, True])
+def test_project_package_destination_rejects_redirected_role(tmp_path, outside_package):
+    from Infernux.plugins.package import package_destination
+
+    project = _project(tmp_path / "project")
+    root = project / "Packages/vendor/redirected"
+    root.mkdir(parents=True)
+    target = tmp_path / "outside" if outside_package else root / "another_directory"
+    target.mkdir()
+    try:
+        (root / "Editor").symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Directory symlink unavailable: {exc}")
+    with pytest.raises(ValueError):
+        package_destination("vendor/redirected", "editor/new.py", project_root=str(project))
+    assert not list(target.iterdir())
+
+
+@pytest.mark.parametrize("role", ["editor", "Editor", "runtime", "Runtime"])
+def test_package_preload_absolute_imports_use_authored_role_spelling(tmp_path, role):
+    import sys
+
+    project = _project(tmp_path / "project")
+    role_root = project / "Packages" / "case_probe" / role
+    module = role_root / "infernux_case_probe"
+    module.mkdir(parents=True)
+    (module / "__init__.py").write_text("", encoding="utf-8")
+    (module / "service.py").write_text("VALUE = 'case-ready'\n", encoding="utf-8")
+    lifecycle = module / "lifecycle.py"
+    lifecycle.write_text(
+        "from pathlib import Path\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "class CasePreload(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        from infernux_case_probe.service import VALUE\n"
+        "        Path(context.project_root, 'case-ready.txt').write_text(VALUE)\n",
+        encoding="utf-8",
+    )
+    # Assert the physical spelling even on case-insensitive Windows, where
+    # importing from a fabricated lowercase directory would hide this bug.
+    with preload_module._temporary_import_paths(str(lifecycle), str(project), "case_probe"):
+        assert str(role_root.resolve()) in sys.path
+
+    manager = PluginManager.startup(str(project))
+    try:
+        state = next(iter(manager.preloads.states.values()))
+        assert state.loaded, state.error
+        assert (project / "case-ready.txt").read_text(encoding="utf-8") == "case-ready"
+    finally:
+        manager.shutdown()
+
+
+def test_manifestless_local_package_preload_supports_relative_imports(tmp_path):
+    project = _project(tmp_path / "project")
+    package_module = project / "Packages" / "abc" / "Editor" / "local_tool"
+    package_module.mkdir(parents=True)
+    (package_module / "service.py").write_text(
+        "VALUE = 'local-package-ready'\n", encoding="utf-8"
+    )
+    (package_module / "lifecycle.py").write_text(
+        "from pathlib import Path\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "from .service import VALUE\n"
+        "class LocalPreload(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        Path(context.project_root, 'local-package.txt').write_text(VALUE)\n",
+        encoding="utf-8",
+    )
+
+    manager = PluginManager.startup(str(project))
+
+    state = next(iter(manager.preloads.states.values()))
+    assert state.loaded is True
+    assert state.package_reference == "abc"
+    assert state.module_name == (
+        "_infernux_packages.abc.editor.local_tool.lifecycle"
+    )
+    assert (project / "local-package.txt").read_text(encoding="utf-8") == (
+        "local-package-ready"
+    )
+
+    manager.shutdown()
+    (project / "local-package.txt").unlink()
+    runtime_preloads = preload_module.PreloadManager(str(project), runtime=True)
+    assert runtime_preloads.reload_all() == ()
+    assert not (project / "local-package.txt").exists()
+
+
+def test_package_preloads_with_matching_module_paths_are_isolated(tmp_path):
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+
+    for reference, marker in (("vendor/first", "first"), ("vendor/second", "second")):
+        source = _source(tmp_path / marker, reference)
+        package_module = source / "editor" / "shared_name"
+        package_module.mkdir(parents=True)
+        (package_module / "__init__.py").write_text("", encoding="utf-8")
+        (package_module / "service.py").write_text(
+            f"VALUE = {marker!r}\n", encoding="utf-8"
+        )
+        (package_module / "lifecycle.py").write_text(
+            "from pathlib import Path\n"
+            "from Infernux.lifecycle import InxPreload\n"
+            "from .service import VALUE\n"
+            "class SharedNamePreload(InxPreload):\n"
+            "    def preload(self, context):\n"
+            "        Path(context.project_root, VALUE + '.txt').write_text(VALUE)\n",
+            encoding="utf-8",
+        )
+        package = _export(source, tmp_path / f"{marker}.inxpkg")
+        state = manager.install_package(str(package), install_dependencies=False)
+        assert state.loaded
+
+    assert (project / "first.txt").read_text(encoding="utf-8") == "first"
+    assert (project / "second.txt").read_text(encoding="utf-8") == "second"
+    module_names = {
+        state.module_name
+        for state in manager.preloads.states.values()
+        if state.type_name == "SharedNamePreload"
+    }
+    assert len(module_names) == 2
+    assert all(name.startswith("_infernux_packages.") for name in module_names)
+
+
 def test_stubborn_plugin_does_not_block_unrelated_plugin_lifecycle(
     tmp_path, monkeypatch
 ):
     stubborn = _source(tmp_path / "stubborn", "vendor/stubborn-slice")
-    (stubborn / "Runtime").mkdir()
-    (stubborn / "Runtime" / "service.py").write_text(
+    (stubborn / "runtime").mkdir()
+    (stubborn / "runtime" / "service.py").write_text(
         "from Infernux.lifecycle import InxPreload\n"
         "class Stubborn(InxPreload):\n"
         "    def preload(self, context): pass\n"
@@ -902,8 +2766,8 @@ def test_stubborn_plugin_does_not_block_unrelated_plugin_lifecycle(
         encoding="utf-8",
     )
     safe = _source(tmp_path / "safe", "vendor/safe-slice")
-    (safe / "Runtime").mkdir()
-    (safe / "Runtime" / "service.py").write_text(
+    (safe / "runtime").mkdir()
+    (safe / "runtime" / "service.py").write_text(
         "from pathlib import Path\n"
         "from Infernux.lifecycle import InxPreload\n"
         "class Safe(InxPreload):\n"
@@ -998,6 +2862,54 @@ def test_native_guid_index_avoids_meta_walk_and_drives_preload_catalog(
     ]
 
 
+def test_plugin_refresh_does_not_hide_the_project_database_error(tmp_path):
+    project = _project(tmp_path / "project")
+
+    def refresh():
+        raise RuntimeError("asset publication failed")
+
+    database = SimpleNamespace(project_root=str(project), refresh=refresh)
+    engine = SimpleNamespace(get_asset_database=lambda: database)
+    manager = PluginManager(str(project), engine=engine)
+    with pytest.raises(RuntimeError, match="asset publication failed"):
+        manager._refresh_editor_assets()
+
+
+def test_detached_plugin_refresh_does_not_touch_another_project(tmp_path, monkeypatch):
+    from Infernux.core.assets import AssetManager
+
+    project = _project(tmp_path / "project")
+    refreshed = []
+    database = SimpleNamespace(
+        project_root=str(tmp_path / "other"), refresh=lambda: refreshed.append(True)
+    )
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    monkeypatch.setattr(
+        "Infernux.lib.AssetRegistry",
+        SimpleNamespace(instance=lambda: SimpleNamespace(get_asset_database=lambda: database)),
+    )
+    PluginManager(str(project))._refresh_editor_assets()
+    assert refreshed == []
+
+
+def test_native_guid_index_failure_does_not_probe_another_database(
+    tmp_path, monkeypatch
+):
+    project = _project(tmp_path / "project")
+
+    class Engine:
+        @staticmethod
+        def get_asset_database():
+            raise RuntimeError("native catalog unavailable")
+
+    monkeypatch.setattr(
+        "Infernux.plugins.project_index._scan_guid_paths",
+        lambda _root: pytest.fail("native GUID failure fell back to os.walk"),
+    )
+    with pytest.raises(RuntimeError, match="native catalog unavailable"):
+        project_guid_paths(str(project), engine=Engine())
+
+
 def test_static_preload_discovery_imports_only_lifecycle_candidates(tmp_path):
     project = _project(tmp_path / "project")
     marker = project / "ordinary-imported.txt"
@@ -1032,6 +2944,66 @@ def test_static_preload_discovery_imports_only_lifecycle_candidates(tmp_path):
     manager.reload_all()
     assert (project / "Assets" / "unloaded.txt").is_file()
     assert (project / "preloaded.txt").read_text(encoding="utf-8") == first_guid
+
+
+def test_static_preload_discovery_accepts_lowercase_public_namespace(tmp_path):
+    project = _project(tmp_path / "project")
+    lifecycle = project / "Assets" / "startup.py"
+    lifecycle.write_text(
+        "from pathlib import Path\n"
+        "import infernux as inx\n"
+        "class Startup(inx.InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        Path(context.project_root, 'lowercase-preloaded.txt').write_text(context.script_guid)\n",
+        encoding="utf-8",
+    )
+
+    manager = PluginManager.startup(str(project))
+
+    states = manager.preloads.snapshots()
+    assert len(states) == 1
+    assert states[0]["type_name"] == "Startup"
+    assert states[0]["loaded"] is True
+    assert (project / "lowercase-preloaded.txt").read_text(encoding="utf-8")
+
+
+def test_non_identifier_preload_module_uses_its_asset_guid(tmp_path):
+    project = _project(tmp_path / "project")
+    lifecycle = project / "Assets" / "startup script.py"
+    lifecycle.write_text(
+        "from Infernux.lifecycle import InxPreload\n"
+        "class Startup(InxPreload):\n"
+        "    def preload(self, context): pass\n",
+        encoding="utf-8",
+    )
+    guid = "1234567890abcdef1234567890abcdef"
+    Path(str(lifecycle) + ".meta").write_text(_meta(guid), encoding="utf-8")
+
+    assert preload_module._module_name(str(lifecycle), str(project)) == (
+        f"infernux_project_script_{guid}"
+    )
+    manager = PluginManager.startup(str(project))
+
+    state = next(iter(manager.preloads.states.values()))
+    assert state.module_name == f"_infernux_preload_{guid}"
+
+
+def test_preload_rejects_invalid_script_identity_metadata(tmp_path):
+    project = _project(tmp_path / "project")
+    lifecycle = project / "Assets" / "startup.py"
+    lifecycle.write_text(
+        "from Infernux.lifecycle import InxPreload\n"
+        "class Startup(InxPreload):\n"
+        "    def preload(self, context): pass\n",
+        encoding="utf-8",
+    )
+    Path(str(lifecycle) + ".meta").write_text(
+        '{"metadata":{"guid":{"type":"string","value":"broken"}}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid script identity metadata"):
+        PluginManager.startup(str(project))
 
 
 def test_reload_all_reuses_unchanged_ast_catalog_and_parses_only_changes(
@@ -1095,6 +3067,54 @@ def test_ordinary_script_change_does_not_reload_preloads_or_rescan_catalog(
     assert not (project / "Assets" / "unloaded.txt").exists()
 
 
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("role", ["editor", "runtime"])
+@pytest.mark.parametrize("background", [False, True])
+def test_install_script_events_are_owned_but_later_author_edits_refresh(
+    tmp_path, partial, role, background
+):
+    from Infernux.core.assets import AssetManager
+    from concurrent.futures import ThreadPoolExecutor
+
+    source = _source(tmp_path / "source", "vendor/echo")
+    (source / role).mkdir()
+    (source / role / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source / "bare.py").write_text("BARE = 1\n", encoding="utf-8")
+    (source / "message.txt").write_text("payload", encoding="utf-8")
+    package = tmp_path / "echo.inxpkg"
+    InxPackage.export_source(str(source), str(package))
+    project = _project(tmp_path / "project")
+    manager = PluginManager.startup(str(project))
+    if partial:
+        manager.install_package(str(package), selected=("message.txt",))
+    if background:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.submit(manager.install_package, str(package)).result()
+        manager.finalize_background_install("vendor/echo")
+    else:
+        manager.install_package(str(package))
+    script = project / "Packages/vendor/echo" / role / "helper.py"
+    for event in ("created", "modified", "deleted"):
+        assert AssetManager.is_watcher_echo_suppressed(event, str(script))
+        assert AssetManager.is_watcher_echo_suppressed(event, str(script))
+        assert not AssetManager.is_watcher_echo_suppressed(
+            event, str(project / "Assets/Plugins/bare.py")
+        )
+        assert not AssetManager.is_watcher_echo_suppressed(
+            event, str(project / "Assets/Plugins/message.txt")
+        )
+    script.write_text("VALUE = 2\n", encoding="utf-8")
+    assert not AssetManager.is_watcher_echo_suppressed("modified", str(script))
+    assert not AssetManager.is_watcher_echo_suppressed("created", str(script))
+    assert not AssetManager.is_watcher_echo_suppressed("deleted", str(script))
+    # Reinstallation acknowledges stale deletes, not a subsequent real delete.
+    manager.uninstall("vendor/echo")
+    manager.install_package(str(package))
+    assert AssetManager.is_watcher_echo_suppressed("deleted", str(script))
+    script.unlink()
+    assert not AssetManager.is_watcher_echo_suppressed("deleted", str(script))
+
+
 def test_preload_change_reloads_only_its_dependency_slice(tmp_path, monkeypatch):
     project = _project(tmp_path / "project")
 
@@ -1137,7 +3157,7 @@ def test_preload_change_reloads_only_its_dependency_slice(tmp_path, monkeypatch)
 
 def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tmp_path):
     source = _source(tmp_path / "source", "vendor/lifecycle")
-    runtime = source / "Runtime"
+    runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "foundation.py").write_text(
         "from abc import abstractmethod\n"
@@ -1150,7 +3170,7 @@ def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tm
     )
     (runtime / "startup.py").write_text(
         "from pathlib import Path\n"
-        "from foundation import Foundation\n"
+            "from .foundation import Foundation\n"
         "class Startup(Foundation):\n"
         "    def configure(self): return None\n"
         "    def preload(self, context):\n"
@@ -1169,8 +3189,8 @@ def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tm
     assert state.lifecycle[0]["restart_reason"] == "native test state"
     original_identity = state.lifecycle[0]["identity"]
 
-    old = project / "Packages/vendor/lifecycle/Runtime/startup.py"
-    moved = project / "Packages/vendor/lifecycle/Runtime/boot.py"
+    old = project / "Packages/vendor/lifecycle/runtime/startup.py"
+    moved = project / "Packages/vendor/lifecycle/runtime/boot.py"
     old.replace(moved)
     Path(str(old) + ".meta").replace(Path(str(moved) + ".meta"))
     state = manager.reload("vendor/lifecycle")
@@ -1184,10 +3204,96 @@ def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tm
     assert (project / "package-loaded.txt").is_file()
 
 
+@pytest.mark.parametrize("refresh", ["reload_all", "catch_up", "reload_path", "reload_package"])
+@pytest.mark.parametrize("native_index", [False, True])
+def test_new_package_preload_obeys_disable_and_enable_without_taking_ownership(
+    tmp_path, monkeypatch, request, refresh, native_index
+):
+    source = _source(tmp_path / "source", "vendor/mutable")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "mutable.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    request.addfinalizer(manager.preloads.unload_all)
+    manager.install_package(str(package), install_dependencies=False)
+    manager.set_enabled("vendor/mutable", False)
+    before = manager.registry.installed_record("vendor/mutable")
+    new_script = project / "Packages/vendor/mutable/runtime/added.py"
+    new_script.write_text(
+        "from pathlib import Path\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "class Added(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        Path(context.project_root, 'added-ran.txt').write_text('yes')\n",
+        encoding="utf-8",
+    )
+    new_script.with_suffix(".py.meta").write_text(_meta("a" * 32), encoding="utf-8")
+    if native_index:
+        def native_paths(project_root, *, engine=None):
+            paths, _native = project_guid_paths(project_root)
+            return paths, True
+        monkeypatch.setattr(preload_module, "project_guid_paths", native_paths)
+
+    if refresh == "reload_path":
+        manager.preloads.reload_path(str(new_script))
+    elif refresh == "reload_package":
+        manager.preloads.reload_package("vendor/mutable")
+    else:
+        getattr(manager.preloads, refresh)()
+    assert not (project / "added-ran.txt").exists()
+    assert not manager.preloads.states
+    assert not manager.preloads.failures
+    assert manager.registry.installed_record("vendor/mutable") == before
+
+    enabled = manager.set_enabled("vendor/mutable", True)
+    assert enabled.enabled and enabled.loaded
+    assert (project / "added-ran.txt").read_text(encoding="utf-8") == "yes"
+    assert len(enabled.lifecycle) == 1
+    assert enabled.lifecycle[0]["package_reference"] == "vendor/mutable"
+    assert manager.registry.installed_record("vendor/mutable")["files"] == before["files"]
+    manager.set_enabled("vendor/mutable", False)
+    assert not manager.preloads.states
+
+
+@pytest.mark.parametrize("role", ["runtime", "editor"])
+@pytest.mark.parametrize("refresh", ["reload_all", "reload_path", "reload_package"])
+def test_player_preload_refresh_respects_current_role_and_package_boundary(
+    tmp_path, request, role, refresh
+):
+    # A reference containing "editor" is not an Editor role directory.
+    reference = "vendor/editor/tool"
+    source = _source(tmp_path / "source", reference)
+    (source / "runtime").mkdir()
+    (source / "runtime" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+    package = _export(source, tmp_path / "role.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=True)
+    request.addfinalizer(manager.preloads.unload_all)
+    manager.install_package(str(package), install_dependencies=False)
+    script = project / "Packages" / reference / role / "added.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "from Infernux.lifecycle import InxPreload\n"
+        "class Added(InxPreload):\n"
+        "    def preload(self, context): pass\n",
+        encoding="utf-8",
+    )
+    script.with_suffix(".py.meta").write_text(_meta("b" * 32), encoding="utf-8")
+    if refresh == "reload_path":
+        manager.preloads.reload_path(str(script))
+    elif refresh == "reload_package":
+        manager.preloads.reload_package(reference)
+    else:
+        manager.preloads.reload_all()
+    assert not manager.preloads.failures
+    assert len(manager.preloads.states) == (1 if role == "runtime" else 0)
+
+
 def test_package_dependency_preload_and_reverse_unload_order(tmp_path):
     def lifecycle_source(reference: str, label: str) -> Path:
         source = _source(tmp_path / label, reference)
-        runtime = source / "Runtime"
+        runtime = source / "runtime"
         runtime.mkdir()
         (runtime / "startup.py").write_text(
             "from pathlib import Path\n"
@@ -1229,67 +3335,17 @@ def test_package_dependency_preload_and_reverse_unload_order(tmp_path):
     ]
 
 
-def test_manifest_dependencies_are_installed_and_recorded(tmp_path):
-    dependency = _source(tmp_path / "dependency", "vendor/manifest-child")
-    (dependency / "Child.bin").write_bytes(b"child")
-    dependency_package = _export(dependency, tmp_path / "manifest-child.inxpkg")
-    parent = _source(tmp_path / "parent", "vendor/manifest-parent")
-    manifest_path = parent / "InxPackage.json"
+@pytest.mark.parametrize("field,value", [("dependencies", []), ("requirements", "requirements.txt")])
+def test_source_manifest_rejects_unimplemented_dependency_fields(tmp_path, field, value):
+    source = _source(tmp_path / "source", "vendor/current-schema")
+    manifest_path = source / "inx_package.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["dependencies"] = ["vendor/manifest-child"]
+    manifest[field] = value
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    (parent / "Parent.bin").write_bytes(b"parent")
-    parent_package = _export(parent, tmp_path / "manifest-parent.inxpkg")
-    project = _project(tmp_path / "project")
-    manager = PluginManager(str(project))
-    manager.registry.add_package(
-        "vendor/manifest-child",
-        source={"type": "local", "location": str(dependency_package)},
-    )
+    (source / "payload.bin").write_bytes(b"payload")
 
-    manager.install_package(str(parent_package))
-
-    assert {item["reference"] for item in manager.registry.installed()} == {
-        "vendor/manifest-child",
-        "vendor/manifest-parent",
-    }
-    installed = manager.registry.installed_record("vendor/manifest-parent")
-    assert installed["dependencies"] == ["vendor/manifest-child"]
-    with pytest.raises(RuntimeError, match="required by"):
-        manager.uninstall("vendor/manifest-child")
-
-
-def test_manifest_dependency_failure_rolls_back_new_dependencies(tmp_path, monkeypatch):
-    dependency = _source(tmp_path / "dependency", "vendor/rollback-child")
-    (dependency / "Child.bin").write_bytes(b"child")
-    dependency_package = _export(dependency, tmp_path / "rollback-child.inxpkg")
-    parent = _source(tmp_path / "parent", "vendor/rollback-parent")
-    manifest_path = parent / "InxPackage.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["dependencies"] = ["vendor/rollback-child"]
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    (parent / "Parent.bin").write_bytes(b"parent")
-    parent_package = _export(parent, tmp_path / "rollback-parent.inxpkg")
-    project = _project(tmp_path / "project")
-    manager = PluginManager(str(project))
-    manager.registry.add_package(
-        "vendor/rollback-child",
-        source={"type": "local", "location": str(dependency_package)},
-    )
-    original_plan = manager._plan_install
-
-    def fail_parent(preview, selected):
-        if preview.metadata["reference"] == "vendor/rollback-parent":
-            raise RuntimeError("simulated parent planning failure")
-        return original_plan(preview, selected)
-
-    monkeypatch.setattr(manager, "_plan_install", fail_parent)
-
-    with pytest.raises(RuntimeError, match="planning failure"):
-        manager.install_package(str(parent_package))
-
-    assert manager.registry.installed() == ()
-    assert not (project / "Assets/Plugins/vendor/rollback-child/Child.bin").exists()
+    with pytest.raises(ValueError, match=f"Unsupported inx_package.json fields: {field}"):
+        _export(source, tmp_path / "invalid.inxpkg")
 
 
 def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
@@ -1297,7 +3353,8 @@ def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
     from Infernux.engine.ui.panel_registry import PanelRegistry
 
     class WindowManagerStub:
-        def __init__(self):
+        def __init__(self, panel_interactions):
+            self.panel_interactions = panel_interactions
             self.registered = []
             self.removed = []
 
@@ -1309,7 +3366,7 @@ def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
             return True
 
     source = _source(tmp_path / "source", "vendor/live-panel")
-    runtime = source / "Runtime"
+    runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "startup.py").write_text(
         "from Infernux.engine.interaction import PanelInteractionDescriptor\n"
@@ -1325,9 +3382,9 @@ def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
     package = _export(source, tmp_path / "live-panel.inxpkg")
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
-    windows = WindowManagerStub()
     interactions = PanelInteractionRegistry()
-    PanelRegistry.bind_live(windows, interactions)
+    windows = WindowManagerStub(interactions)
+    PanelRegistry.bind_live(windows)
     try:
         manager.install_package(str(package), install_dependencies=False)
         assert windows.registered == ["vendor.live_tool"]
@@ -1352,8 +3409,8 @@ def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
 
 def test_requirements_choose_official_inxpackage_before_pip(tmp_path, monkeypatch):
     dependency = _source(tmp_path / "dependency", "vendor/dependency", version="2.1.0")
-    (dependency / "Runtime").mkdir()
-    (dependency / "Runtime" / "api.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (dependency / "runtime").mkdir()
+    (dependency / "runtime" / "api.py").write_text("VALUE = 1\n", encoding="utf-8")
     dep_package = _export(dependency, tmp_path / "dependency.inxpkg")
     parent = _source(tmp_path / "parent", "vendor/parent")
     (parent / "requirements.txt").write_text(
@@ -1394,18 +3451,19 @@ def test_requirements_choose_official_inxpackage_before_pip(tmp_path, monkeypatc
     assert install_calls[0][:4] == ["project-python", "-m", "pip", "install"]
 
 
-def test_readme_license_pages_markdown_and_relative_images(tmp_path):
+def test_only_plugin_pages_are_displayed_and_resolve_relative_images(tmp_path):
     source = _source(tmp_path / "source", "vendor/documented")
     (source / "README.md").write_text(
         "# Plugin\n\nIntro paragraph.\n\n## Gallery\n\n![Preview](Images/preview.png)\n",
         encoding="utf-8",
     )
     (source / "LICENSE").write_text("License text", encoding="utf-8")
-    (source / "Images").mkdir()
-    (source / "Images" / "preview.png").write_bytes(b"image")
-    (source / "InxPluginPages").mkdir()
-    (source / "InxPluginPages" / "Guide.md").write_text(
-        "### Guide\n\nSteps", encoding="utf-8"
+    (source / "plugin_pages").mkdir()
+    (source / "plugin_pages" / "media").mkdir()
+    (source / "plugin_pages" / "media" / "preview.png").write_bytes(b"image")
+    (source / "plugin_pages" / "guide.md").write_text(
+        "# Guide\n\nSteps\n\n## Gallery\n\n![Preview](media/preview.png)\n",
+        encoding="utf-8",
     )
     package = _export(source, tmp_path / "documented.inxpkg")
     project = _project(tmp_path / "project")
@@ -1413,11 +3471,61 @@ def test_readme_license_pages_markdown_and_relative_images(tmp_path):
     manager.install_package(str(package), install_dependencies=False)
     record = manager.registry.installed_record("vendor/documented")
     pages = manager.content_pages(record)
-    assert [page["id"] for page in pages] == ["intro", "guide", "license"]
+    assert [page["id"] for page in pages] == ["guide"]
     blocks = parse_markdown_blocks(pages[0]["content"])
     assert [block["level"] for block in blocks if block["kind"] == "heading"] == [1, 2]
     image = next(block for block in split_markdown_images(pages[0]["content"]) if block["kind"] == "image")
     assert Path(manager.content_asset_path(record, pages[0], image["source"])).is_file()
+    assert (project / "Assets/Plugins/README.md").is_file()
+    assert (project / "Assets/Plugins/LICENSE").is_file()
+
+
+def test_downloaded_plugin_pages_are_available_before_import(tmp_path, monkeypatch):
+    source = _source(tmp_path / "source", "vendor/preview")
+    pages_root = source / "plugin_pages"
+    pages_root.mkdir()
+    (source / "images").mkdir()
+    (source / "images" / "preview.png").write_bytes(b"preview-image")
+    (source / "runtime").mkdir()
+    (source / "runtime" / "payload.bin").write_bytes(b"do-not-extract")
+    (pages_root / "guide.md").write_text(
+        "# Guide\n![Preview](../images/preview.png)\n", encoding="utf-8"
+    )
+    (pages_root / "guide.zh-CN.md").write_text("# 指南\n", encoding="utf-8")
+    package = _export(source, tmp_path / "preview.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    monkeypatch.setattr(manager, "cached_reference_path", lambda reference: str(package))
+    record = manager.registry.add_package(
+        "vendor/preview", source={"type": "local", "location": str(package)},
+        pages=InxPackage.inspect(str(package)).metadata["pages"],
+    )
+    try:
+        english = manager.content_pages(record, locale="en")
+        chinese = manager.content_pages(record, locale="zh")
+        assert english[0]["content"].startswith("# Guide")
+        assert chinese[0]["content"] == "# 指南\n"
+        image = Path(manager.content_asset_path(record, english[0], "../images/preview.png"))
+        assert image.read_bytes() == b"preview-image"
+        root = image.parent.parent
+        assert not (root / "runtime").exists()
+        assert manager.registry.installed() == ()
+        assert not (project / "Packages/vendor/preview").exists()
+        assert not manager.content_asset_path(record, english[0], "../../../outside.png")
+        assert not manager.content_asset_path(record, english[0], "https://example.com/image.png")
+        assert manager.content_pages(record, locale="en") == english
+        assert len(manager._cached_page_roots) == 1
+
+        # Import switches to authored project docs; uninstall restores archive docs.
+        manager.install_package(str(package), install_dependencies=False)
+        authored = project / "Packages/vendor/preview/plugin_pages/guide.md"
+        authored.write_text("# Local edits\n", encoding="utf-8")
+        assert manager.content_pages(record, locale="en")[0]["content"] == "# Local edits\n"
+        manager.uninstall("vendor/preview")
+        assert manager.content_pages(record, locale="en") == english
+    finally:
+        manager.shutdown()
+    assert not root.exists()
 
 
 def test_plugin_content_uses_one_strict_zh_cn_suffix_layout(tmp_path):
@@ -1433,7 +3541,7 @@ def test_plugin_content_uses_one_strict_zh_cn_suffix_layout(tmp_path):
     )
     (source / "LICENSE").write_text("English license", encoding="utf-8")
     (source / "LICENSE.zh-CN.md").write_text("中文许可证", encoding="utf-8")
-    pages_root = source / "InxPluginPages"
+    pages_root = source / "plugin_pages"
     pages_root.mkdir()
     (pages_root / "Guide.md").write_text(
         "# Guide\n\nEnglish guide.", encoding="utf-8"
@@ -1441,6 +3549,11 @@ def test_plugin_content_uses_one_strict_zh_cn_suffix_layout(tmp_path):
     (pages_root / "Guide.zh-CN.md").write_text(
         "# 指南\n\n中文指南。", encoding="utf-8"
     )
+    manifest_path = source / "inx_package.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["intro"] = "English summary."
+    manifest["intros"] = {"zh-CN": "中文摘要。"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     package = _export(source, tmp_path / "localized.inxpkg")
     preview = InxPackage.inspect(str(package))
@@ -1449,12 +3562,8 @@ def test_plugin_content_uses_one_strict_zh_cn_suffix_layout(tmp_path):
         for page in preview.metadata["pages"]
     ]
     assert page_keys == [
-        ("intro", ""),
-        ("intro", "zh-CN"),
         ("guide", ""),
         ("guide", "zh-CN"),
-        ("license", ""),
-        ("license", "zh-CN"),
     ]
     assert all(page["path"] != "README.zh.md" for page in preview.metadata["pages"])
     assert preview.metadata["intros"] == {"zh-CN": "中文摘要。"}
@@ -1468,20 +3577,16 @@ def test_plugin_content_uses_one_strict_zh_cn_suffix_layout(tmp_path):
     chinese = manager.content_pages(record, locale="zh")
     english = manager.content_pages(record, locale="en")
     assert [(page["id"], page.get("locale", "")) for page in chinese] == [
-        ("intro", "zh-CN"),
         ("guide", "zh-CN"),
-        ("license", "zh-CN"),
     ]
     assert [page["content"] for page in chinese] == [
-        "# 本地化插件\n\n中文摘要。\n",
         "# 指南\n\n中文指南。",
-        "中文许可证",
     ]
-    assert [page.get("locale", "") for page in english] == ["", "", ""]
+    assert [page.get("locale", "") for page in english] == [""]
 
 
 def test_player_policy_is_structural_and_custom_rules_are_rejected():
-    assert player_file_exported({}, "Runtime/game.py") is True
-    assert player_file_exported({}, "Editor/tool.py") is False
-    assert player_file_exported({}, "README.md") is False
+    assert player_file_exported({}, "runtime/game.py") is True
+    assert player_file_exported({}, "editor/tool.py") is False
+    assert player_file_exported({}, "README.md") is True
     assert player_file_exported({}, "Scenes/Demo.scene") is True

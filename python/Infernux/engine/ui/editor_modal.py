@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
+from .dpi import editor_dpi_scale
 from .theme import Theme
 
 
@@ -33,6 +34,7 @@ def begin_editor_modal(
     height: float = DEFAULT_MODAL_HEIGHT,
 ) -> bool:
     """Open and begin a consistently centred Editor modal."""
+    dpi = editor_dpi_scale(ctx)
     if request_open:
         ctx.open_popup(popup_id)
 
@@ -49,7 +51,7 @@ def begin_editor_modal(
         )
     set_size = getattr(ctx, "set_next_window_size", None)
     if callable(set_size):
-        set_size(float(width), float(height), Theme.COND_ALWAYS)
+        set_size(float(width) * dpi, float(height) * dpi, Theme.COND_ALWAYS)
     if not ctx.begin_popup_modal(popup_id, 0):
         return False
     ctx.record_semantic_window("modal", title, semantic_id)
@@ -63,12 +65,13 @@ def render_editor_modal_actions(
     semantic_prefix: str,
 ) -> None:
     """Render the standard bottom-anchored command-button row."""
+    dpi = editor_dpi_scale(ctx)
     action_list = list(actions)
     get_avail_h = getattr(ctx, "get_content_region_avail_height", None)
     get_cursor_y = getattr(ctx, "get_cursor_pos_y", None)
     set_cursor_y = getattr(ctx, "set_cursor_pos_y", None)
     if callable(get_avail_h) and callable(get_cursor_y) and callable(set_cursor_y):
-        action_block_h = DEFAULT_ACTION_HEIGHT + 24.0
+        action_block_h = (DEFAULT_ACTION_HEIGHT + 24.0) * dpi
         remaining = float(get_avail_h())
         if remaining > action_block_h:
             set_cursor_y(float(get_cursor_y()) + remaining - action_block_h)
@@ -77,8 +80,9 @@ def render_editor_modal_actions(
     ctx.separator()
     ctx.spacing()
 
-    button_w = DEFAULT_ACTION_WIDTH
-    gap = 8.0
+    button_w = DEFAULT_ACTION_WIDTH * dpi
+    button_h = DEFAULT_ACTION_HEIGHT * dpi
+    gap = 8.0 * dpi
     total_w = len(action_list) * button_w + max(0, len(action_list) - 1) * gap
     get_avail = getattr(ctx, "get_content_region_avail_width", None)
     get_cursor = getattr(ctx, "get_cursor_pos_x", None)
@@ -98,7 +102,7 @@ def render_editor_modal_actions(
             f"{action.label}##{suffix}",
             action.callback,
             width=button_w,
-            height=DEFAULT_ACTION_HEIGHT,
+            height=button_h,
         )
         ctx.record_semantic_item(
             "button", action.label, action.enabled,

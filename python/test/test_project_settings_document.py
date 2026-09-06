@@ -1,5 +1,6 @@
 import copy
 import json
+from pathlib import Path
 
 from Infernux.engine.interaction import (
     BUILD_SETTINGS_DEFAULTS,
@@ -8,6 +9,7 @@ from Infernux.engine.interaction import (
     ProjectSettingsDocumentController,
     ensure_project_settings_document,
 )
+from Infernux.engine.interaction.project_settings import normalize_build_settings
 from Infernux.engine.undo import UndoManager
 from Infernux.physics import settings as physics_settings
 
@@ -24,6 +26,61 @@ def _tag_document():
         "layers": layers,
         "layer_collision_masks": [0xFFFFFFFF] * 32,
     }
+
+
+def test_build_settings_persist_platform_target_and_android_artifact():
+    settings = normalize_build_settings(
+        {"build_target": "android-arm64", "android_artifact": "aab"}
+    )
+
+    assert settings["build_target"] == "android-arm64"
+    assert settings["android_artifact"] == "aab"
+
+
+def test_build_settings_reject_invalid_platform_target_and_artifact():
+    import pytest
+
+    with pytest.raises(ValueError, match="lowercase"):
+        normalize_build_settings({"build_target": "Android arm64"})
+    with pytest.raises(ValueError, match="android_artifact"):
+        normalize_build_settings({"android_artifact": "zip"})
+
+
+def test_build_branding_uses_asset_guid_identity():
+    settings = normalize_build_settings(
+        {
+            "icon_guid": "icon-guid",
+            "splash_items": [
+                {
+                    "type": "image",
+                    "asset_guid": "splash-guid",
+                    "duration": 1.5,
+                    "fade_in": 0.25,
+                    "fade_out": 0.25,
+                }
+            ],
+        }
+    )
+
+    assert settings["icon_guid"] == "icon-guid"
+    assert settings["splash_items"][0]["asset_guid"] == "splash-guid"
+
+
+def test_build_branding_requires_the_exact_current_splash_shape():
+    import pytest
+
+    with pytest.raises(TypeError, match="current asset GUID schema"):
+        normalize_build_settings(
+            {
+                "splash_items": [
+                    {
+                        "type": "image",
+                        "asset_guid": "splash-guid",
+                        "duration": 1.5,
+                    }
+                ]
+            }
+        )
 
 
 class _TagManager:
@@ -308,7 +365,7 @@ def test_project_settings_async_persistence_owns_saved_revision(tmp_path):
         submitter.complete_all()
         assert registry.process_pending_saves() == 1
         assert not document.is_dirty
-        assert {path.rsplit("\\", 1)[-1] for path, _, _ in submitter.calls} == {
+        assert {Path(path).name for path, _, _ in submitter.calls} == {
             "BuildSettings.json",
             "TagLayerSettings.json",
             "PhysicsSettings.json",

@@ -72,23 +72,26 @@ bool ParticleGpuBillboardRenderer::Create(rhi::Device &device, const GpuBillboar
     m_flipbookRows = desc.flipbookRows;
     m_instances = desc.instances;
     m_renderIndices = desc.renderIndices;
-    m_vertexShader = device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
-    m_fragmentShader = device.CreateShaderModule({linkedFragmentWords.data(), linkedFragmentWords.size()});
-    m_motionVertexShader =
-        device.CreateShaderModule({desc.motionVertexShader.words, desc.motionVertexShader.wordCount});
-    m_motionFragmentShader =
-        device.CreateShaderModule({linkedMotionFragmentWords.data(), linkedMotionFragmentWords.size()});
+    m_vertexShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.vertexShader.words, desc.vertexShader.wordCount));
+    m_fragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(linkedFragmentWords.data(), linkedFragmentWords.size()));
+    m_motionVertexShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(desc.motionVertexShader.words, desc.motionVertexShader.wordCount));
+    m_motionFragmentShader = device.CreateShaderModule(
+        rhi::ShaderModuleDesc::FromSpirV(linkedMotionFragmentWords.data(), linkedMotionFragmentWords.size()));
     if (linkedForwardPlusVariant) {
-        m_forwardPlusFragmentShader =
-            device.CreateShaderModule({linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()});
+        m_forwardPlusFragmentShader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(
+            linkedForwardPlusFragmentWords.data(), linkedForwardPlusFragmentWords.size()));
     }
 
     // Picking stays output-specific. It does not consume the linked surface ABI.
     if (desc.vertexShader.words && desc.vertexShader.wordCount && desc.pickingFragmentShader.words &&
         desc.pickingFragmentShader.wordCount) {
-        m_pickingVertexShader = device.CreateShaderModule({desc.vertexShader.words, desc.vertexShader.wordCount});
-        m_pickingFragmentShader =
-            device.CreateShaderModule({desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount});
+        m_pickingVertexShader = device.CreateShaderModule(
+            rhi::ShaderModuleDesc::FromSpirV(desc.vertexShader.words, desc.vertexShader.wordCount));
+        m_pickingFragmentShader = device.CreateShaderModule(
+            rhi::ShaderModuleDesc::FromSpirV(desc.pickingFragmentShader.words, desc.pickingFragmentShader.wordCount));
     }
     if (!m_vertexShader.IsValid() || !m_fragmentShader.IsValid() || !m_motionVertexShader.IsValid() ||
         !m_motionFragmentShader.IsValid() ||
@@ -229,7 +232,6 @@ rhi::BindGroupHandle ParticleGpuBillboardRenderer::ResolveGeometryGroup(rhi::Buf
 }
 
 bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                              rhi::RenderTargetLayoutHandle renderTargetLayout,
                                               const MaterialPassPipelineDescriptor &pass,
                                               rhi::BufferHandle indirectArguments,
                                               const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices,
@@ -247,8 +249,7 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
         pass.target == ShaderCompileTarget::Forward || pass.target == ShaderCompileTarget::ForwardPlus;
     if (usesPerViewBindings && !perView.IsValid())
         return false;
-    const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass,
-                                              usesPerViewBindings ? perView.layout : rhi::BindingLayoutHandle{});
+    const auto pipeline = GetOrCreatePipeline(pass, usesPerViewBindings ? perView.layout : rhi::BindingLayoutHandle{});
     const auto geometryGroup = ResolveGeometryGroup(renderIndices);
     const auto surfaceGroup = m_surface.ResolveBindGroup(sceneDepth, sceneDepthIsDepth);
     const bool usesBindlessTextures = m_surface.UsesBindlessTextures();
@@ -288,7 +289,6 @@ bool ParticleGpuBillboardRenderer::RecordDraw(const rhi::GraphicsCommandEncoder 
 }
 
 bool ParticleGpuBillboardRenderer::RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                                     rhi::RenderTargetLayoutHandle renderTargetLayout,
                                                      const MaterialPassPipelineDescriptor &pass,
                                                      rhi::BufferHandle indirectArguments,
                                                      const GpuBillboardViewConstants &view, uint64_t ownerObjectId,
@@ -297,7 +297,7 @@ bool ParticleGpuBillboardRenderer::RecordPickingDraw(const rhi::GraphicsCommandE
     if (!IsValid() || !m_pickingVertexShader.IsValid() || !m_pickingFragmentShader.IsValid() || ownerObjectId == 0 ||
         !encoder.IsValid() || !indirectArguments.IsValid())
         return false;
-    const auto pipeline = GetOrCreatePipeline(renderTargetLayout, pass);
+    const auto pipeline = GetOrCreatePipeline(pass);
     const auto geometryGroup = ResolveGeometryGroup(renderIndices);
     const auto surfaceGroup = m_surface.ResolveBindGroup();
     if (!pipeline.IsValid() || !geometryGroup.IsValid() || !surfaceGroup.IsValid())
@@ -326,11 +326,10 @@ bool ParticleGpuBillboardRenderer::RecordPickingDraw(const rhi::GraphicsCommandE
 }
 
 rhi::GraphicsPipelineHandle
-ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
-                                                  const MaterialPassPipelineDescriptor &pass,
+ParticleGpuBillboardRenderer::GetOrCreatePipeline(const MaterialPassPipelineDescriptor &pass,
                                                   rhi::BindingLayoutHandle perViewLayout)
 {
-    if ((!pass.UsesDynamicRendering() && !renderTargetLayout.IsValid()) || !pass.IsValid() ||
+    if (!pass.IsValid() ||
         (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::ForwardPlus &&
          pass.target != ShaderCompileTarget::Picking && pass.target != ShaderCompileTarget::Motion))
         return {};
@@ -346,8 +345,8 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
         (picking || motion) ? GpuBillboardMaterialState{3000, false, true, false} : ResolveMaterialState();
     const uint8_t pipelineStateSignature = PipelineStateSignature(materialState);
     for (const auto &entry : m_pipelines) {
-        if (entry.renderTargetLayout == renderTargetLayout && entry.pass == pass &&
-            entry.perViewLayout == perViewLayout && entry.materialStateSignature == pipelineStateSignature)
+        if (entry.pass == pass && entry.perViewLayout == perViewLayout &&
+            entry.materialStateSignature == pipelineStateSignature)
             return entry.pipeline;
     }
 
@@ -357,7 +356,7 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
                           : picking                 ? m_pickingFragmentShader
                           : usesForwardPlusLighting ? m_forwardPlusFragmentShader
                                                     : m_fragmentShader;
-    pass.ApplyRenderingContract(desc, renderTargetLayout);
+    pass.ApplyRenderingContract(desc);
     desc.raster.cullMode = rhi::CullMode::None;
     desc.depth.testEnabled = materialState.depthTestEnabled && pass.depthFormat != rhi::PixelFormat::Undefined;
     desc.depth.writeEnabled =
@@ -379,7 +378,7 @@ ParticleGpuBillboardRenderer::GetOrCreatePipeline(rhi::RenderTargetLayoutHandle 
     desc.pushConstantBytes = sizeof(GpuBillboardViewConstants);
     const auto pipeline = m_device->CreateGraphicsPipeline(desc);
     if (pipeline.IsValid())
-        m_pipelines.push_back({renderTargetLayout, pass, perViewLayout, pipelineStateSignature, pipeline});
+        m_pipelines.push_back({pass, perViewLayout, pipelineStateSignature, pipeline});
     return pipeline;
 }
 

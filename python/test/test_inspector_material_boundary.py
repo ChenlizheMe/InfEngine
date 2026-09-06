@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import builtins
 
-from Infernux.engine.bootstrap_inspector._materials import wire_material_sections
+import pytest
+
+from Infernux.engine.bootstrap_inspector._materials import (
+    _rebuild_material_entries,
+    wire_material_sections,
+)
 
 
 class _InspectorPanel:
@@ -50,4 +55,16 @@ def test_material_section_import_failure_stays_inside_inspector(monkeypatch) -> 
     panel.render_material_sections(context, 42)
 
     assert context.messages == ["Material Inspector is temporarily unavailable."]
+
+
+def test_material_slot_query_failure_reaches_inspector_boundary() -> None:
+    class Renderer:
+        type_name = "MeshRenderer"
+
+        @staticmethod
+        def get_effective_material(_slot):
+            raise RuntimeError("invalid material binding")
+
+    with pytest.raises(RuntimeError, match="invalid material binding"):
+        _rebuild_material_entries([(Renderer(), 1, (), ())])
 

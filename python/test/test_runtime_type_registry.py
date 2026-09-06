@@ -24,7 +24,6 @@ def test_runtime_type_registry_binds_declared_phase_contract(tmp_path):
         json.dumps(
             {
                 "$schema": "infernux.runtime_type_registry",
-                "registry_version": 1,
                 "types": [
                     {
                         "script_guid": "script-guid",
@@ -49,7 +48,6 @@ def test_runtime_type_registry_binds_declared_phase_contract(tmp_path):
             qualified_name=PlayerMover.__qualname__,
         )
         bind_runtime_lifecycle_contract(PlayerMover, record)
-        assert PlayerMover._runtime_declared_phases_ == frozenset({"update"})
     finally:
         clear_runtime_type_registry()
 
@@ -66,7 +64,6 @@ def test_runtime_type_registry_rejects_unlisted_component(tmp_path):
         json.dumps(
             {
                 "$schema": "infernux.runtime_type_registry",
-                "registry_version": 1,
                 "types": [],
             }
         ),
@@ -98,7 +95,6 @@ def test_runtime_type_registry_rejects_identity_drift(tmp_path):
         json.dumps(
             {
                 "$schema": "infernux.runtime_type_registry",
-                "registry_version": 1,
                 "types": [
                     {
                         "script_guid": "script",

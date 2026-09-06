@@ -165,7 +165,6 @@ size_t VkTextureCache::EvictByPrefix(const std::string &prefix)
         }
     }
     for (const auto &key : keysToRemove) {
-        INXLOG_DEBUG("VkTextureCache: evicting: ", key);
         const auto found = m_textures.find(key);
         Entry retired = std::move(found->second);
         m_textures.erase(found);

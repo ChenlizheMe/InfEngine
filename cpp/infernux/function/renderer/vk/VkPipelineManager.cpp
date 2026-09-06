@@ -5,6 +5,7 @@
 
 #include "VkPipelineManager.h"
 #include "../InxRenderStruct.h"
+#include "VertexInputVulkan.h"
 #include "VkRenderUtils.h"
 #include <core/error/InxError.h>
 #include <platform/filesystem/InxPath.h>
@@ -629,8 +630,8 @@ VertexInputConfig VkPipelineManager::GetStandardMeshVertexInput()
 {
     VertexInputConfig config;
 
-    config.bindings.push_back(Vertex::getBindingDescription());
-    const auto attributes = Vertex::getAttributeDescriptions();
+    config.bindings.push_back(GetVertexBindingDescription());
+    const auto attributes = GetVertexAttributeDescriptions();
     config.attributes.insert(config.attributes.end(), attributes.begin(), attributes.end());
 
     return config;

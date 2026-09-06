@@ -48,7 +48,7 @@ bool SceneDepthResolver::Initialize(rhi::Device &device, const uint32_t *spirv, 
     layoutDesc.entryCount = 2;
     m_layout = device.CreateBindingLayout(layoutDesc);
 
-    const auto shader = device.CreateShaderModule({spirv, wordCount});
+    const auto shader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(spirv, wordCount));
     if (shader.IsValid() && m_layout.IsValid()) {
         rhi::ComputePipelineDesc pipelineDesc;
         pipelineDesc.computeShader = shader;

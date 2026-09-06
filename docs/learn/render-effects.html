@@ -21,7 +21,7 @@
 <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header" role="banner">
-        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.7</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.0</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
             <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
             <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
@@ -84,27 +84,21 @@
 <p><code>fullscreen_quad("Edge Fade")</code> records one fragment-shader ID. At runtime, <code>FullscreenRenderer</code> always pairs it with the engine-owned vertex shader whose <code>ShaderInfo Name</code> is <code>Fullscreen Triangle</code>. Keep that built-in ID in <code>get_shader_list()</code> as shown below, but do not add a path for it to the asset: there is no project <code>Fullscreen Triangle</code> file to reference. List only the project fragment shader in the <code>.effect</code> asset's <code>dependencies</code>. Such a shader may have no Material owner available to preload it before graph compilation.</p>
 <h2 id="effect-class">Register the effect feature</h2>
 <p>A one-pass color transform can derive from <code>FullScreenEffect</code>:</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">serialized_field</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.rendergraph.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">Format</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">FullScreenEffect</span><span class="p">,</span>
-    <span class="n">RoutePolicy</span><span class="p">,</span>
-    <span class="n">render_effect_feature</span><span class="p">,</span>
-<span class="p">)</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="nd">@render_effect_feature</span><span class="p">(</span>
+<span class="nd">@inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">render_effect_feature</span><span class="p">(</span>
     <span class="s2">"game.post.edge_fade"</span><span class="p">,</span>
-    <span class="n">route_policy</span><span class="o">=</span><span class="n">RoutePolicy</span><span class="o">.</span><span class="n">MASK_AND_MODIFY</span><span class="p">,</span>
+    <span class="n">route_policy</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">RoutePolicy</span><span class="o">.</span><span class="n">MASK_AND_MODIFY</span><span class="p">,</span>
 <span class="p">)</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EdgeFadeEffect</span><span class="p">(</span><span class="n">FullScreenEffect</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">EdgeFadeEffect</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">FullScreenEffect</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="s2">"Edge Fade"</span>
     <span class="n">menu_path</span> <span class="o">=</span> <span class="s2">"Post-processing/Edge Fade"</span>
     <span class="n">injection_point</span> <span class="o">=</span> <span class="s2">"before_post_process"</span>
     <span class="n">default_order</span> <span class="o">=</span> <span class="mi">200</span>
     <span class="n">modifies</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"color"</span><span class="p">}</span>
 
-    <span class="n">intensity</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span>
+    <span class="n">intensity</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
         <span class="n">default</span><span class="o">=</span><span class="mf">0.35</span><span class="p">,</span>
         <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span>
         <span class="n">slider</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
@@ -120,7 +114,7 @@
             <span class="n">output_name</span><span class="o">=</span><span class="s2">"_edge_fade_out"</span><span class="p">,</span>
             <span class="n">pass_name</span><span class="o">=</span><span class="s2">"EdgeFade_Apply"</span><span class="p">,</span>
             <span class="n">shader_name</span><span class="o">=</span><span class="s2">"Edge Fade"</span><span class="p">,</span>
-            <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+            <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
             <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"intensity"</span><span class="p">:</span> <span class="nb">float</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">intensity</span><span class="p">)},</span>
         <span class="p">)</span>
 </code></pre></div>
@@ -326,27 +320,21 @@
 <p><code>fullscreen_quad("Edge Fade")</code> 记录一个 Fragment Shader ID。运行时的 <code>FullscreenRenderer</code> 始终把它与引擎内置 Vertex Shader <code>Fullscreen Triangle</code> 配对；这个名称来自它的 <code>ShaderInfo Name</code>。请像下面的示例一样把内置 ID 留在 <code>get_shader_list()</code> 中，但不要给它添加资产路径，因为项目中没有可引用的 <code>Fullscreen Triangle</code> 文件。<code>.effect</code> 的 <code>dependencies</code> 只需列出项目自定义 Fragment Shader。它通常没有 Material 作为所有者，材质系统也就无法保证在图编译前完成预加载。</p>
 <h2 id="effect-class_1">注册 Effect Feature</h2>
 <p>单 Pass 颜色变换可以继承 <code>FullScreenEffect</code>：</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components.fields</span><span class="w"> </span><span class="kn">import</span> <span class="n">serialized_field</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.rendergraph.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">Format</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.renderstack</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">FullScreenEffect</span><span class="p">,</span>
-    <span class="n">RoutePolicy</span><span class="p">,</span>
-    <span class="n">render_effect_feature</span><span class="p">,</span>
-<span class="p">)</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="nd">@render_effect_feature</span><span class="p">(</span>
+<span class="nd">@inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">render_effect_feature</span><span class="p">(</span>
     <span class="s2">"game.post.edge_fade"</span><span class="p">,</span>
-    <span class="n">route_policy</span><span class="o">=</span><span class="n">RoutePolicy</span><span class="o">.</span><span class="n">MASK_AND_MODIFY</span><span class="p">,</span>
+    <span class="n">route_policy</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">RoutePolicy</span><span class="o">.</span><span class="n">MASK_AND_MODIFY</span><span class="p">,</span>
 <span class="p">)</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">EdgeFadeEffect</span><span class="p">(</span><span class="n">FullScreenEffect</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">EdgeFadeEffect</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">renderstack</span><span class="o">.</span><span class="n">FullScreenEffect</span><span class="p">):</span>
     <span class="n">name</span> <span class="o">=</span> <span class="s2">"Edge Fade"</span>
     <span class="n">menu_path</span> <span class="o">=</span> <span class="s2">"Post-processing/Edge Fade"</span>
     <span class="n">injection_point</span> <span class="o">=</span> <span class="s2">"before_post_process"</span>
     <span class="n">default_order</span> <span class="o">=</span> <span class="mi">200</span>
     <span class="n">modifies</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"color"</span><span class="p">}</span>
 
-    <span class="n">intensity</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span>
+    <span class="n">intensity</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
         <span class="n">default</span><span class="o">=</span><span class="mf">0.35</span><span class="p">,</span>
         <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span>
         <span class="n">slider</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
@@ -362,7 +350,7 @@
             <span class="n">output_name</span><span class="o">=</span><span class="s2">"_edge_fade_out"</span><span class="p">,</span>
             <span class="n">pass_name</span><span class="o">=</span><span class="s2">"EdgeFade_Apply"</span><span class="p">,</span>
             <span class="n">shader_name</span><span class="o">=</span><span class="s2">"Edge Fade"</span><span class="p">,</span>
-            <span class="nb">format</span><span class="o">=</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+            <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
             <span class="n">params</span><span class="o">=</span><span class="p">{</span><span class="s2">"intensity"</span><span class="p">:</span> <span class="nb">float</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">intensity</span><span class="p">)},</span>
         <span class="p">)</span>
 </code></pre></div>

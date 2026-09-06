@@ -1,0 +1,269 @@
+# ------------------------------------------------------------------------------
+# Post-Build Steps
+# ------------------------------------------------------------------------------
+
+# Create a custom script to copy all DLL dependencies
+configure_file(
+    "${CMAKE_SOURCE_DIR}/copy_dependencies.cmake.in"
+    "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
+    @ONLY
+)
+
+foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
+    add_custom_command(TARGET ${_infernux_dll} POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            "-DSOURCE=$<TARGET_FILE:${_infernux_dll}>"
+            "-DDESTINATION=${PYTHON_TARGET_DIR}/$<TARGET_FILE_NAME:${_infernux_dll}>"
+            -P "${CMAKE_SOURCE_DIR}/cmake/stage_build_file.cmake"
+        COMMENT "Stage ${_infernux_dll} shared library in the build tree"
+        VERBATIM
+    )
+endforeach()
+
+add_custom_command(TARGET _Infernux POST_BUILD
+    # Remove native modules from other Python ABIs/builds first so wheels can
+    # never ship two _Infernux modules (GitHub issue #47).
+    COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE=$<TARGET_FILE:_Infernux>"
+        "-DTARGET_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        "-DKEEP_NAME=$<TARGET_FILE_NAME:_Infernux>"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_native_module.cmake"
+    COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE=$<TARGET_FILE:_Infernux>"
+        "-DTARGET_DIR=${PYTHON_TARGET_DIR}"
+        "-DKEEP_NAME=$<TARGET_FILE_NAME:_Infernux>"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_native_module.cmake"
+    COMMAND ${CMAKE_COMMAND}
+        "-DTARGET_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        "-DSTATIC_RUNTIME=${INFERNUX_RUNTIME_STATIC}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_player_native_contract.cmake"
+    COMMAND ${CMAKE_COMMAND}
+        "-DTARGET_DIR=${PYTHON_TARGET_DIR}"
+        "-DSTATIC_RUNTIME=${INFERNUX_RUNTIME_STATIC}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_player_native_contract.cmake"
+
+    COMMENT "Stage _Infernux binding module in the build tree"
+)
+
+# CMake may restore _Infernux from a compiler cache without rerunning its
+# POST_BUILD command. Refresh the small runtime-linkage contract explicitly
+# before packaging so a cached Release binary can never inherit a missing or
+# development-only marker.
+add_custom_target(refresh_player_native_contract
+    COMMAND ${CMAKE_COMMAND}
+        "-DTARGET_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        "-DSTATIC_RUNTIME=${INFERNUX_RUNTIME_STATIC}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_player_native_contract.cmake"
+    COMMAND ${CMAKE_COMMAND}
+        "-DTARGET_DIR=${PYTHON_TARGET_DIR}"
+        "-DSTATIC_RUNTIME=${INFERNUX_RUNTIME_STATIC}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_player_native_contract.cmake"
+    DEPENDS _Infernux
+    COMMENT "Refreshing Player native runtime contract"
+    VERBATIM
+)
+
+if(WIN32)
+    # Windows: copy all DLL dependencies automatically
+    add_custom_command(TARGET _Infernux POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DINFERNUX_BUILD_CFG=$<CONFIG>
+            -P "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
+        COMMAND ${CMAKE_COMMAND}
+            -DINFERNUX_BUILD_CFG=$<CONFIG>
+            -DTARGET_DIR=$<TARGET_FILE_DIR:_Infernux>
+            -P "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
+        COMMENT "Copy dependent DLLs to package and native module directories"
+    )
+elseif(APPLE)
+    # macOS: copy shared libraries (.dylib) and fix RPATH
+    add_custom_command(TARGET _Infernux POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DINFERNUX_BUILD_CFG=$<CONFIG>
+            -P "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
+        COMMENT "Stage dependent dylibs in the build tree"
+    )
+    # Set RPATH so the module finds dylibs next to itself
+    set_target_properties(_Infernux PROPERTIES
+        BUILD_RPATH "@loader_path"
+        INSTALL_RPATH "@loader_path"
+    )
+    set_target_properties(_InfernuxBootstrap PROPERTIES
+        BUILD_RPATH "@loader_path"
+        INSTALL_RPATH "@loader_path"
+    )
+    foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
+        set_target_properties(${_infernux_dll} PROPERTIES
+            BUILD_RPATH "@loader_path"
+            INSTALL_RPATH "@loader_path"
+        )
+    endforeach()
+else()
+    # Linux: copy shared libraries (.so) and set RPATH
+    add_custom_command(TARGET _Infernux POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DINFERNUX_BUILD_CFG=$<CONFIG>
+            -P "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
+        COMMENT "Stage dependent shared libraries in the build tree"
+    )
+    # The extension and engine libraries are a self-contained sibling set.
+    # Native Python extensions resolve interpreter symbols from the importing
+    # process, so reaching back into a creator environment for libpython would
+    # make a wheel fail after installation into an ordinary venv.
+    set(_infernux_linux_rpath "$ORIGIN")
+    set_target_properties(_Infernux PROPERTIES
+        BUILD_RPATH "${_infernux_linux_rpath}"
+        INSTALL_RPATH "${_infernux_linux_rpath}"
+    )
+    set_target_properties(_InfernuxBootstrap PROPERTIES
+        BUILD_RPATH "${_infernux_linux_rpath}"
+        INSTALL_RPATH "${_infernux_linux_rpath}"
+    )
+    foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
+        set_target_properties(${_infernux_dll} PROPERTIES
+            BUILD_RPATH "${_infernux_linux_rpath}"
+            INSTALL_RPATH "${_infernux_linux_rpath}"
+        )
+    endforeach()
+endif()
+
+# ------------------------------------------------------------------------------
+# Platform-plugin Player Runtime Pack (release engineering only)
+# ------------------------------------------------------------------------------
+# Runtime publication is separate from the Editor wheel. The platform plugin
+# owns these target-specific artifacts; ordinary game exports only assemble them.
+set(INFERNUX_PREBUILT_RUNTIME_DIR "${CMAKE_BINARY_DIR}/platform-player/runtime-packs")
+set(INFERNUX_PREBUILT_RUNTIME_MODULE_DIR "${CMAKE_BINARY_DIR}/platform-player/_runtime_modules")
+string(TOLOWER "${CMAKE_SYSTEM_NAME}" _infernux_player_platform)
+set(INFERNUX_PLATFORM_PLAYER_OUTPUT_DIR
+    "${CMAKE_SOURCE_DIR}/external/plugins/infernux_${_infernux_player_platform}/package/editor/infernux_${_infernux_player_platform}/player")
+add_custom_target(prebuild_player_runtime
+    COMMAND ${CMAKE_COMMAND}
+        "-DINFERNUX_BUILD_CONFIG=$<CONFIG>"
+        "-DINFERNUX_SOURCE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source"
+        "-DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
+        # Fingerprint and compile the exact installed wheel payload, not a
+        # source tree whose native layout differs from the installed package.
+        "-DNATIVE_MODULE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source/python/Infernux/lib"
+        "-DPLAYER_HOST_PATH=${INFERNUX_PLAYER_HOST_BUILD_PATH}"
+        "-DOUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_DIR}"
+        "-DMODULE_OUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_MODULE_DIR}"
+        "-DPLATFORM_PLAYER_OUTPUT=${INFERNUX_PLATFORM_PLAYER_OUTPUT_DIR}"
+        "-DBUILD_CACHE_ROOT=${CMAKE_BINARY_DIR}/build-cache/player-runtime"
+        -P "${CMAKE_SOURCE_DIR}/cmake/prebuild_player_runtime.cmake"
+    COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_SOURCE_DIR}/external/plugins/infernux_${_infernux_player_platform}/release.py"
+    DEPENDS _Infernux _InfernuxBootstrap
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    COMMENT "Publishing the platform Player payload and complete InxPackage in its subrepository"
+    VERBATIM
+)
+add_dependencies(prebuild_player_runtime refresh_player_native_contract)
+if(TARGET InfernuxPlayerHost)
+    add_dependencies(prebuild_player_runtime InfernuxPlayerHost)
+endif()
+
+add_custom_command(TARGET _InfernuxBootstrap POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE=$<TARGET_FILE:_InfernuxBootstrap>"
+        "-DTARGET_DIR=$<TARGET_FILE_DIR:_InfernuxBootstrap>"
+        "-DKEEP_NAME=$<TARGET_FILE_NAME:_InfernuxBootstrap>"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_native_module.cmake"
+    COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE=$<TARGET_FILE:_InfernuxBootstrap>"
+        "-DTARGET_DIR=${PYTHON_TARGET_DIR}"
+        "-DKEEP_NAME=$<TARGET_FILE_NAME:_InfernuxBootstrap>"
+        -P "${CMAKE_SOURCE_DIR}/cmake/stage_native_module.cmake"
+    COMMENT "Stage _InfernuxBootstrap binding module in the build tree"
+    VERBATIM
+)
+
+# ------------------------------------------------------------------------------
+# Install components used as deterministic wheel staging inputs
+# ------------------------------------------------------------------------------
+set(INFERNUX_PYTHON_INSTALL_COMPONENT "PythonWheel")
+
+if(NOT INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR)
+    message(FATAL_ERROR
+        "INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR must be defined before install rules are declared")
+endif()
+
+install(
+    DIRECTORY "${CMAKE_SOURCE_DIR}/python/Infernux/"
+    DESTINATION "python/Infernux"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+    PATTERN "__pycache__" EXCLUDE
+    PATTERN "*.pyc" EXCLUDE
+    PATTERN "*.pyo" EXCLUDE
+    PATTERN "*.dll" EXCLUDE
+    PATTERN "*.pyd" EXCLUDE
+    PATTERN "*.so" EXCLUDE
+    PATTERN "*.dylib" EXCLUDE
+    PATTERN "*.meta" EXCLUDE
+    PATTERN "_runtime_packs" EXCLUDE
+    PATTERN "_runtime_modules" EXCLUDE
+    PATTERN "official_packages" EXCLUDE
+    PATTERN "player_runtime" EXCLUDE
+)
+
+install(
+    FILES
+        "${CMAKE_SOURCE_DIR}/python/infernux.py"
+        "${CMAKE_SOURCE_DIR}/python/infernux.pyi"
+    DESTINATION "python"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)
+
+install(
+    FILES
+        "${CMAKE_SOURCE_DIR}/pyproject.toml"
+        "${CMAKE_SOURCE_DIR}/setup.py"
+        "${CMAKE_SOURCE_DIR}/MANIFEST.in"
+        "${CMAKE_SOURCE_DIR}/README.md"
+        "${CMAKE_SOURCE_DIR}/README-zh.md"
+        "${CMAKE_SOURCE_DIR}/LICENSE"
+    DESTINATION "."
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)
+
+install(
+    TARGETS _Infernux _InfernuxBootstrap ${INFERNUX_RUNTIME_DLL_TARGETS}
+    RUNTIME DESTINATION "python/Infernux/lib"
+        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+    LIBRARY DESTINATION "python/Infernux/lib"
+        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)
+install(
+    FILES "${PYTHON_TARGET_DIR}/PlayerNativeContract.json"
+    DESTINATION "python/Infernux/lib"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)
+
+install(
+    TARGETS assimp SDL3-shared Jolt
+    RUNTIME DESTINATION "python/Infernux/lib"
+        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+    LIBRARY DESTINATION "python/Infernux/lib"
+        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+        NAMELINK_COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)
+install(
+    FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
+    DESTINATION "python/Infernux/lib"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)
+
+install(
+    FILES
+        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/official-registry.json"
+        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/default-libraries.json"
+    DESTINATION "python/Infernux/resources/official_packages"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)
+
+install(
+    FILES
+        "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.mcp.inxpkg"
+    DESTINATION "python/Infernux/resources"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)

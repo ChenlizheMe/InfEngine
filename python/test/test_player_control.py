@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 from Infernux.engine import player_control
+from Infernux.engine import player_gui as player_gui_module
 from Infernux.engine.player_control import PlayerControlChannel
-from Infernux.engine.player_gui import PlayerGUI
+from Infernux.engine.player_gui import PlayerGUI, _player_render_scale
 from Infernux.input import Input
 
 
@@ -98,6 +101,16 @@ def test_standalone_player_keeps_gameplay_input_enabled_without_hover(monkeypatc
     assert focused == [True]
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("0.5", 0.5), ("0.01", 0.25), ("2", 1.0), ("invalid", 1.0), ("nan", 1.0)],
+)
+def test_player_render_scale_is_bounded(monkeypatch, value, expected):
+    monkeypatch.setenv("INFERNUX_PLAYER_RENDER_SCALE", value)
+
+    assert _player_render_scale() == expected
+
+
 def test_standalone_player_enables_input_before_game_texture_exists(monkeypatch):
     focused: list[bool] = []
     monkeypatch.setattr(Input, "set_game_focused", focused.append)
@@ -114,6 +127,50 @@ def test_standalone_player_enables_input_before_game_texture_exists(monkeypatch)
     player._tick(None)
 
     assert focused == [True]
+
+
+def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypatch):
+    dispatched: list[tuple[int, int]] = []
+    viewport_origins: list[tuple[float, float]] = []
+
+    class _PlayerEngine:
+        def resize_game_render_target(self, width, height):
+            assert (width, height) == (1280, 720)
+
+        def get_game_texture_id(self):
+            return 17
+
+    class _Context:
+        def image(self, *args):
+            assert args == (17, 1280.0, 720.0, 0.0, 0.0, 1.0, 1.0)
+
+    monkeypatch.setattr(
+        player_gui_module,
+        "capture_viewport_info",
+        lambda _ctx: type(
+            "_Viewport", (), {"image_min_x": 8.0, "image_min_y": 12.0}
+        )(),
+    )
+    monkeypatch.setattr(
+        Input,
+        "set_game_viewport_origin",
+        lambda x, y: viewport_origins.append((x, y)),
+    )
+    monkeypatch.setattr(Input, "is_cursor_locked", lambda: False)
+
+    player = PlayerGUI.__new__(PlayerGUI)
+    player._engine = _PlayerEngine()
+    player._last_w = 0
+    player._last_h = 0
+    player._render_scale = 1.0
+    player._process_ui_events = lambda width, height: dispatched.append((width, height))
+
+    # A standalone Player owns its whole window. The context intentionally has
+    # no desktop hover API because native touchscreen input does not define it.
+    player._render_game(_Context(), 1280.0, 720.0)
+
+    assert viewport_origins == [(8.0, 12.0)]
+    assert dispatched == [(1280, 720)]
 
 
 def _player_gui_for_play_gate(session):
@@ -579,13 +636,28 @@ def test_player_control_capture_rejects_late_arm_in_target_scene(tmp_path, monke
     assert "must be armed before the target scene" in payload["error"]
 
 
-def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
-    class _Proxy:
-        overrides_update = True
-        has_coroutine_scheduler = False
-        update_dispatch_count = 41
-        update_forward_count = 41
+def test_scene_python_lifecycle_ready_waits_for_enabled_components():
+    class Component:
+        enabled = True
+        _has_started = False
 
+    component = Component()
+    obj = type(
+        "_Object",
+        (),
+        {
+            "is_active_in_hierarchy": lambda self: True,
+            "get_py_components": lambda self: [component],
+        },
+    )()
+    scene = type("_Scene", (), {"get_all_objects": lambda self: [obj]})()
+
+    assert not player_control._scene_python_lifecycle_ready(scene)
+    component._has_started = True
+    assert player_control._scene_python_lifecycle_ready(scene)
+
+
+def test_player_observation_reports_component_diagnostics(monkeypatch):
     class RaceHUDController:
         enabled = True
         _awake_called = True
@@ -596,7 +668,6 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
         current_speed_kph = 42.5
         current_rank = 1
         _is_broken = False
-        _cpp_component = _Proxy()
 
         def update(self, _delta_time):
             return None
@@ -609,13 +680,23 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
         "id": 7,
         "active": True,
         "transform": _Transform(),
+        "is_active_in_hierarchy": lambda self: True,
         "get_py_components": lambda self: [RaceHUDController()],
     })()
-    scene = type("_Scene", (), {"name": "MainMenu", "is_playing": lambda self: True})()
+    scene = type(
+        "_Scene",
+        (),
+        {
+            "name": "MainMenu",
+            "is_playing": lambda self: True,
+            "get_all_objects": lambda self: [obj],
+        },
+    )()
     scene_manager = type("_SceneManager", (), {
         "get_active_scene": lambda self: scene,
         "is_playing": lambda self: True,
         "is_paused": lambda self: False,
+        "runtime_frame_count": 37,
     })()
     native = type("_NativeObserve", (), {
         "renderer_frame_snapshot": {},
@@ -636,6 +717,7 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
     engine = type("_ObserveEngine", (), {
         "get_native_engine": lambda self: native,
         "get_play_mode_manager": lambda self: None,
+        "get_player_runtime": lambda self: None,
     })()
 
     monkeypatch.setattr("Infernux.lib.SceneManager.instance", lambda: scene_manager)
@@ -656,6 +738,8 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
     assert data["scene_playing"] is True
     assert data["scene_manager_playing"] is True
     assert data["scene_manager_paused"] is False
+    assert data["runtime_frame_count"] == 37
+    assert data["gameplay_ready"] is True
     assert data["play_state"] == "playing"
     component = data["objects"]["Prompt"]["python_components"][0]
     assert component["update_overridden"] is True
@@ -664,12 +748,6 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
     assert component["trigger_key"] == "space"
     assert component["broken_script"] is False
     assert component["broken_error"] == ""
-    assert component["proxy"] == {
-        "overrides_update": True,
-        "has_coroutine_scheduler": False,
-        "update_dispatch_count": 41,
-        "update_forward_count": 41,
-    }
     assert data["objects"]["Prompt"]["component_fields"] == {
         "RaceHUDController[0]": {"current_speed_kph": 42.5, "current_rank": 1}
     }
@@ -685,6 +763,15 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
         "material_pipelines_aligned": True,
     }
 
+    engine.get_player_runtime = lambda: type(
+        "_PlayerRuntime", (), {"is_playing": False}
+    )()
+    assert player_control._observe_player(engine, ["Prompt"])["gameplay_ready"] is False
+    engine.get_player_runtime = lambda: type(
+        "_PlayerRuntime", (), {"is_playing": True}
+    )()
+    assert player_control._observe_player(engine, ["Prompt"])["gameplay_ready"] is True
+
     scene_manager.is_paused = lambda: True
     engine.get_play_mode_manager = lambda: type("_PlayManager", (), {
         "state": type("_State", (), {"name": "PLAYING"})(),
@@ -692,6 +779,7 @@ def test_player_observation_reports_update_dispatch_diagnostics(monkeypatch):
     paused_data = player_control._observe_player(engine, ["Prompt"])
 
     assert paused_data["play_state"] == "paused"
+    assert paused_data["gameplay_ready"] is True
 
 
 def test_player_control_capture_uses_player_game_render_target(tmp_path, monkeypatch):
@@ -709,7 +797,6 @@ def test_player_control_capture_uses_player_game_render_target(tmp_path, monkeyp
     assert payload["ok"] is True
     assert payload["data"]["status"] == "completed"
     assert payload["data"]["pixel_origin"] == "engine_render_target"
-    assert payload["data"]["os_capture_fallback"] is False
 
 
 def test_player_control_capture_timeout_releases_command_channel(tmp_path, monkeypatch):
@@ -737,15 +824,18 @@ def test_player_control_capture_timeout_releases_command_channel(tmp_path, monke
 def test_player_observation_discovers_bounded_objects_by_public_component_type(monkeypatch):
     class SceneNavigationController:
         enabled = True
+        _has_started = True
 
     class DecorativeComponent:
         enabled = True
+        _has_started = True
 
     def make_object(object_id, name, component):
         return type("_Object", (), {
             "id": object_id,
             "name": name,
             "active": True,
+            "is_active_in_hierarchy": lambda self: True,
             "get_components": lambda self: [],
             "get_py_components": lambda self: [component],
         })()
@@ -761,6 +851,7 @@ def test_player_observation_discovers_bounded_objects_by_public_component_type(m
         "get_active_scene": lambda self: scene,
         "is_playing": lambda self: True,
         "is_paused": lambda self: False,
+        "runtime_frame_count": 5,
     })()
     native = type("_NativeObserve", (), {
         "renderer_frame_snapshot": {},
@@ -770,6 +861,7 @@ def test_player_observation_discovers_bounded_objects_by_public_component_type(m
     engine = type("_ObserveEngine", (), {
         "get_native_engine": lambda self: native,
         "get_play_mode_manager": lambda self: None,
+        "get_player_runtime": lambda self: None,
     })()
 
     monkeypatch.setattr("Infernux.lib.SceneManager.instance", lambda: scene_manager)

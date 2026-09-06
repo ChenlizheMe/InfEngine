@@ -28,6 +28,10 @@ from enum import IntEnum
 from typing import TYPE_CHECKING
 
 from Infernux.renderstack.render_pipeline import RenderPipeline
+from Infernux.renderstack._platform_quality import (
+    effective_msaa_samples,
+    effective_shadow_resolution,
+)
 from Infernux.components.fields import serialized_field
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
@@ -106,16 +110,16 @@ class DefaultForwardPipeline(RenderPipeline):
             → TransparentPass → after_transparent
         """
         # ---- MSAA configuration (from exposed parameter) ----
-        graph.set_msaa_samples(int(self.msaa_samples))
+        msaa_samples = effective_msaa_samples(int(self.msaa_samples))
+        graph.set_msaa_samples(msaa_samples)
 
         # ---- Shadow map configuration (from exposed parameters) ----
         # The serialized range is enforced by the descriptor. Keep this
         # boundary normalization as a final guard for pipeline values restored
         # from external/custom state before descriptor assignment.
-        shadow_res = max(256, min(8192, int(self.shadow_resolution)))
+        shadow_res = effective_shadow_resolution(self.shadow_resolution)
 
         # ---- Create resources ----
-        msaa_samples = int(self.msaa_samples)
         create_main_scene_targets(
             graph,
             shadow_resolution=shadow_res,

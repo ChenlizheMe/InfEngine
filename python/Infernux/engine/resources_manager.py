@@ -1,20 +1,11 @@
-import hashlib
 import os
 import threading
 import time
 import types
 import uuid
 
-try:
-    from watchdog.observers import Observer
-    from watchdog.events import FileSystemEventHandler
-    _HAS_WATCHDOG = True
-except ImportError:
-    # Standalone player builds exclude watchdog; ResourcesManager
-    # still importable but .start() becomes a no-op.
-    Observer = None
-    FileSystemEventHandler = object
-    _HAS_WATCHDOG = False
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 from Infernux.lib import Infernux
 from Infernux.engine.path_utils import (
@@ -23,12 +14,16 @@ from Infernux.engine.path_utils import (
     portable_path,
     resolved_path,
 )
+from Infernux.engine.project_context import (
+    get_project_script_roots,
+    is_project_component_script,
+    package_script_role,
+)
 from Infernux.engine.script_change_collector import (
     ScriptChangeCollector,
     ScriptChangeResult,
 )
 from Infernux.engine.script_dependency_graph import ScriptDependencyGraph
-from Infernux.engine.script_compiler import get_script_compiler
 from Infernux.engine.import_coordinator import (
     AssetFsEvent,
     AssetFsEventKind,
@@ -126,13 +121,11 @@ class _ScriptPublicationRollback:
         self,
         *,
         play_batch=None,
-        edit_batch=None,
         registry_snapshot=None,
         graph_transaction=None,
         graph_committed=False,
     ):
         self.play_batch = play_batch
-        self.edit_batch = edit_batch
         self.registry_snapshot = registry_snapshot
         self.graph_transaction = graph_transaction
         self.graph_committed = bool(graph_committed)
@@ -152,9 +145,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         frontend_wake=None,
     ):
         self._engine = engine
-        # Kept as a compatibility inspection point for existing integrations;
-        # _check_script never invokes it on the owner thread anymore.
-        self._script_compiler = get_script_compiler()
         self._script_change_collector = ScriptChangeCollector()
         self._frontend_wake = frontend_wake
         self._frontend_worker_running = False
@@ -178,11 +168,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         self._asset_database = engine.get_asset_database()
         if self._asset_database is None:
             raise RuntimeError("ResourceChangeHandler requires an initialized AssetDatabase")
-
-    @property
-    def _script_revision_journal(self):
-        """Read-only compatibility alias for the collector journal."""
-        return self._script_change_collector.journal
 
     @property
     def dependency_graph(self):
@@ -240,14 +225,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         registry, or live component state.  ``force=True`` callers may invoke
         it on the owner thread when the watcher is unavailable.
         """
-        started = time.perf_counter()
         processed = len(self._script_change_collector.process_worker_batch(max_items))
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        if processed and elapsed_ms >= 25.0:
-            Debug.log_internal(
-                f"[ScriptReloadProfile] frontend={elapsed_ms:.2f}ms "
-                f"members={processed}"
-            )
         if processed:
             self._wake_editor()
         return processed
@@ -393,7 +371,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
             if callable(request_full_speed):
                 request_full_speed()
         for event in events:
-            event_started = time.perf_counter()
             try:
                 # A full AssetDatabase refresh owns the mutation transaction
                 # until its prepared commit is published on this thread.
@@ -411,14 +388,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     Debug.log_error(f"Asset event exhausted retries: {event}: {exc}")
             except Exception as exc:
                 Debug.log_error(f"Asset event failed: {event}: {exc}")
-            finally:
-                elapsed_ms = (time.perf_counter() - event_started) * 1000.0
-                if elapsed_ms >= 25.0:
-                    Debug.log_internal(
-                        f"[AssetReloadProfile] event={event.kind.value} "
-                        f"elapsed={elapsed_ms:.2f}ms pending={self._coordinator.pending_count} "
-                        f"path={event.path}"
-                    )
 
         # Dispatch first: a script event can submit its immutable snapshot to
         # the frontend worker, whose result may already be ready by the time
@@ -455,21 +424,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
             source_line=line,
         )
 
-    def _update_dependency_graph(self, result: ScriptChangeResult):
-        graph = self._dependency_graph
-        if graph is None or not os.path.isfile(result.path):
-            return None
-        try:
-            mutation = graph.upsert(result.path, source=result.source)
-        except Exception as exc:
-            Debug.log_error(
-                f"Script dependency graph update failed for {result.path} "
-                f"(generation={result.generation}): {exc}"
-            )
-            return None
-        self._last_dependency_affected = tuple(mutation.affected)
-        return mutation
-
     @staticmethod
     def _script_source_matches_disk(result: ScriptChangeResult) -> bool:
         try:
@@ -477,46 +431,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 current = source_file.read()
         except OSError:
             return False
-        return (
-            current == result.source
-            and hashlib.sha256(current).hexdigest() == result.content_hash
-        )
-
-    def _queue_dependency_changes(self, result: ScriptChangeResult, mutation) -> None:
-        """Force affected dependents through the same collector transaction.
-
-        Dependency results are deliberately tagged as such and are never fed
-        back into this method.  The graph is already committed before this is
-        called, so a rejected or stale source cannot create a false cascade.
-        """
-        if (
-            mutation is None
-            or result.change.change_kind in {"initial_scan", "dependency"}
-            or result.change.origin == "dependency"
-        ):
-            return
-        graph = self._dependency_graph
-        if graph is None:
-            return
-        source_key = result.change.identity_key
-        for module_id in mutation.affected:
-            if module_id.path_key == source_key:
-                continue
-            record = graph.module_for_path(module_id.path_key)
-            if record is None:
-                continue
-            dependent_path = record.source_path
-            lower = dependent_path.lower()
-            if not lower.endswith(".py") or _is_particle_script_path(dependent_path):
-                continue
-            self._check_script(
-                dependent_path,
-                catalog_event=None,
-                origin="dependency",
-                change_kind="dependency",
-                transaction_id=result.change.transaction_id,
-                force=True,
-            )
+        return current == result.source
 
     def _transaction_for_result(self, result: ScriptChangeResult):
         transaction_id = result.change.transaction_id
@@ -637,10 +552,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 self._script_transactions[transaction_id]
             )
             return
-        Debug.log_internal(
-            "Restarted superseded startup script scan "
-            f"(transaction={transaction_id}, members={submitted})"
-        )
 
     def _seed_script_dependency_closure(
         self,
@@ -656,10 +567,22 @@ class ResourceChangeHandler(FileSystemEventHandler):
             or result.change.origin == "dependency"
         ):
             return
+        graph = self._dependency_graph
+        graph_upserts = {
+            result.path: result.source
+        } if graph.owns_path(result.path) else {}
+        graph_removals = tuple(
+            path
+            for path in state.retire_paths
+            if graph.module_for_path(path) is not None
+        )
+        if not graph_upserts and not graph_removals:
+            state.closure_seeded = True
+            return
         try:
-            stage = self._dependency_graph.stage_transaction(
-                {result.path: result.source},
-                removals=state.retire_paths,
+            stage = graph.stage_transaction(
+                graph_upserts,
+                removals=graph_removals,
             )
         except Exception as exc:
             state.failed = True
@@ -714,52 +637,27 @@ class ResourceChangeHandler(FileSystemEventHandler):
         """Publish diagnostics and callbacks after collector LKG commit."""
         from Infernux.components.script_loader import _clear_script_error
 
-        started = time.perf_counter()
-        marks: list[tuple[str, float]] = []
-
-        def mark(label: str) -> None:
-            marks.append((label, time.perf_counter()))
-
         _clear_script_error(result.path)
-        mark("diagnostic_registry")
         Debug.clear_source_entries(result.path)
-        mark("console")
-        Debug.log_internal(f"[OK] Script OK: {os.path.basename(result.path)}")
         rm = ResourcesManager.instance()
         if rm is not None:
             catalog_event = result.change.effective_catalog_event
             if catalog_event is not None:
                 rm.notify_script_catalog_changed(result.path, catalog_event)
-            mark("catalog_callbacks")
             abs_path = path_key(result.path)
             for callback in list(rm._script_reload_callbacks.get(abs_path, [])):
                 callback(result.path)
-            mark("file_callbacks")
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        if elapsed_ms >= 10.0:
-            previous = started
-            pieces = []
-            for label, current in marks:
-                pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
-                previous = current
-            Debug.log_internal(
-                f"[ScriptReloadProfile] post_commit={elapsed_ms:.2f}ms "
-                f"file={os.path.basename(result.path)} " + " ".join(pieces)
-            )
 
     def _rollback_script_publication(self, token: _ScriptPublicationRollback) -> None:
         rollback_errors: list[str] = []
-        if token.play_batch is not None or token.edit_batch is not None:
+        if token.play_batch is not None:
             play_mode = __import__(
                 "Infernux.engine.play_mode",
                 fromlist=("PlayModeManager",),
             ).PlayModeManager.instance()
             if play_mode is not None:
                 try:
-                    if token.edit_batch is not None:
-                        play_mode.rollback_edit_script_reload_batch(token.edit_batch)
-                    elif token.play_batch is not None:
-                        play_mode.rollback_script_reload_batch(token.play_batch)
+                    play_mode.rollback_script_reload_batch(token.play_batch)
                 except Exception as exc:
                     rollback_errors.append(f"live script rollback failed: {exc}")
         if token.registry_snapshot is not None:
@@ -862,22 +760,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 ordered.append(result)
         return tuple(ordered)
 
-    def _edit_script_has_live_targets(self, play_mode, result: ScriptChangeResult) -> bool:
-        """Preflight edit-mode targets before allowing a multi-file reload."""
-        scene_getter = getattr(play_mode, "_get_scene_manager", None)
-        if not callable(scene_getter):
-            return False
-        scene_manager = scene_getter()
-        scene = scene_manager.get_active_scene() if scene_manager else None
-        if scene is None:
-            return False
-        guid = self._asset_database.get_guid_from_path(result.path) or ""
-        for obj in scene.get_all_objects():
-            for component in getattr(obj, "get_py_components", lambda: ())() or ():
-                if str(getattr(component, "_script_guid", "") or "") == str(guid):
-                    return True
-        return False
-
     def _publish_script_transaction(
         self,
         state: _ScriptPublicationTransaction,
@@ -892,12 +774,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
             ScriptReloadBatchInput,
         )
 
-        profile_started = time.perf_counter()
-        profile_marks: list[tuple[str, float]] = []
-
-        def mark(label: str) -> None:
-            profile_marks.append((label, time.perf_counter()))
-
         # This is intentionally inside the collector publication callback:
         # the source/hash check is repeated after claim and immediately before
         # any live, registry, or graph mutation.
@@ -907,20 +783,23 @@ class ResourceChangeHandler(FileSystemEventHandler):
         graph = self._dependency_graph
         ready_stage = None
         if graph is not None:
-            ready_stage = graph.stage_transaction(
-                {result.path: result.source for result in ready},
-                removals=state.retire_paths,
+            graph_upserts = {
+                result.path: result.source
+                for result in ready
+                if graph.owns_path(result.path)
+            }
+            graph_removals = tuple(
+                path
+                for path in state.retire_paths
+                if graph.module_for_path(path) is not None
             )
-        mark("dependency_graph")
-
+            if graph_upserts or graph_removals:
+                ready_stage = graph.stage_transaction(
+                    graph_upserts,
+                    removals=graph_removals,
+                )
         registry_snapshot = snapshot_component_registry_state()
-        mark("registry_snapshot")
         play_mode = PlayModeManager.instance()
-        prepare_stable_batch = (
-            getattr(play_mode, "prepare_script_reload_batch", None)
-            if play_mode is not None
-            else None
-        )
         play_batch = None
         token = _ScriptPublicationRollback(
             registry_snapshot=registry_snapshot,
@@ -928,13 +807,12 @@ class ResourceChangeHandler(FileSystemEventHandler):
         )
         try:
             ordered = self._ordered_script_results(state, ready_stage)
-            mark("order")
             move_owner_key = (
                 path_key(state.expected_paths[0])
                 if state.expected_paths
                 else ""
             )
-            if callable(prepare_stable_batch):
+            if play_mode is not None:
                 revisions = tuple(
                     ScriptReloadBatchInput(
                         file_path=result.path,
@@ -955,91 +833,36 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     )
                     for result in ordered
                 )
-                play_batch = prepare_stable_batch(revisions)
-                mark("prepare_live_batch")
+                play_batch = play_mode.prepare_script_reload_batch(revisions)
                 token.play_batch = play_batch
                 outcome = play_mode.commit_script_reload_batch(play_batch)
-                mark("commit_live_batch")
                 if not outcome.success:
                     play_mode.rollback_script_reload_batch(play_batch)
                     token.play_batch = None
                     return False
                 for result in ordered:
                     self._publish_script_registry_member(result)
-                mark("publish_registry")
             else:
-                prepare_edit_batch = getattr(
-                    play_mode,
-                    "prepare_edit_script_reload_batch",
-                    None,
-                )
-                if play_mode is None or not callable(prepare_edit_batch):
-                    # Tooling can construct a resource handler without an
-                    # active editor owner. A legacy single-script test/tool
-                    # owner may also expose only the old reload entry point.
-                    # Never emulate a multi-file live transaction through it.
-                    if play_mode is not None and len(ordered) > 1:
+                for result in ordered:
+                    if not self._publish_valid_script(
+                        result.path,
+                        source=result.source,
+                        code=(
+                            result.artifact.code
+                            if result.artifact is not None
+                            else None
+                        ),
+                        catalog_event=result.change.effective_catalog_event,
+                        _defer_post_commit=True,
+                    ):
                         raise RuntimeError(
-                            "edit-mode multi-script reload requires the Edit batch owner API"
+                            f"headless script publication rejected for {result.path}"
                         )
-                    for result in ordered:
-                        if not self._publish_valid_script(
-                            result.path,
-                            source=result.source,
-                            code=(
-                                result.artifact.code
-                                if result.artifact is not None
-                                else None
-                            ),
-                            catalog_event=result.change.effective_catalog_event,
-                            _defer_post_commit=True,
-                        ):
-                            raise RuntimeError(
-                                f"headless script publication rejected for {result.path}"
-                            )
-                else:
-                    revisions = tuple(
-                        ScriptReloadBatchInput(
-                            file_path=result.path,
-                            script_guid=(
-                                self._asset_database.get_guid_from_path(result.path) or ""
-                            ),
-                            source=result.source,
-                            code=(
-                                result.artifact.code
-                                if result.artifact is not None
-                                else None
-                            ),
-                            retire_script_paths=(
-                                state.retire_paths
-                                if path_key(result.path) == move_owner_key
-                                else ()
-                            ),
-                        )
-                        for result in ordered
-                    )
-                    edit_batch = prepare_edit_batch(revisions)
-                    token.edit_batch = edit_batch
-                    play_mode.commit_edit_script_reload_batch(edit_batch)
-                    if not edit_batch.committed:
-                        return False
 
             if ready_stage is not None:
                 mutation = graph.commit_transaction(ready_stage)
                 token.graph_committed = True
                 self._last_dependency_affected = tuple(mutation.affected)
-            mark("commit_dependency_graph")
-            total_ms = (time.perf_counter() - profile_started) * 1000.0
-            if total_ms >= 25.0:
-                previous = profile_started
-                pieces = []
-                for label, current in profile_marks:
-                    pieces.append(f"{label}={(current - previous) * 1000.0:.2f}ms")
-                    previous = current
-                Debug.log_internal(
-                    f"[ScriptReloadProfile] publish_detail total={total_ms:.2f}ms "
-                    + " ".join(pieces)
-                )
             return token
         except Exception as exc:
             self._rollback_script_publication(token)
@@ -1105,7 +928,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if any(not result.succeeded for result in state.results.values()):
             state.failed = True
             return self._discard_failed_script_transaction(state)
-        publish_started = time.perf_counter()
         try:
             published = self._script_change_collector.publish_ready_batch(
                 state.expected_paths,
@@ -1121,12 +943,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
             )
             self._discard_failed_script_transaction(state)
             return False
-        publish_elapsed_ms = (time.perf_counter() - publish_started) * 1000.0
-        if publish_elapsed_ms >= 25.0:
-            Debug.log_internal(
-                f"[ScriptReloadProfile] publish={publish_elapsed_ms:.2f}ms "
-                f"members={len(state.expected_paths)}"
-            )
         if published is False:
             state.failed = True
             self._discard_failed_script_transaction(state)
@@ -1247,14 +1063,12 @@ class ResourceChangeHandler(FileSystemEventHandler):
             if not os.path.isfile(event.path) or os.path.isfile(event.path + ".meta"):
                 return
             if AssetManager.is_meta_watcher_suppressed(event.path):
-                Debug.log_internal(f"[AssetManager] suppressed meta watcher echo: {event}")
                 return
         elif AssetManager.is_watcher_echo_suppressed(
             event.kind.value,
             event.path,
             event.destination,
         ):
-            Debug.log_internal(f"[AssetManager] suppressed watcher echo: {event}")
             return
         from Infernux.engine.interaction import ActionOrigin, action_origin_scope
 
@@ -1288,7 +1102,12 @@ class ResourceChangeHandler(FileSystemEventHandler):
         except RuntimeError as exc:
             raise _AssetImportNotReady(str(exc)) from exc
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
-            self._check_script(path, catalog_event="created")
+            if is_project_component_script(path, self._dependency_graph.project_root):
+                self._check_script(path, catalog_event="created")
+            elif package_script_role(path, self._dependency_graph.project_root) == "editor":
+                manager = ResourcesManager.instance()
+                if manager is not None:
+                    manager.notify_script_catalog_changed(path, "created")
         elif path.lower().endswith((".vert", ".frag")):
             # First import only writes metadata. Shader GPU modules are
             # published by reimport, the same edge effect dependencies use.
@@ -1331,9 +1150,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if not documents.preflight_external_resource_change(path):
             return
         script_change = path.lower().endswith(".py") and not _is_particle_script_path(path)
-        profile_started = time.perf_counter() if script_change else 0.0
         was_registered = self._asset_database.contains_path(path)
-        import_started = time.perf_counter() if script_change else 0.0
         try:
             if was_registered:
                 result = AssetManager.reimport_asset(
@@ -1370,14 +1187,12 @@ class ResourceChangeHandler(FileSystemEventHandler):
             documents.fail_external_resource_change(path, message=str(exc))
             raise
         if script_change:
-            import_elapsed_ms = (time.perf_counter() - import_started) * 1000.0
-            self._check_script(path, catalog_event="modified")
-            elapsed_ms = (time.perf_counter() - profile_started) * 1000.0
-            if elapsed_ms >= 25.0:
-                Debug.log_internal(
-                    f"[ScriptReloadProfile] asset_reimport={import_elapsed_ms:.2f}ms "
-                    f"owner_submit={elapsed_ms:.2f}ms file={os.path.basename(path)}"
-                )
+            if is_project_component_script(path, self._dependency_graph.project_root):
+                self._check_script(path, catalog_event="modified")
+            elif package_script_role(path, self._dependency_graph.project_root) == "editor":
+                manager = ResourcesManager.instance()
+                if manager is not None:
+                    manager.notify_script_catalog_changed(path, "modified")
         elif path.lower().endswith((".vert", ".frag")):
             self._notify_shader_reloaded(path)
 
@@ -1413,12 +1228,19 @@ class ResourceChangeHandler(FileSystemEventHandler):
         ):
             raise RuntimeError(f"asset deletion failed: {path}")
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
-            from Infernux.components.script_loader import clear_deleted_script_errors
+            from Infernux.components.script_loader import (
+                clear_deleted_script_errors,
+                retire_script_module,
+            )
             from Infernux.components.registry import unregister_component_script
             clear_deleted_script_errors(path)
             Debug.clear_source_entries(path)
             unregister_component_script(path)
-            if self._dependency_graph is not None:
+            retire_script_module(path)
+            if (
+                self._dependency_graph is not None
+                and self._dependency_graph.module_for_path(path) is not None
+            ):
                 mutation = self._dependency_graph.remove(path)
                 self._last_dependency_affected = tuple(mutation.affected)
             manager = ResourcesManager.instance()
@@ -1438,7 +1260,28 @@ class ResourceChangeHandler(FileSystemEventHandler):
         ):
             raise RuntimeError(f"asset move failed: {old_path} -> {new_path}")
         if new_path.lower().endswith(".py") and not _is_particle_script_path(new_path):
-            self._submit_moved_script(old_path, new_path, origin="watchdog")
+            if is_project_component_script(
+                new_path,
+                self._dependency_graph.project_root,
+            ):
+                self._submit_moved_script(old_path, new_path, origin="watchdog")
+            else:
+                if is_project_component_script(
+                    old_path,
+                    self._dependency_graph.project_root,
+                ):
+                    from Infernux.components.registry import unregister_component_script
+                    from Infernux.components.script_loader import retire_script_module
+
+                    unregister_component_script(old_path)
+                    retire_script_module(old_path)
+                    if self._dependency_graph.module_for_path(old_path) is not None:
+                        mutation = self._dependency_graph.remove(old_path)
+                        self._last_dependency_affected = tuple(mutation.affected)
+                manager = ResourcesManager.instance()
+                if manager is not None:
+                    manager.notify_script_catalog_changed(old_path, "deleted")
+                    manager.notify_script_catalog_changed(new_path, "moved")
         elif new_path.lower().endswith((".vert", ".frag")):
             if not AssetManager.reimport_asset(
                 new_path,
@@ -1456,7 +1299,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
              which regenerates the sidecar while preserving the in-memory GUID.
           2. Reload the live resource + GPU caches so the change takes effect now.
         """
-        Debug.log_internal(f"[Meta Missing] regenerate + reload for {owner_path}")
         if not owner_path or not os.path.isfile(owner_path):
             return
         if os.path.isfile(owner_path + ".meta"):
@@ -1464,7 +1306,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
 
         from Infernux.core.assets import AssetManager
         if AssetManager.is_meta_watcher_suppressed(owner_path):
-            Debug.log_internal(f"[Meta Missing] suppressed rebuild echo for {owner_path}")
             return
 
         if self._asset_database.contains_path(owner_path):
@@ -1563,12 +1404,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 self._remove_script_transaction(state)
         return change
 
-    def _publish_script_revisions(self) -> int:
-        """Compatibility safe point for callers that do not own a watcher."""
-        if not self._frontend_worker_running:
-            self.process_script_worker()
-        return self._drain_script_results()
-
     def _publish_valid_script(
         self,
         file_path: str,
@@ -1603,7 +1438,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if _defer_post_commit:
             return True
         _clear_script_error(file_path)
-        Debug.log_internal(f"[OK] Script OK: {os.path.basename(file_path)}")
         rm = ResourcesManager.instance()
         if rm is not None and catalog_event is not None:
             rm.notify_script_catalog_changed(file_path, catalog_event)
@@ -1618,7 +1452,6 @@ class ResourceChangeHandler(FileSystemEventHandler):
         # Invalidate shader caches in UI
         for callback in self._shader_cache_invalidation_callbacks:
             callback()
-        Debug.log_internal(f"[OK] Shader reloaded: {os.path.basename(file_path)}")
     
     def register_shader_cache_callback(self, callback):
         """Register a callback to be called when shader cache should be invalidated."""
@@ -1647,7 +1480,14 @@ class ResourcesManager:
         ResourcesManager._instance = self
         self._engine = engine
         self._project_path = resolved_path(project_path)
-        self._assets_path = resolved_path(os.path.join(self._project_path, "Assets"))
+        self._script_roots = get_project_script_roots(self._project_path)
+        # Assets and Packages are equally authoritative Editor source roots.
+        # Create both before the watcher is scheduled: projects created before
+        # the package system existed may have no Packages directory, and a
+        # watcher cannot observe a tree that did not exist at startup.
+        for script_root in self._script_roots:
+            os.makedirs(script_root, exist_ok=True)
+        self._assets_path = self._script_roots[0]
         self._observer = None
         self._observer_lock = threading.Lock()
         self._thread = None
@@ -1670,22 +1510,11 @@ class ResourcesManager:
         if observer is None:
             return True
 
-        try:
-            observer.stop()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        observer.stop()
+        observer.unschedule_all()
+        observer.join(timeout=join_timeout)
 
-        try:
-            observer.unschedule_all()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-
-        try:
-            observer.join(timeout=join_timeout)
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-
-        if getattr(observer, "is_alive", lambda: False)():
+        if observer.is_alive():
             Debug.log_warning("ResourcesManager observer did not stop cleanly before timeout")
             with self._observer_lock:
                 if self._observer is None:
@@ -1697,8 +1526,6 @@ class ResourcesManager:
         """
         Start to scan the project directory for resources in a sub-thread.
         """
-        if not _HAS_WATCHDOG:
-            return  # watchdog not available (standalone player build)
         if self._thread and self._thread.is_alive():
             Debug.log_warning("ResourcesManager is already running")
             return
@@ -1772,17 +1599,11 @@ class ResourcesManager:
             return
         if on_progress:
             on_progress("Scanning project scripts...")
-        phase_started = time.perf_counter()
         self._ensure_event_handler()
-        Debug.log_internal(
-            "Startup resource refresh event handler initialized in "
-            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
-        )
 
         # Start the watcher/frontend worker before submitting the startup
         # snapshots.  skip_initial_scan keeps a single owner-created startup
         # transaction while the worker performs the expensive frontend work.
-        phase_started = time.perf_counter()
         self.start(skip_initial_scan=True)
         worker_deadline = time.monotonic() + 5.0
         while (
@@ -1795,33 +1616,21 @@ class ResourcesManager:
             if callable(pump_events):
                 pump_events()
             time.sleep(0)
-        Debug.log_internal(
-            "Startup resource refresh worker started in "
-            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
-        )
-
-        phase_started = time.perf_counter()
         self._initial_script_scan()
-        Debug.log_internal(
-            "Startup resource refresh snapshots submitted in "
-            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
-        )
         if on_progress:
             on_progress("Publishing project scripts...")
-        phase_started = time.perf_counter()
         self._wait_for_startup_idle()
-        Debug.log_internal(
-            "Startup resource refresh revisions published in "
-            f"{(time.perf_counter() - phase_started) * 1000.0:.1f} ms"
-        )
         self._startup_prepared = True
 
     def _scan_resources(self):
         """
-        Use watchdog to monitor file changes in _assets_path.
+        Use watchdog to monitor project assets and installed package sources.
         """
-        if not os.path.exists(self._assets_path):
-            Debug.log_warning(f"Assets path not found: {self._assets_path}")
+        existing_roots = tuple(path for path in self._script_roots if os.path.isdir(path))
+        if not existing_roots:
+            Debug.log_warning(
+                f"Project script roots not found: {', '.join(self._script_roots)}"
+            )
             return
         if self._stop_event.is_set():
             return
@@ -1830,13 +1639,11 @@ class ResourcesManager:
         self._frontend_worker_running = True
         handler.set_frontend_worker_running(True)
         observer = Observer()
-        try:
-            observer.daemon = False
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+        observer.daemon = False
 
         try:
-            observer.schedule(handler, self._assets_path, recursive=True)
+            for root in existing_roots:
+                observer.schedule(handler, root, recursive=True)
             with self._observer_lock:
                 if self._stop_event.is_set():
                     return
@@ -1864,7 +1671,7 @@ class ResourcesManager:
             self._shutdown_observer(join_timeout=5.0)
 
     def _initial_script_scan(self):
-        """Walk Assets/ and syntax-check every .py file.
+        """Walk project script roots and syntax-check every .py file.
 
         ``prepare_startup()`` runs this on the owner thread before the
         engine window is shown. The watcher thread only repeats it when
@@ -1872,37 +1679,38 @@ class ResourcesManager:
         """
         self._ensure_event_handler()
         script_paths = []
-        for root, dirs, files in os.walk(self._assets_path):
-            if self._stop_event.is_set():
-                return
-            dirs[:] = [d for d in dirs if d != '__pycache__']
-            for fname in files:
-                if not fname.endswith('.py') or _is_particle_script_path(fname):
-                    continue
-                fpath = os.path.join(root, fname)
-                if self._event_handler is None:
-                    continue
-                script_paths.append(fpath)
+        for script_root in self._script_roots:
+            if not os.path.isdir(script_root):
+                continue
+            for root, dirs, files in os.walk(script_root):
+                if self._stop_event.is_set():
+                    return
+                dirs[:] = [d for d in dirs if d != '__pycache__']
+                for fname in files:
+                    if not fname.endswith('.py') or _is_particle_script_path(fname):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    if not is_project_component_script(fpath, self._project_path):
+                        continue
+                    if self._event_handler is None:
+                        continue
+                    script_paths.append(fpath)
         transaction_id = None
         if script_paths and self._event_handler is not None:
             transaction_id = self._event_handler.begin_script_transaction(
                 script_paths,
                 initial_scan=True,
             )
-        submitted = 0
         for fpath in script_paths:
             if self._event_handler is None:
                 continue
-            if self._event_handler._check_script(
+            self._event_handler._check_script(
                 fpath,
                 catalog_event=None,
                 origin="initial_scan",
                 change_kind="initial_scan",
                 transaction_id=transaction_id,
-            ) is not None:
-                submitted += 1
-        if submitted:
-            Debug.log_internal(f"Startup scan queued {submitted} script revision(s)")
+            )
 
     def process_pending_reloads(self, *, force: bool = False) -> int:
         """Commit worker artifacts and asset events on the main thread."""
@@ -1910,26 +1718,7 @@ class ResourcesManager:
         if self._startup_prepared and bool(
             getattr(asset_database, "refresh_pending", False)
         ):
-            try:
-                asset_database.try_commit_refresh()
-            except Exception as exc:
-                # Owner-thread imports may legitimately advance the catalog
-                # while the background filesystem scan is still running.  The
-                # native database rejects that stale artifact to protect the
-                # newer state; immediately rescan from the new generation.
-                if "scan artifact is stale" in str(exc):
-                    try:
-                        asset_database.begin_refresh()
-                        Debug.log_internal(
-                            "Restarted stale background AssetDatabase refresh"
-                        )
-                    except Exception as restart_exc:
-                        Debug.log_error(
-                            "Background AssetDatabase refresh restart failed: "
-                            f"{restart_exc}"
-                        )
-                else:
-                    Debug.log_error(f"Background AssetDatabase refresh failed: {exc}")
+            asset_database.try_commit_refresh()
         if self._event_handler is None:
             return 0
         if force or not self._frontend_worker_running:
@@ -1937,6 +1726,50 @@ class ResourcesManager:
         processed = 0
         processed += self._event_handler.process_pending_reloads(force=force)
         return processed
+
+    def begin_script_transaction(
+        self,
+        paths,
+        *,
+        retire_paths=(),
+    ) -> str:
+        """Create one atomic publication barrier for internal script writes."""
+
+        members = tuple(resolved_path(path) for path in paths)
+        retired = tuple(resolved_path(path) for path in retire_paths)
+        if not members:
+            raise ValueError("script transaction requires at least one path")
+        for path in (*members, *retired):
+            if not any(
+                is_path_within(path, root, allow_root=False)
+                for root in self._script_roots
+            ):
+                raise ValueError(f"script transaction path is outside the project: {path}")
+        handler = self._ensure_event_handler()
+        return handler.begin_script_transaction(
+            members,
+            retire_paths=retired,
+        )
+
+    def retire_script_paths(self, paths) -> None:
+        """Retire package Runtime modules after a disable or uninstall commit."""
+
+        from Infernux.components.registry import unregister_component_script
+        from Infernux.components.script_loader import retire_script_module
+
+        handler = self._ensure_event_handler()
+        for raw_path in paths:
+            path = resolved_path(raw_path)
+            if not any(
+                is_path_within(path, root, allow_root=False)
+                for root in self._script_roots
+            ):
+                raise ValueError(f"retired script path is outside the project: {path}")
+            unregister_component_script(path)
+            retire_script_module(path)
+            if handler.dependency_graph.module_for_path(path) is not None:
+                mutation = handler.dependency_graph.remove(path)
+                handler._last_dependency_affected = tuple(mutation.affected)
 
     def submit_script_change(
         self,
@@ -1954,7 +1787,10 @@ class ResourcesManager:
         keeps callers from accidentally submitting a script outside Assets and
         preserves the same owner/worker split as watchdog changes.
         """
-        if not is_path_within(file_path, self._assets_path, allow_root=False):
+        if not any(
+            is_path_within(file_path, root, allow_root=False)
+            for root in self._script_roots
+        ):
             return None
         if self._event_handler is None:
             self._event_handler = ResourceChangeHandler(
@@ -1972,13 +1808,16 @@ class ResourcesManager:
         )
 
     def drain_pending_events(self) -> int:
-        """Force all bounded retries to finish after the observer has stopped."""
-        processed = 0
-        for _ in range(16):
-            processed += self.process_pending_reloads(force=True)
-            if self._event_handler is None or self._event_handler.pending_count == 0:
-                return processed
-        raise RuntimeError("asset event queue did not drain after observer shutdown")
+        """Commit native refresh work, then drain the stopped observer once."""
+        asset_database = self._engine.get_asset_database()
+        if bool(asset_database.refresh_pending):
+            asset_database.complete_pending_refresh()
+        processed = self.process_pending_reloads(force=True)
+        if self._event_handler is not None and self._event_handler.pending_count:
+            raise RuntimeError(
+                "asset event queue retained work after the shutdown drain"
+            )
+        return processed
 
     def register_script_reload_callback(self, file_path: str, callback) -> None:
         """Subscribe *callback(file_path)* to be called when *file_path* is saved.
@@ -2013,19 +1852,11 @@ class ResourcesManager:
 
     def notify_script_catalog_changed(self, file_path: str, event_type: str) -> None:
         """Notify listeners that Python script catalog may have changed."""
-        started = time.perf_counter()
         for cb in list(self._script_catalog_callbacks):
             try:
                 cb(file_path, event_type)
             except Exception as e:
                 Debug.log_error(f"Script catalog callback failed: {e}")
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        if elapsed_ms >= 10.0:
-            Debug.log_internal(
-                f"[ScriptReloadProfile] catalog_callbacks={elapsed_ms:.2f}ms "
-                f"listeners={len(self._script_catalog_callbacks)} "
-                f"file={os.path.basename(file_path)} event={event_type}"
-            )
 
     def reload_moved_script(self, old_path: str, new_path: str) -> None:
         """Queue a GUID-stable script move after the durable asset move."""
@@ -2096,5 +1927,3 @@ class ResourcesManager:
         self._script_catalog_callbacks.clear()
         if ResourcesManager._instance is self:
             ResourcesManager._instance = None
-        
-        Debug.log_internal("ResourcesManager cleanup completed")

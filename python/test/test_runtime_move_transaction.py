@@ -53,17 +53,6 @@ class _PlayModeProbe:
     def finalize_script_reload_batch(self, _batch):
         return None
 
-    def prepare_edit_script_reload_batch(self, revisions):
-        self.revisions = tuple(revisions)
-        return _Batch()
-
-    def commit_edit_script_reload_batch(self, _batch):
-        return 0
-
-    def rollback_edit_script_reload_batch(self, _batch):
-        return None
-
-
 def _manager_and_handler(tmp_path):
     assets = tmp_path / "Assets"
     assets.mkdir()

@@ -29,10 +29,57 @@ Example::
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
 from typing import Tuple, Union
 
 from Infernux.lib import InputManager as _NativeInputManager
+from Infernux.runtime_services import get_runtime_service
 from .ime import ImeInputState
+
+
+class TouchPhase(str, Enum):
+    """Lifecycle phase for one touch contact in the current input frame."""
+
+    BEGAN = "began"
+    MOVED = "moved"
+    STATIONARY = "stationary"
+    ENDED = "ended"
+    CANCELED = "canceled"
+
+
+@dataclass(frozen=True, slots=True)
+class Touch:
+    """Unity-aligned touch snapshot for one input frame.
+
+    ``position`` and ``delta_position`` use screen pixels with a bottom-left
+    origin, matching Unity's public ``Touch`` contract.  The explicit
+    normalized fields are intended for resolution-independent controls.
+    """
+
+    touch_id: int
+    finger_id: int
+    timestamp_ns: int
+    window_id: int
+    position: Tuple[float, float]
+    raw_position: Tuple[float, float]
+    delta_position: Tuple[float, float]
+    normalized_position: Tuple[float, float]
+    normalized_delta_position: Tuple[float, float]
+    delta_time: float
+    pressure: float
+    contact_size: Tuple[float, float]
+    is_primary: bool
+    cancel_reason: str
+    phase: TouchPhase
+
+
+@dataclass(frozen=True, slots=True)
+class AccelerationEvent:
+    """One accelerometer sample captured during the current input frame."""
+
+    acceleration: Tuple[float, float, float]
+    delta_time: float
 
 
 # =============================================================================
@@ -41,6 +88,11 @@ from .ime import ImeInputState
 
 class _InputMeta(type):
     """Metaclass that enables ``Input.mouse_position`` (no parentheses)."""
+
+    @property
+    def frame_index(cls) -> int:
+        """Monotonic identity of the native input frame."""
+        return int(_NativeInputManager.instance().frame_index)
 
     @property
     def mouse_position(cls) -> Tuple[float, float]:
@@ -92,10 +144,59 @@ class _InputMeta(type):
 
     @property
     def touch_count(cls) -> int:
-        """Number of active touch contacts this frame."""
+        """Number of touch contacts in the current frame snapshot."""
         if not cls._accepts_game_input():
             return 0
         return _NativeInputManager.instance().touch_count
+
+    @property
+    def touches(cls) -> Tuple[Touch, ...]:
+        """All touch contacts in stable first-contact order."""
+        if not cls._accepts_game_input():
+            return ()
+        return tuple(cls._from_native_touch(touch) for touch in _NativeInputManager.instance().get_touches())
+
+    @property
+    def accelerometer_supported(cls) -> bool:
+        """Whether the current device exposes an accelerometer."""
+        return bool(_NativeInputManager.instance().accelerometer_supported)
+
+    @property
+    def gyroscope_supported(cls) -> bool:
+        """Whether the current device exposes a gyroscope."""
+        return bool(_NativeInputManager.instance().gyroscope_supported)
+
+    @property
+    def acceleration(cls) -> Tuple[float, float, float]:
+        """Latest linear acceleration in g-force units, matching Unity axes."""
+        values = _NativeInputManager.instance().acceleration
+        return (float(values[0]), float(values[1]), float(values[2]))
+
+    @property
+    def gyroscope_rotation_rate(cls) -> Tuple[float, float, float]:
+        """Latest angular velocity in radians per second."""
+        values = _NativeInputManager.instance().gyroscope_rotation_rate
+        return (float(values[0]), float(values[1]), float(values[2]))
+
+    @property
+    def acceleration_event_count(cls) -> int:
+        """Number of accelerometer samples captured during this input frame."""
+        return len(_NativeInputManager.instance().acceleration_events)
+
+    @property
+    def acceleration_events(cls) -> Tuple[AccelerationEvent, ...]:
+        """Accelerometer samples captured during this input frame."""
+        return tuple(
+            AccelerationEvent(
+                acceleration=(
+                    float(event.acceleration[0]),
+                    float(event.acceleration[1]),
+                    float(event.acceleration[2]),
+                ),
+                delta_time=float(event.delta_time),
+            )
+            for event in _NativeInputManager.instance().acceleration_events
+        )
 
 
 # =============================================================================
@@ -119,6 +220,7 @@ class KeyCode:
     TAB = 43         # SDL_SCANCODE_TAB
     RETURN = 40      # SDL_SCANCODE_RETURN
     ESCAPE = 41      # SDL_SCANCODE_ESCAPE
+    AC_BACK = 282    # SDL_SCANCODE_AC_BACK (Android/system Back)
     SPACE = 44       # SDL_SCANCODE_SPACE
     DELETE = 76       # SDL_SCANCODE_DELETE
 
@@ -262,7 +364,12 @@ class Input(metaclass=_InputMeta):
 
     @staticmethod
     def _accepts_game_input() -> bool:
-        return Input._game_focused or Input._automation_game_input_depth > 0
+        manager = _NativeInputManager.instance()
+        return (
+            Input._game_focused
+            or Input._automation_game_input_depth > 0
+            or bool(manager.has_synthetic_gameplay_input)
+        )
 
     @staticmethod
     def _begin_automation_game_input() -> None:
@@ -436,10 +543,93 @@ class Input(metaclass=_InputMeta):
     # (implemented in _InputMeta metaclass)
 
     # ------------------------------------------------------------------
-    # Touch (placeholder) — Unity: Input.touchCount
+    # Touch — Unity: Input.touchCount / Input.GetTouch
     # ------------------------------------------------------------------
     # Property-style access: Input.touch_count → int
     # (implemented in _InputMeta metaclass)
+
+    @staticmethod
+    def _from_native_touch(native_touch) -> Touch:
+        screen = _NativeInputManager.instance().screen_state
+        screen_width = max(1.0, float(screen.logical_width))
+        screen_height = max(1.0, float(screen.logical_height))
+        normalized_x = float(native_touch.x)
+        normalized_y = 1.0 - float(native_touch.y)
+        normalized_delta_x = float(native_touch.delta_x)
+        normalized_delta_y = -float(native_touch.delta_y)
+        position = (
+            normalized_x * screen_width,
+            normalized_y * screen_height,
+        )
+        return Touch(
+            touch_id=int(native_touch.touch_id),
+            finger_id=int(native_touch.finger_id),
+            timestamp_ns=int(native_touch.timestamp_ns),
+            window_id=int(native_touch.window_id),
+            position=position,
+            raw_position=position,
+            delta_position=(
+                normalized_delta_x * screen_width,
+                normalized_delta_y * screen_height,
+            ),
+            normalized_position=(normalized_x, normalized_y),
+            normalized_delta_position=(normalized_delta_x, normalized_delta_y),
+            delta_time=float(native_touch.delta_time),
+            pressure=float(native_touch.pressure),
+            contact_size=(
+                float(native_touch.contact_width) * screen_width,
+                float(native_touch.contact_height) * screen_height,
+            ),
+            is_primary=bool(native_touch.is_primary),
+            cancel_reason=str(native_touch.cancel_reason),
+            phase=TouchPhase(str(native_touch.phase)),
+        )
+
+    @staticmethod
+    def begin_text_input(initial_value: str = "", input_type: str = "text") -> bool:
+        """Begin platform text input and show a software keyboard when available.
+
+        Browser Players use their DOM composition bridge; desktop and Android
+        Players use SDL's native text-input service. Only committed text appears
+        in :attr:`Input.input_string`.
+        """
+
+        service = get_runtime_service("text-input")
+        if service is not None:
+            begin = getattr(service, "begin_text_input", None)
+            if callable(begin):
+                return bool(begin(str(initial_value), str(input_type or "text")))
+        return bool(_NativeInputManager.instance().start_text_input())
+
+    @staticmethod
+    def end_text_input() -> None:
+        """End platform text input and dismiss its software keyboard."""
+
+        service = get_runtime_service("text-input")
+        if service is not None:
+            end = getattr(service, "end_text_input", None)
+            if callable(end):
+                end()
+                return
+        _NativeInputManager.instance().stop_text_input()
+
+    @staticmethod
+    def is_text_input_active() -> bool:
+        """Return whether gameplay has requested platform text input."""
+
+        service = get_runtime_service("text-input")
+        if service is not None:
+            query = getattr(service, "is_text_input_active", None)
+            if callable(query):
+                return bool(query())
+        return bool(_NativeInputManager.instance().is_text_input_active)
+
+    @staticmethod
+    def get_touch(index: int) -> Touch:
+        """Return one stable-indexed touch from the current frame snapshot."""
+        if not Input._accepts_game_input():
+            raise IndexError("Touch input is unavailable while gameplay input is unfocused")
+        return Input._from_native_touch(_NativeInputManager.instance().get_touch(index))
 
     # ------------------------------------------------------------------
     # Utility
@@ -464,3 +654,18 @@ class Input(metaclass=_InputMeta):
     def reset_input_axes() -> None:
         """Reset all input state. Unity: ``Input.ResetInputAxes()``."""
         _NativeInputManager.instance().reset_all()
+
+
+from .actions import InputAction, InputActionMap, InputActionPhase, InputActionType
+
+__all__ = [
+    "AccelerationEvent",
+    "Input",
+    "InputAction",
+    "InputActionMap",
+    "InputActionPhase",
+    "InputActionType",
+    "KeyCode",
+    "Touch",
+    "TouchPhase",
+]

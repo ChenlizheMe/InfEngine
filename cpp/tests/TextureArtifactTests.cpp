@@ -39,31 +39,6 @@ void AppendU64(std::string &bytes, uint64_t value)
         bytes.push_back(static_cast<char>((value >> shift) & 0xffU));
 }
 
-void AppendU32(std::string &bytes, uint32_t value)
-{
-    for (unsigned shift = 0; shift < 32; shift += 8)
-        bytes.push_back(static_cast<char>((value >> shift) & 0xffU));
-}
-
-std::string MakeVersion1Artifact(const infernux::TextureCpuData &source, const std::string &sourceHash)
-{
-    std::string bytes = "INXTEX";
-    AppendU32(bytes, 1);
-    AppendU32(bytes, 0x01020304U);
-    AppendU32(bytes, static_cast<uint32_t>(sourceHash.size()));
-    bytes.append(sourceHash);
-    AppendU32(bytes, source.format == infernux::TextureFormat::Rgba32Float ? 2U : 1U);
-    AppendU32(bytes, static_cast<uint32_t>(source.mipLevels.size()));
-    for (const auto &mip : source.mipLevels) {
-        AppendU32(bytes, mip.width);
-        AppendU32(bytes, mip.height);
-        AppendU64(bytes, mip.byteSize);
-    }
-    AppendU64(bytes, source.bytes.size());
-    bytes.append(reinterpret_cast<const char *>(source.bytes.data()), source.bytes.size());
-    AppendU64(bytes, Fnv1a64(bytes));
-    return bytes;
-}
 } // namespace
 
 int main()
@@ -111,10 +86,6 @@ int main()
     assert(description.mipLevels[1].byteOffset == 32);
     assert(description.payloadBytes == source.bytes.size());
     std::filesystem::remove(descriptionPath);
-
-    RequireInvalid("legacy version", [&] {
-        (void)infernux::TextureArtifact::Deserialize(MakeVersion1Artifact(source, SourceHash), SourceHash);
-    });
 
     infernux::TextureCpuData volume;
     volume.dimension = infernux::TextureDimension::Texture3D;

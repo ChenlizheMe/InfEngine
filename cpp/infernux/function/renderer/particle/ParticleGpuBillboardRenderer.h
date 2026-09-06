@@ -77,13 +77,11 @@ class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
     }
 
     [[nodiscard]] bool RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                  rhi::RenderTargetLayoutHandle renderTargetLayout,
                                   const MaterialPassPipelineDescriptor &pass, rhi::BufferHandle indirectArguments,
                                   const GpuBillboardViewConstants &view, rhi::BufferHandle renderIndices = {},
                                   rhi::TextureViewHandle sceneDepth = {}, bool sceneDepthIsDepth = true,
                                   const GpuParticlePerViewBindings &perView = {}) override;
     [[nodiscard]] bool RecordPickingDraw(const rhi::GraphicsCommandEncoder &encoder,
-                                         rhi::RenderTargetLayoutHandle renderTargetLayout,
                                          const MaterialPassPipelineDescriptor &pass,
                                          rhi::BufferHandle indirectArguments, const GpuBillboardViewConstants &view,
                                          uint64_t ownerObjectId, rhi::BufferHandle renderIndices = {}) override;
@@ -91,15 +89,13 @@ class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
   private:
     struct PipelineEntry
     {
-        rhi::RenderTargetLayoutHandle renderTargetLayout;
         MaterialPassPipelineDescriptor pass;
         rhi::BindingLayoutHandle perViewLayout;
         uint8_t materialStateSignature = 0;
         rhi::GraphicsPipelineHandle pipeline;
     };
 
-    [[nodiscard]] rhi::GraphicsPipelineHandle GetOrCreatePipeline(rhi::RenderTargetLayoutHandle renderTargetLayout,
-                                                                  const MaterialPassPipelineDescriptor &pass,
+    [[nodiscard]] rhi::GraphicsPipelineHandle GetOrCreatePipeline(const MaterialPassPipelineDescriptor &pass,
                                                                   rhi::BindingLayoutHandle perViewLayout = {});
     [[nodiscard]] GpuBillboardMaterialState ResolveMaterialState() const noexcept;
     void RetireViewBindGroups();

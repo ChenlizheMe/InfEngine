@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
+import importlib.util
 import json
 import os
 import posixpath
+import re
 import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
-import urllib.request
 import uuid
-from dataclasses import dataclass, field
+from contextlib import ExitStack, contextmanager, nullcontext
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 from urllib.parse import unquote, urlsplit
@@ -27,11 +27,14 @@ from packaging.version import Version
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import (
     is_path_within,
+    path_key,
     portable_path,
     relative_path,
     resolved_path,
+    same_path,
 )
 from Infernux.engine.player_package_native import read_entry
+from Infernux.engine.python_abi import PYTHON_RUNTIME_DIRECTORY
 from Infernux.version import ENGINE_VERSION
 
 from .content import (
@@ -39,33 +42,63 @@ from .content import (
     localized_intro as select_plugin_intro,
     read_plugin_pages,
     resolve_plugin_page_asset,
+    split_markdown_images,
 )
+from .cache import SharedPackageCache
 from .package import (
     InxPackage,
     InxPackagePreview,
     PACKAGE_EXTENSION,
     PACKAGE_MANIFEST,
+    REPOSITORY_PACKAGE_DIRECTORY,
     SOURCE_MANIFEST,
+    current_meta_bytes,
     package_control_root,
     package_destination,
     validate_reference,
 )
 from .preload import PreloadManager
-from .project_index import project_guid_paths
+from .project_index import _asset_database, project_guid_paths
 from .registry import PluginRegistry
 
 
 _URL_PACKAGE_CHUNK_BYTES = 1024 * 1024
-_InstallProgress = Callable[[str, float], None]
+_InstallProgress = Callable[[str, float, str], None]
+_GIT_PROGRESS_PERCENT = re.compile(r"(?<!\d)(\d{1,3})%(?!\d)")
+_SOURCE_DESCRIPTOR_FIELDS = frozenset(
+    {
+        "type",
+        "location",
+        "reference",
+        "revision",
+        "subdirectory",
+        "official",
+        "builtin",
+        "repository",
+        "cache_scope",
+        "cache_location",
+        "release_tag",
+        "release_url",
+        "version",
+        "acquisition",
+        "commit",
+        "source_snapshot",
+    }
+)
 
 
 def _report_progress(
     callback: _InstallProgress | None,
     stage: str,
     progress: float,
+    detail: str = "",
 ) -> None:
     if callback is not None:
-        callback(str(stage), max(0.0, min(1.0, float(progress))))
+        callback(
+            str(stage),
+            max(0.0, min(1.0, float(progress))),
+            str(detail or ""),
+        )
 
 
 def _scaled_progress(
@@ -76,11 +109,23 @@ def _scaled_progress(
     if callback is None:
         return None
     span = float(end) - float(start)
-    return lambda stage, value: callback(stage, float(start) + span * float(value))
+    return lambda stage, value, detail="": callback(
+        stage,
+        float(start) + span * float(value),
+        detail,
+    )
 
 
 class PackageConflictError(RuntimeError):
     """Raised when installation would overwrite a different durable asset."""
+
+
+class PackageUpdateConflict(PackageConflictError):
+    """Local edits requiring explicit consent before package replacement."""
+
+    def __init__(self, paths: Iterable[str]) -> None:
+        self.paths = tuple(sorted(set(paths)))
+        super().__init__("Plugin update would replace local edits: " + ", ".join(self.paths))
 
 
 @dataclass(slots=True)
@@ -116,7 +161,6 @@ class _PlannedFile:
     destination: str
     destination_relative: str
     guid: str
-    sha256: str
     role: str
     payload: bytes
     meta_payload: bytes
@@ -159,7 +203,12 @@ class PluginManager:
             raise ValueError("PluginManager requires a project root")
         self.engine = engine
         self.runtime = bool(runtime)
+        if not self.runtime:
+            from .platform_support import activate_android_support_environment
+
+            activate_android_support_environment()
         self.official_catalog_error = ""
+        self.python_requirement_error = ""
         self.registry = PluginRegistry(self.project_root)
         self.preloads = PreloadManager(
             self.project_root,
@@ -170,6 +219,16 @@ class PluginManager:
         self.states: dict[str, PluginState] = {}
         self._resource_manager = None
         self._installing: set[str] = set()
+        self._deferred_catalog_changes: set[str] = set()
+        self._page_workspaces = ExitStack()
+        self._cached_page_roots: dict[tuple[str, int, int], str] = {}
+
+    def _package_cache(self) -> SharedPackageCache:
+        return SharedPackageCache(
+            staging_root=os.path.join(
+                self.project_root, "Cache", "Plugins", ".staging"
+            )
+        )
 
     @classmethod
     def instance(cls) -> "PluginManager | None":
@@ -188,6 +247,8 @@ class PluginManager:
         ):
             current.engine = engine
             current.preloads.engine = engine
+            if not runtime:
+                current._reconcile_python_requirements_for_startup()
             current.reload_all()
             return current
         if current is not None:
@@ -196,7 +257,11 @@ class PluginManager:
         cls._instance = manager
         if not runtime:
             mirrored_resources = os.path.join(normalized, "Library", "Resources")
-            from .official import OfficialCatalogError, sync_official_registry
+            from .official import (
+                OfficialCatalogError,
+                install_bundled_packages,
+                sync_official_registry,
+            )
 
             try:
                 sync_official_registry(normalized, resources_root=mirrored_resources)
@@ -206,13 +271,25 @@ class PluginManager:
                     "Official plugin catalog is unavailable; continuing with "
                     f"installed, local, Git, and pip sources: {exc}"
                 )
-        manager.registry.save(manager.registry.load())
-        manager.reload_all()
+            # An existing built-in package may be reloaded by
+            # install_bundled_packages(). Its Python dependencies therefore
+            # have to exist before that call; restoring them afterwards leaves
+            # the current Editor process with a failed preload even if pip later
+            # succeeds.
+            manager._reconcile_python_requirements_for_startup()
+            install_bundled_packages(normalized, manager=manager)
+        # Bundled packages load their own lifecycle exactly once while being
+        # synchronized.  Catch up the remaining project/plugin declarations
+        # without unloading those live instances and importing them again.
+        manager.preloads.catch_up()
+        manager._rebuild_states()
         if not runtime:
             manager._attach_resource_events()
         return manager
 
     def shutdown(self) -> None:
+        self._page_workspaces.close()
+        self._cached_page_roots.clear()
         if self._resource_manager is not None:
             self._resource_manager.unregister_script_catalog_callback(
                 self._on_script_catalog_changed
@@ -249,6 +326,56 @@ class PluginManager:
         self._rebuild_states()
         return self.states[reference.casefold()]
 
+    def catch_up_preloads(self) -> tuple[PreloadState, ...]:
+        """Load lifecycles that entered the GUID catalog after startup preload.
+
+        Called once the startup AssetDatabase refresh has committed, so
+        scripts created without a ``.meta`` sidecar still preload on their
+        first editor session instead of waiting for the next restart.
+        """
+        loaded = self.preloads.catch_up()
+        if loaded:
+            self._rebuild_states()
+        return loaded
+
+    def _content_root(self, reference: str) -> str:
+        if self.registry.installed_record(reference) is not None:
+            return package_control_root(self.project_root, reference)
+        archive = self.cached_reference_path(reference)
+        if not archive:
+            return package_control_root(self.project_root, reference)
+        stat = os.stat(archive)
+        key = (archive, stat.st_mtime_ns, stat.st_size)
+        if key in self._cached_page_roots:
+            return self._cached_page_roots[key]
+
+        # Preview documents only: never install or execute a downloaded plugin.
+        preview = InxPackage.inspect(archive)
+        root = self._page_workspaces.enter_context(self._package_cache().workspace("pages"))
+        files = {str(item["logical_path"]): item for item in preview.file_records}
+
+        def materialize(logical: str) -> None:
+            destination = Path(root, *logical.split("/"))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(read_entry(archive, str(files[logical]["archive_path"])))
+
+        for logical in files:
+            if logical.startswith("plugin_pages/"):
+                materialize(logical)
+        for page in read_plugin_pages(root, list(preview.metadata["pages"])):
+            for block in split_markdown_images(page["content"]):
+                if block["kind"] != "image":
+                    continue
+                image = resolve_plugin_page_asset(
+                    root, page["path"], block["source"], require_file=False
+                )
+                if image:
+                    logical = Path(image).relative_to(root).as_posix()
+                    if logical in files and not os.path.isfile(image):
+                        materialize(logical)
+        self._cached_page_roots[key] = root
+        return root
+
     def content_pages(
         self,
         record: Mapping[str, object],
@@ -266,7 +393,7 @@ class PluginManager:
         else:
             selected_locale = locale
         try:
-            control_root = package_control_root(self.project_root, reference)
+            control_root = self._content_root(reference)
             descriptors = record.get("pages", [])
             if not descriptors:
                 descriptors = list(discover_plugin_pages(control_root))
@@ -300,7 +427,7 @@ class PluginManager:
     ) -> str:
         reference = str(record.get("reference", ""))
         try:
-            control_root = package_control_root(self.project_root, reference)
+            control_root = self._content_root(reference)
             path = resolve_plugin_page_asset(
                 control_root, str(page.get("path", "")), source
             )
@@ -308,9 +435,9 @@ class PluginManager:
                 return path
         except ValueError:
             pass
-        content_root = os.path.join(
-            self.project_root, "Assets", "Plugins", *reference.split("/")
-        )
+        if self.registry.installed_record(reference) is None:
+            return ""
+        content_root = os.path.join(self.project_root, "Assets", "Plugins")
         try:
             return resolve_plugin_page_asset(
                 content_root, str(page.get("path", "")), source
@@ -326,13 +453,11 @@ class PluginManager:
         install_dependencies: bool = True,
         source: Mapping[str, object] | None = None,
         progress: _InstallProgress | None = None,
+        update: bool = False,
+        overwrite_modified: bool = False,
     ) -> PluginState:
         _report_progress(progress, "inspect_package", 0.36)
         package_path = resolved_path(package_path)
-        expected_sha256 = str((source or {}).get("sha256", "")).strip().casefold()
-        package_sha256 = _file_hash(package_path)
-        if expected_sha256 and package_sha256 != expected_sha256:
-            raise RuntimeError(f"InxPackage source hash mismatch: {package_path}")
         preview = InxPackage.inspect(package_path)
         compatibility = str(preview.metadata.get("engine", "")).strip()
         if compatibility and Version(ENGINE_VERSION) not in SpecifierSet(compatibility):
@@ -340,45 +465,93 @@ class PluginManager:
                 f"InxPackage requires Infernux {compatibility}, current engine is {ENGINE_VERSION}"
             )
         reference = validate_reference(str(preview.metadata["reference"]))
+        from .platform_support import require_plugin_support
+
+        require_plugin_support(reference)
         key = reference.casefold()
         if key in self._installing:
             raise RuntimeError(f"Circular plugin dependency: {reference}")
         current = self.registry.installed_record(reference)
-        if current is not None:
+        if update:
+            if current is None:
+                raise KeyError(f"Plugin is not installed: {reference}")
+            if threading.current_thread() is not threading.main_thread():
+                raise RuntimeError("Plugin update publication must run on the editor thread")
+        if current is not None and not update:
             if _same_install(current, preview):
                 return self.reload(reference)
+            control = current.get("control", {})
+            control_path = self._guid_index().get(str(control.get("guid", "")).casefold())
+            if control_path:
+                with open(control_path, "r", encoding="utf-8") as stream:
+                    original = json.load(stream)
+                if (
+                    str(current.get("version", "")) == str(preview.metadata.get("version", ""))
+                    and _package_file_identities(original.get("files", ()))
+                    == _package_file_identities(preview.file_records)
+                ):
+                    return self._extend_package_install(current, preview, selected, progress)
             raise RuntimeError(
                 f"Plugin is already installed with different content: {reference}; "
-                "uninstall it before reinstalling"
+                "select an explicit package update"
+            )
+        removed: list[str] = []
+        if update:
+            if selected is not None:
+                raise ValueError("An update preserves the existing package selection")
+            planned, control, removed = self._plan_update(
+                current, preview, overwrite_modified=overwrite_modified,
             )
         installed_before = {
             str(item.get("reference", "")).casefold()
             for item in self.registry.installed()
         }
         pip_effect: _PipInstallEffect | None = None
+        python_baseline: dict[str, str] | None = None
+        stopped = False
+        committed = False
         self._installing.add(key)
         try:
+            if update:
+                failures = self.preloads.unload_package(reference)
+                if failures:
+                    raise RuntimeError("Plugin lifecycle could not be stopped; restart required: "
+                                       + "; ".join(state.error for state in failures))
+                stopped = True
+                self._retire_package_runtime_scripts(current)
+                if install_dependencies and current.get("python_requirements"):
+                    python_baseline = self._python_environment_snapshot(
+                        self._project_python_executable(),
+                    )
             cache_path, cache_relative = self._cache_package(
-                package_path, package_sha256
+                package_path,
+                reference,
+                str(preview.metadata.get("version", "")),
             )
-            resolved_source = dict(source or {})
+            resolved_source = dict(source or (current.get("source", {}) if update else {}))
             resolved_source.setdefault("type", "local")
             resolved_source.setdefault("location", package_path)
-            resolved_source["sha256"] = package_sha256
             resolved_source["cache_location"] = cache_relative
+            resolved_source["cache_scope"] = "hub"
             dependencies: list[str] = []
             if install_dependencies:
                 _report_progress(progress, "resolve_dependencies", 0.48)
-                dependencies.extend(
-                    self._install_manifest_dependencies(
-                        preview,
-                        progress=_scaled_progress(progress, 0.48, 0.57),
-                    )
-                )
                 requirement_dependencies, pip_effect = self._install_requirements(
                     preview,
                     progress=_scaled_progress(progress, 0.57, 0.66),
                 )
+                if pip_effect:
+                    other_requirements = [
+                        str(requirement)
+                        for dependency in self.registry.load()["python_dependencies"]
+                        for owner in dependency["owners"]
+                        if str(owner["reference"]).casefold() != key
+                        for requirement in owner["requirements"]
+                    ]
+                    if not _requirements_satisfied(other_requirements, pip_effect.after):
+                        raise PackageConflictError(
+                            "Plugin Python requirements conflict with another installed package"
+                        )
                 dependencies.extend(requirement_dependencies)
                 dependencies = list(
                     dict.fromkeys(
@@ -387,16 +560,33 @@ class PluginManager:
                         if str(value).casefold() != key
                     )
                 )
+                if update:
+                    self._release_python_dependencies(
+                        reference,
+                        keep_names={item["name"] for item in pip_effect.requirements}
+                        if pip_effect else set(),
+                    )
+            elif update:
+                dependencies = list(current.get("dependencies", ()))
             _report_progress(progress, "plan_assets", 0.68)
-            planned, control = self._plan_install(preview, selected)
+            if not update:
+                planned, control = self._plan_install(preview, selected)
             transaction = _InstallTransaction(self.project_root)
             registry_before = self.registry.load()
             registry_changed = False
             try:
                 _report_progress(progress, "write_assets", 0.76)
+                for path in removed:
+                    for bytecode in _script_bytecode_paths(path):
+                        transaction.remove(bytecode)
+                    transaction.remove(path)
+                    transaction.remove(path + ".meta")
                 for item in planned:
                     if not item.owned:
                         continue
+                    if update:
+                        for bytecode in _script_bytecode_paths(item.destination):
+                            transaction.remove(bytecode)
                     transaction.write(item.destination, item.payload)
                     transaction.write(item.destination + ".meta", item.meta_payload)
                 control_payload = (
@@ -406,14 +596,13 @@ class PluginManager:
                     transaction.write(str(control["absolute_path"]), control_payload)
                     transaction.write(
                         str(control["absolute_path"]) + ".meta",
-                        _minimal_meta(str(control["guid"])),
+                        current_meta_bytes(str(control["guid"]), control_payload),
                     )
                 file_records = [
                     {
                         "logical_path": item.logical_path,
                         "path_hint": item.destination_relative,
                         "guid": item.guid,
-                        "sha256": item.sha256,
                         "role": item.role,
                         "owned": item.owned,
                     }
@@ -423,7 +612,6 @@ class PluginManager:
                     "logical_path": PACKAGE_MANIFEST,
                     "path_hint": str(control["path_hint"]),
                     "guid": str(control["guid"]),
-                    "sha256": hashlib.sha256(control_payload).hexdigest(),
                     "role": "control",
                     "owned": bool(control["owned"]),
                 }
@@ -436,10 +624,12 @@ class PluginManager:
                     package_path=cache_path,
                     source=resolved_source,
                     dependencies=dependencies,
+                    enabled=bool(current.get("enabled", True)) if update else True,
                     transaction_id=transaction.id,
-                    package_sha256=package_sha256,
                     python_requirements=(
-                        pip_effect.requirements if pip_effect else ()
+                        pip_effect.requirements if pip_effect else
+                        current.get("python_requirements", ())
+                        if update and not install_dependencies else ()
                     ),
                     python_changes=(pip_effect.changes if pip_effect else ()),
                     python_install=(
@@ -452,20 +642,35 @@ class PluginManager:
                     ),
                 )
                 transaction.commit()
+                committed = True
             except BaseException:
                 transaction.rollback()
                 if registry_changed:
                     self.registry.save(registry_before)
-                self._rollback_pip_effect(pip_effect)
                 raise
-            _report_progress(progress, "refresh_assets", 0.90)
-            self._refresh_editor_assets()
-            _report_progress(progress, "preload_plugin", 0.95)
-            state = self.reload(reference)
+            self._prune_package_directories(removed)
+            self._acknowledge_installed_scripts(planned)
+            if threading.current_thread() is threading.main_thread():
+                _report_progress(progress, "refresh_assets", 0.90)
+                self._refresh_editor_assets()
+                self._publish_package_runtime_scripts(reference)
+                _report_progress(progress, "preload_plugin", 0.95)
+                state = self.reload(reference)
+            else:
+                state = PluginState(
+                    reference=reference,
+                    root=package_control_root(self.project_root, reference),
+                )
             _report_progress(progress, "complete", 1.0)
             return state
         except BaseException as install_error:
+            if committed:
+                raise
             self._rollback_pip_effect(pip_effect)
+            if python_baseline is not None:
+                self._restore_python_environment(
+                    python_baseline, executable=self._project_python_executable(),
+                )
             rollback_errors = self._rollback_new_plugin_dependencies(
                 installed_before,
                 excluding=reference,
@@ -475,9 +680,101 @@ class PluginManager:
                     f"Plugin install failed and dependency rollback was incomplete for "
                     f"{reference}: {'; '.join(rollback_errors)}"
                 ) from install_error
+            if stopped:
+                self._publish_package_runtime_scripts(reference)
+                self.reload(reference)
             raise
         finally:
             self._installing.discard(key)
+
+    def _extend_package_install(
+        self,
+        current: Mapping[str, object],
+        preview: InxPackagePreview,
+        selected: Iterable[str] | None,
+        progress: _InstallProgress | None,
+    ) -> PluginState:
+        """Add previously unchecked members of the same package, not an upgrade."""
+        reference = str(current["reference"])
+        installed = {str(item["logical_path"]) for item in current["files"]}
+        selected_paths = None if selected is None else {
+            portable_path(str(path)).strip("/") for path in selected
+        }
+        additions = tuple(
+            str(item["logical_path"])
+            for item in preview.file_records
+            if str(item["logical_path"]) not in installed
+            and (
+                selected_paths is None
+                or str(item["logical_path"]) in selected_paths
+                or package_destination(reference, str(item["logical_path"])) in selected_paths
+            )
+        )
+        if not additions:
+            return self.reload(reference)
+
+        self._installing.add(reference.casefold())
+        try:
+            planned, _control = self._plan_install(preview, additions)
+            transaction = _InstallTransaction(self.project_root)
+            registry_before = self.registry.load()
+            registry_changed = False
+            try:
+                _report_progress(progress, "write_assets", 0.76)
+                for item in planned:
+                    if item.owned:
+                        transaction.write(item.destination, item.payload)
+                        transaction.write(item.destination + ".meta", item.meta_payload)
+                document = self.registry.load()
+                record = next(
+                    item for item in document["installed"]
+                    if str(item["reference"]).casefold() == reference.casefold()
+                )
+                record["files"].extend({
+                    "logical_path": item.logical_path,
+                    "path_hint": item.destination_relative,
+                    "guid": item.guid,
+                    "role": item.role,
+                    "owned": item.owned,
+                } for item in planned)
+                record["transaction_id"] = transaction.id
+                _report_progress(progress, "update_registry", 0.84)
+                registry_changed = True
+                self.registry.save(document)
+                transaction.commit()
+            except BaseException:
+                transaction.rollback()
+                if registry_changed:
+                    self.registry.save(registry_before)
+                raise
+            self._acknowledge_installed_scripts(planned)
+            if threading.current_thread() is threading.main_thread():
+                self._refresh_editor_assets()
+                self._publish_package_runtime_scripts(reference)
+                state = self.reload(reference)
+            else:
+                state = PluginState(reference=reference, root=package_control_root(self.project_root, reference))
+            _report_progress(progress, "complete", 1.0)
+            return state
+        finally:
+            self._installing.discard(reference.casefold())
+
+    @staticmethod
+    def _acknowledge_installed_scripts(planned: Iterable[_PlannedFile]) -> None:
+        """The install publication owns these writes, not their delayed echoes."""
+        from Infernux.core.assets import AssetManager
+
+        for item in planned:
+            # Bare content scripts in Assets/Plugins still use the normal asset
+            # watcher. Only package Editor/Runtime scripts are published here
+            # (or by finalize_background_install on the editor thread).
+            if (
+                item.owned
+                and item.role in {"editor", "runtime"}
+                and item.destination.casefold().endswith(".py")
+            ):
+                for event in ("created", "modified", "deleted"):
+                    AssetManager._suppress_watcher_echo(event, item.destination)
 
     def _rollback_new_plugin_dependencies(
         self,
@@ -541,6 +838,8 @@ class PluginManager:
         install_dependencies: bool = True,
         progress: _InstallProgress | None = None,
     ) -> PluginState:
+        if self.registry.installed_record(reference) is not None:
+            return self.reload(reference)
         record = self.registry.find(reference)
         if record is None:
             raise KeyError(
@@ -550,27 +849,198 @@ class PluginManager:
         if not isinstance(source, Mapping):
             raise ValueError(f"Plugin registry source is invalid: {reference}")
         descriptor = dict(source)
-        cache_location = portable_path(
-            str(descriptor.get("cache_location", ""))
-        ).strip("/")
-        if cache_location:
-            cache_path = resolved_path(
-                os.path.join(self.project_root, *cache_location.split("/"))
+        if (
+            str(descriptor.get("type", "")).strip().casefold() == "local"
+            and descriptor.get("builtin") is True
+        ):
+            return self.install_source(
+                descriptor,
+                install_dependencies=install_dependencies,
+                progress=progress,
             )
-            if os.path.isfile(cache_path):
-                cached = dict(descriptor)
-                cached["type"] = "local"
-                cached["location"] = cache_path
-                return self.install_source(
-                    cached,
-                    install_dependencies=install_dependencies,
-                    progress=progress,
-                )
+        cache_path = self.cached_reference_path(reference)
+        if cache_path:
+            return self.install_package(
+                cache_path,
+                source=descriptor,
+                install_dependencies=install_dependencies,
+                progress=progress,
+            )
         return self.install_source(
             descriptor,
             install_dependencies=install_dependencies,
             progress=progress,
         )
+
+    def available_releases(self, reference: str) -> tuple[dict[str, object], ...]:
+        """Read versions from a package's source without changing its project pin."""
+
+        location = self.release_repository(reference)
+        if not location:
+            return ()
+        from .github_releases import list_github_releases
+
+        return list_github_releases(location, expected_reference=reference)
+
+    def release_repository(self, reference: str) -> str:
+        """The installed publisher wins over catalog discovery and local caches."""
+        record = self.registry.installed_record(reference) or self.registry.find(reference)
+        if record is None:
+            raise KeyError(f"Plugin reference was not found: {reference}")
+        source = record.get("source", {})
+        if source.get("type") == "github":
+            location = str(source["location"])
+        elif source.get("acquisition") == "github-release" and source.get("repository"):
+            # Older cache imports recorded the local archive as their location.
+            # Their explicit repository still identifies the original publisher.
+            location = str(source["repository"])
+        elif source.get("official") and source.get("repository"):
+            location = str(source["repository"])
+        else:
+            return ""
+        from .official import migrate_official_repository
+
+        return migrate_official_repository(reference, location)
+
+    def download_update(
+        self, reference: str, release_tag: str, *, progress: _InstallProgress | None = None,
+    ) -> dict[str, object]:
+        """Stage an explicitly selected release without changing any project pin."""
+        if self.registry.installed_record(reference) is None:
+            raise KeyError(f"Plugin is not installed: {reference}")
+        if not release_tag.strip():
+            raise ValueError("Plugin updates require an explicit release tag")
+        repository = self.release_repository(reference)
+        if not repository:
+            raise ValueError("Local author packages are not replaced by remote updates")
+        from .github_releases import resolve_github_release
+
+        with self._package_cache().workspace("update") as workspace:
+            release = resolve_github_release(
+                repository, workspace, expected_reference=reference,
+                release_tag=release_tag, progress=progress,
+            )
+            assert release is not None  # An exact tag requires the release protocol.
+            path, _relative = self._cache_package(
+                release.path, reference, str(release.source["version"]),
+            )
+            source = {**release.source, "type": "github", "location": repository,
+                      "repository": repository, "acquisition": "github-release"}
+            return {"reference": reference, "path": path, "source": source}
+
+    def update_reference(
+        self, reference: str, release_tag: str, *, overwrite_modified: bool = False,
+        progress: _InstallProgress | None = None,
+    ) -> PluginState:
+        release = self.download_update(reference, release_tag, progress=progress)
+        return self.install_package(
+            str(release["path"]), source=release["source"], update=True,
+            overwrite_modified=overwrite_modified, progress=progress,
+        )
+
+    def cached_reference_path(self, reference: str) -> str:
+        record = self.registry.find(reference)
+        if record is None:
+            return ""
+        cache = self._package_cache()
+        source = record.get("source")
+        if isinstance(source, Mapping):
+            location = portable_path(
+                str(source.get("cache_location", ""))
+            ).strip("/")
+            if location:
+                candidate = resolved_path(
+                    os.path.join(cache.root, *location.split("/"))
+                )
+                if os.path.isfile(candidate):
+                    return candidate
+        version = str(record.get("version", "")).strip()
+        return cache.resolve(reference, version) if version else ""
+
+    def download_reference(
+        self,
+        reference: str,
+        *,
+        force: bool = False,
+        release_tag: str = "",
+        progress: _InstallProgress | None = None,
+    ) -> dict[str, object]:
+        """Download one registry package into the shared Hub library."""
+
+        record = self.registry.find(reference)
+        if record is None:
+            raise KeyError(f"Plugin reference was not found: {reference}")
+        cached = self.cached_reference_path(reference)
+        if cached and not force and not release_tag:
+            return {"reference": reference, "path": cached, "cached": True}
+        source = record.get("source")
+        if not isinstance(source, Mapping):
+            raise ValueError(f"Plugin registry source is invalid: {reference}")
+        descriptor = self._source_descriptor(source)
+        descriptor.update(
+            {
+                key: value
+                for key, value in source.items()
+                if key not in {"cache_location", "cache_scope"}
+            }
+        )
+        with self._package_cache().workspace("download") as workspace:
+            package_path, acquired_source = self._materialize_source(
+                descriptor,
+                workspace,
+                progress=progress,
+                release_tag=release_tag,
+            )
+            preview = InxPackage.inspect(package_path)
+            actual_reference = validate_reference(
+                str(preview.metadata.get("reference", ""))
+            )
+            if actual_reference.casefold() != validate_reference(reference).casefold():
+                raise RuntimeError(
+                    f"Downloaded plugin reference mismatch: expected {reference}, "
+                    f"found {actual_reference}"
+                )
+            compatibility = str(preview.metadata.get("engine", "")).strip()
+            if compatibility and Version(ENGINE_VERSION) not in SpecifierSet(
+                compatibility
+            ):
+                raise RuntimeError(
+                    f"InxPackage requires Infernux {compatibility}, current engine "
+                    f"is {ENGINE_VERSION}"
+                )
+            version = str(preview.metadata.get("version", ""))
+            cache = self._package_cache()
+            destination = cache.store(
+                package_path,
+                reference=actual_reference,
+                version=version,
+            )
+            cached_source = dict(acquired_source)
+            cached_source.update(
+                {
+                    "cache_scope": "hub",
+                    "cache_location": cache.relative_path(actual_reference, version),
+                }
+            )
+            self.registry.add_package(
+                actual_reference,
+                name=str(preview.metadata.get("name", record.get("name", ""))),
+                version=str(preview.metadata.get("version", "")),
+                engine=compatibility,
+                dependencies=(),
+                intro=str(preview.metadata.get("intro", record.get("intro", ""))),
+                intros=preview.metadata.get("intros", record.get("intros", {})),
+                pages=preview.metadata.get("pages", record.get("pages", ())),
+                category=str(record.get("category", "Other")),
+                targets=record.get("targets", ()),
+                source=cached_source,
+            )
+            _report_progress(progress, "download_complete", 1.0)
+            return {
+                "reference": actual_reference,
+                "path": destination,
+                "cached": False,
+            }
 
     def install_source(
         self,
@@ -581,60 +1051,17 @@ class PluginManager:
     ) -> PluginState:
         _report_progress(progress, "resolve_source", 0.04)
         descriptor = self._source_descriptor(source)
-        source_type = str(descriptor["type"])
-        location = str(descriptor["location"])
-        if source_type == "local":
-            _report_progress(progress, "read_local_source", 0.16)
-            local = resolved_path(
-                location
-                if os.path.isabs(location)
-                else os.path.join(self.project_root, location)
-            )
-            return self._install_local(
-                local,
+        descriptor.update(dict(source) if isinstance(source, Mapping) else {})
+        with self._package_cache().workspace("source") as workspace:
+            package_path, acquired_source = self._materialize_source(
                 descriptor,
-                install_dependencies=install_dependencies,
+                workspace,
                 progress=progress,
             )
-        if source_type == "url":
-            with tempfile.TemporaryDirectory(prefix="infernux-plugin-url-") as workspace:
-                target = os.path.join(workspace, "download.inxpkg")
-                _report_progress(progress, "download_package", 0.08)
-                if progress is None:
-                    _download_url_package(location, target)
-                else:
-                    _download_url_package(location, target, progress=progress)
-                return self.install_package(
-                    target,
-                    install_dependencies=install_dependencies,
-                    source=descriptor,
-                    progress=progress,
-                )
-        with tempfile.TemporaryDirectory(prefix="infernux-plugin-git-") as workspace:
-            command = ["git", "clone", "--depth", "1"]
-            revision = str(descriptor.get("revision", "")).strip()
-            if revision:
-                command.extend(["--branch", revision])
-            command.extend([location, workspace])
-            _report_progress(progress, "clone_repository", 0.08)
-            self._run_process(command)
-            _report_progress(progress, "read_repository", 0.28)
-            subdirectory = portable_path(str(descriptor.get("subdirectory", ""))).strip(
-                "/"
-            )
-            root = (
-                resolved_path(os.path.join(workspace, *subdirectory.split("/")))
-                if subdirectory
-                else workspace
-            )
-            if not is_path_within(root, workspace, allow_root=True):
-                raise ValueError("Git plugin subdirectory escapes the checkout")
-            package_path = portable_path(str(descriptor.get("package", ""))).strip("/")
-            target = os.path.join(root, *package_path.split("/")) if package_path else root
-            return self._install_local(
-                target,
-                descriptor,
+            return self.install_package(
+                package_path,
                 install_dependencies=install_dependencies,
+                source=acquired_source,
                 progress=progress,
             )
 
@@ -680,6 +1107,7 @@ class PluginManager:
                 changes=changes,
                 owner="@project",
             )
+            self._activate_installed_python_paths(before, after, executable=executable)
         except BaseException as install_error:
             try:
                 self._restore_python_environment(before, executable=executable)
@@ -696,22 +1124,107 @@ class PluginManager:
             "output": result.stdout[-4000:],
         }
 
+    def finalize_background_install(self, reference: str) -> PluginState:
+        """Publish worker-written plugin assets and preload them on the editor thread."""
+
+        if threading.current_thread() is not threading.main_thread():
+            raise RuntimeError("Plugin installation must be finalized on the editor thread")
+        normalized = validate_reference(reference)
+        self._refresh_editor_assets()
+        self._publish_package_runtime_scripts(normalized)
+        self.preloads.catch_up()
+        self._deferred_catalog_changes.clear()
+        self._rebuild_states()
+        return self.states[normalized.casefold()]
+
+    def _reconcile_python_requirements_for_startup(self) -> tuple[str, ...]:
+        """Restore enabled plugin requirements before any plugin preload runs.
+
+        The project registry travels with a project, while its Python environment
+        may be recreated or moved to another host.  Installation-time dependency
+        records therefore need to be checked against the active project runtime
+        on every editor startup.
+        """
+
+        self.python_requirement_error = ""
+        requirements_by_plugin: dict[str, tuple[str, ...]] = {}
+        all_requirements: list[str] = []
+        for record in self.registry.installed():
+            if not bool(record.get("enabled", True)):
+                continue
+            reference = str(record.get("reference", "")).strip()
+            requirements = tuple(
+                str(item.get("requirement", "")).strip()
+                for item in record.get("python_requirements", [])
+                if isinstance(item, Mapping)
+                and str(item.get("requirement", "")).strip()
+            )
+            if requirements:
+                requirements_by_plugin[reference] = requirements
+                all_requirements.extend(requirements)
+        if not all_requirements:
+            return ()
+
+        try:
+            executable = self._project_python_executable()
+            before = self._python_environment_snapshot(executable)
+            missing = tuple(
+                dict.fromkeys(
+                    requirement
+                    for requirement in all_requirements
+                    if not _requirements_satisfied((requirement,), before)
+                )
+            )
+            if not missing:
+                return ()
+            self._run_pip_requirement_file(missing, executable=executable)
+            after = self._python_environment_snapshot(executable)
+            unresolved = tuple(
+                requirement
+                for requirement in all_requirements
+                if not _requirements_satisfied((requirement,), after)
+            )
+            if unresolved:
+                raise RuntimeError(
+                    "pip completed but plugin requirements remain unresolved: "
+                    + ", ".join(unresolved)
+                )
+            changes = _python_environment_changes(before, after)
+            self.registry.record_python_reconciliation(
+                requirements=missing,
+                changes=changes,
+                owners={
+                    reference: _pip_requirement_targets(requirements)
+                    for reference, requirements in requirements_by_plugin.items()
+                },
+            )
+            self._activate_installed_python_paths(before, after, executable=executable)
+        except Exception as exc:
+            self.python_requirement_error = str(exc)
+            raise RuntimeError(
+                "Installed plugin Python requirements could not be restored: "
+                f"{exc}"
+            ) from exc
+
+        return tuple(
+            reference
+            for reference, requirements in requirements_by_plugin.items()
+            if any(requirement in missing for requirement in requirements)
+        )
+
     def _install_pip_lines(
         self, lines: Iterable[str]
     ) -> _PipInstallEffect:
         values = tuple(str(line) for line in lines)
         executable = self._project_python_executable()
         before = self._python_environment_snapshot(executable)
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".txt", encoding="utf-8", delete=False
-        ) as stream:
-            stream.writelines(values)
-            filtered = stream.name
         try:
-            command = (executable, "-m", "pip", "install", "-r", filtered)
-            result = self._run_process(list(command), cwd=self.project_root)
+            with self._pip_requirement_file(values) as filtered:
+                command = (executable, "-m", "pip", "install", "-r", filtered)
+                result = self._run_process(list(command), cwd=self.project_root)
             after = self._python_environment_snapshot(executable)
             requirements = _pip_requirement_targets(values)
+            self._activate_installed_python_paths(before, after, executable=executable)
             return _PipInstallEffect(
                 before,
                 after,
@@ -728,16 +1241,77 @@ class PluginManager:
                     f"rollback was incomplete: {rollback_error}"
                 ) from install_error
             raise
-        finally:
-            try:
-                os.remove(filtered)
-            except FileNotFoundError:
-                pass
+
+    def _activate_installed_python_paths(
+        self,
+        before: Mapping[str, str],
+        after: Mapping[str, str],
+        *,
+        executable: str,
+    ) -> None:
+        """Publish newly installed site hooks before importing plugin lifecycles.
+
+        pip runs in a child interpreter. Its successful exit does not process
+        new .pth files in this Editor (notably pywin32's import paths and DLL
+        bootstrap). Use CPython's site processing for the changed distributions,
+        not hard-coded dependency paths or a second pass over unrelated hooks.
+        An installation into a different interpreter must not affect this one.
+        """
+        if not same_path(executable, sys.executable):
+            return
+        changed = sorted(name for name, version in after.items() if before.get(name) != version)
+        if not changed:
+            return
+
+        def publish() -> None:
+            import importlib
+            import importlib.metadata
+            import site
+
+            importlib.invalidate_caches()
+            hooks: set[str] = set()
+            for name in changed:
+                distribution = importlib.metadata.distribution(name)
+                root = resolved_path(distribution.locate_file(""))
+                for entry in distribution.files or ():
+                    path = resolved_path(distribution.locate_file(entry))
+                    if path.endswith(".pth") and same_path(os.path.dirname(path), root):
+                        hooks.add(path)
+            for path in sorted(hooks, key=path_key):
+                # addpackage is the CPython 3.13 site primitive used by
+                # addsitedir; unlike addsitedir it processes only this hook.
+                site.addpackage(os.path.dirname(path), os.path.basename(path), None)
+            importlib.invalidate_caches()
+
+        if self.engine is not None and threading.current_thread() is not threading.main_thread():
+            from Infernux.host.commands import MainThreadCommandQueue
+
+            MainThreadCommandQueue.instance().run_sync("plugin.python-site-publish", publish)
+        else:
+            publish()
 
     def _python_environment_snapshot(
         self, executable: str | None = None
     ) -> dict[str, str]:
         python = executable or self._project_python_executable()
+        # When the project environment is the interpreter we are already
+        # running in, enumerate installed distributions in-process instead of
+        # spawning `python -m pip list` (which costs seconds on every editor
+        # startup, under the "Preloading project plugins…" splash step).
+        same_interpreter = same_path(python, sys.executable)
+        if same_interpreter:
+            import importlib.metadata
+
+            snapshot: dict[str, str] = {}
+            for distribution in importlib.metadata.distributions():
+                try:
+                    name = canonicalize_name(str(distribution.metadata["Name"] or ""))
+                    version = str(distribution.version or "")
+                except Exception:
+                    continue
+                if name and version and name not in snapshot:
+                    snapshot[name] = version
+            return snapshot
         result = self._run_process(
             [python, "-m", "pip", "list", "--format=json"],
             cwd=self.project_root,
@@ -790,13 +1364,14 @@ class PluginManager:
             )
 
     def _release_python_dependencies(
-        self, reference: str
+        self, reference: str, *, keep_names: set[str] | None = None,
     ) -> dict[str, str] | None:
         plan = self.registry.python_release_plan(reference)
         actionable = [
             item
             for item in plan
-            if item.get("remaining_owners") or bool(item.get("managed", False))
+            if (item.get("remaining_owners") or bool(item.get("managed", False)))
+            and str(item.get("name", "")) not in (keep_names or set())
         ]
         if not actionable:
             return None
@@ -850,22 +1425,21 @@ class PluginManager:
     def _run_pip_requirement_file(
         self, requirements: Iterable[str], *, executable: str
     ) -> None:
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".txt", encoding="utf-8", delete=False
-        ) as stream:
-            for requirement in requirements:
-                stream.write(str(requirement).rstrip("\r\n") + "\n")
-            path = stream.name
-        try:
+        with self._pip_requirement_file(requirements) as path:
             self._run_process(
                 [executable, "-m", "pip", "install", "-r", path],
                 cwd=self.project_root,
             )
-        finally:
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
+
+    @contextmanager
+    def _pip_requirement_file(self, requirements: Iterable[str]):
+        with self._package_cache().workspace("requirements") as workspace:
+            path = Path(workspace) / "requirements.txt"
+            path.write_text(
+                "".join(str(value).rstrip("\r\n") + "\n" for value in requirements),
+                encoding="utf-8",
+            )
+            yield str(path)
 
     def set_enabled(self, reference: str, enabled: bool) -> PluginState:
         reference = validate_reference(reference)
@@ -900,7 +1474,10 @@ class PluginManager:
                 )
             try:
                 self.registry.set_enabled(reference, False)
+                self._retire_package_runtime_scripts(record)
             except BaseException:
+                self.registry.set_enabled(reference, True)
+                self._publish_package_runtime_scripts(reference)
                 self.preloads.reload_package(reference)
                 self._rebuild_states()
                 raise
@@ -923,6 +1500,7 @@ class PluginManager:
                 + ", ".join(sorted(unavailable))
             )
         self.registry.set_enabled(reference, True)
+        self._publish_package_runtime_scripts(reference)
         return self.reload(reference)
 
     def uninstall(self, reference: str) -> dict[str, object]:
@@ -962,6 +1540,7 @@ class PluginManager:
         transaction = _InstallTransaction(self.project_root)
         registry_before = self.registry.load()
         registry_changed = False
+        removed_caches: list[str] = []
         try:
             for item in [*record.get("files", []), record.get("control")]:
                 if not isinstance(item, Mapping) or not bool(item.get("owned", True)):
@@ -973,15 +1552,15 @@ class PluginManager:
                 path = guid_index.get(guid)
                 if not path:
                     continue
-                expected_hash = str(item.get("sha256", ""))
-                if _file_hash(path) != expected_hash:
-                    preserved.append(path)
-                    continue
+                for cache in _script_bytecode_paths(path):
+                    transaction.remove(cache)
+                    removed_caches.append(cache)
                 transaction.remove(path)
                 transaction.remove(path + ".meta")
                 removed.append(path)
             registry_changed = True
             self.registry.remove_install(reference)
+            self._retire_package_runtime_scripts(record)
             transaction.commit()
         except BaseException as uninstall_error:
             transaction.rollback()
@@ -994,6 +1573,7 @@ class PluginManager:
                 except Exception as python_error:
                     python_rollback_error = python_error
             try:
+                self._publish_package_runtime_scripts(reference)
                 self.reload(reference)
             except Exception as reload_error:
                 Debug.log_suppressed("PluginManager.uninstall.rollback_reload", reload_error)
@@ -1003,59 +1583,180 @@ class PluginManager:
                     f"was incomplete: {python_rollback_error}"
                 ) from uninstall_error
             raise
-        self._prune_package_directories(reference)
+        self._prune_package_directories([*removed, *removed_caches])
+        from Infernux.core.assets import AssetManager
+
+        for path in removed:
+            if path.endswith(".py") and is_path_within(
+                path, os.path.join(self.project_root, "Packages"), allow_root=False
+            ):
+                # Lifecycle/runtime retirement was committed above. A delayed
+                # delete echo must not restart a replacement package at this
+                # reference (including a legacy Editor -> editor migration).
+                AssetManager._suppress_watcher_echo("deleted", path)
         self.preloads.forget_package(reference)
         self._rebuild_states()
         self._refresh_editor_assets()
-        return {**record, "removed_files": removed, "preserved_modified_files": preserved}
+        return {**record, "removed_files": removed, "preserved_shared_files": preserved}
 
-    def _install_local(
+    def _materialize_source(
+        self,
+        source: Mapping[str, object],
+        workspace: str,
+        *,
+        progress: _InstallProgress | None = None,
+        release_tag: str = "",
+    ) -> tuple[str, dict[str, object]]:
+        descriptor = dict(source)
+        source_type = str(descriptor["type"])
+        location = str(descriptor["location"])
+        if release_tag and source_type != "github":
+            raise ValueError("A release version can only be selected for a GitHub plugin source")
+        if source_type == "local":
+            _report_progress(progress, "read_local_source", 0.16)
+            local = resolved_path(
+                location
+                if os.path.isabs(location)
+                else os.path.join(self.project_root, location)
+            )
+            return self._materialize_local(local, descriptor, workspace, progress)
+        if source_type == "url":
+            target = os.path.join(workspace, "download.inxpkg")
+            _report_progress(progress, "download_package", 0.08)
+            if progress is None:
+                _download_url_package(location, target)
+            else:
+                _download_url_package(location, target, progress=progress)
+            return target, descriptor
+        revision = str(descriptor.get("revision", "")).strip()
+        if source_type == "github":
+            from .github_releases import (
+                download_github_source,
+                resolve_github_release,
+            )
+
+            _report_progress(progress, "resolve_releases", 0.06)
+            released = resolve_github_release(
+                location,
+                workspace,
+                expected_reference=str(descriptor.get("reference", "")),
+                progress=progress,
+                release_tag=release_tag,
+            )
+            if released is not None:
+                released_source = dict(descriptor)
+                released_source.update(
+                    {
+                        key: value
+                        for key, value in released.source.items()
+                        if key not in {"type", "location"}
+                    }
+                )
+                released_source["acquisition"] = "github-release"
+                return released.path, released_source
+
+        subdirectory = portable_path(
+            str(descriptor.get("subdirectory", ""))
+        ).strip("/")
+        if source_type == "github":
+            _report_progress(progress, "download_source", 0.08)
+            snapshot = download_github_source(
+                location,
+                workspace,
+                revision=revision,
+                subdirectory=subdirectory,
+                progress=progress,
+            )
+            descriptor["commit"] = snapshot.commit
+            descriptor["source_snapshot"] = True
+            return self._materialize_local(
+                snapshot.root,
+                descriptor,
+                workspace,
+                progress,
+            )
+
+        checkout = os.path.join(workspace, "checkout")
+        command = ["git", "clone", "--depth", "1", "--progress"]
+        if subdirectory:
+            command.extend(["--filter=blob:none", "--sparse"])
+        if revision:
+            command.extend(["--branch", revision])
+        command.extend([location, checkout])
+        _report_progress(progress, "clone_repository", 0.08)
+        self._run_process_with_progress(
+            command,
+            stage="clone_repository",
+            progress=progress,
+            start=0.08,
+            end=0.24,
+        )
+        if subdirectory:
+            self._run_process(
+                ["git", "sparse-checkout", "set", subdirectory],
+                cwd=checkout,
+            )
+        commit = self._run_process(
+            ["git", "rev-parse", "HEAD"], cwd=checkout
+        ).stdout.strip()
+        if len(commit) != 40 or any(
+            character not in "0123456789abcdefABCDEF" for character in commit
+        ):
+            raise RuntimeError("Git plugin source did not resolve to a commit SHA")
+        descriptor["commit"] = commit.casefold()
+        descriptor["source_snapshot"] = True
+        _report_progress(progress, "read_repository", 0.28)
+        root = (
+            resolved_path(os.path.join(checkout, *subdirectory.split("/")))
+            if subdirectory
+            else checkout
+        )
+        if not is_path_within(root, checkout, allow_root=True):
+            raise ValueError("Git plugin subdirectory escapes the checkout")
+        if not os.path.isdir(root):
+            source_revision = revision or "the repository default branch"
+            raise RuntimeError(
+                f"Git plugin source {location} at {source_revision} does not contain "
+                f"the package directory {subdirectory}"
+            )
+        return self._materialize_local(root, descriptor, workspace, progress)
+
+    def _materialize_local(
         self,
         path: str,
         source: Mapping[str, object],
-        *,
-        install_dependencies: bool,
-        progress: _InstallProgress | None = None,
-    ) -> PluginState:
+        workspace: str,
+        progress: _InstallProgress | None,
+    ) -> tuple[str, dict[str, object]]:
         if os.path.isfile(path):
             if not path.casefold().endswith(PACKAGE_EXTENSION):
                 raise ValueError("A local plugin file must be an .inxpkg")
-            return self.install_package(
-                path,
-                install_dependencies=install_dependencies,
-                source=source,
-                progress=progress,
-            )
+            return path, dict(source)
         if not os.path.isdir(path):
             raise FileNotFoundError(path)
         configured = portable_path(str(source.get("package", ""))).strip("/")
         if configured:
-            return self.install_package(
-                os.path.join(path, *configured.split("/")),
-                install_dependencies=install_dependencies,
-                source=source,
-                progress=progress,
+            package_path = resolved_path(os.path.join(path, *configured.split("/")))
+            if not is_path_within(package_path, path, allow_root=False):
+                raise ValueError("Plugin package path escapes the source root")
+            if not os.path.isfile(package_path):
+                raise FileNotFoundError(package_path)
+            return package_path, dict(source)
+        repository_root = os.path.join(path, REPOSITORY_PACKAGE_DIRECTORY)
+        repository_manifest = os.path.isfile(os.path.join(repository_root, SOURCE_MANIFEST))
+        if bool(source.get("source_snapshot")) and not repository_manifest:
+            raise ValueError(
+                "Repository plugin source must put distributable files under "
+                "package/inx_package.json"
             )
-        packages = sorted(Path(path).glob(f"*{PACKAGE_EXTENSION}"))
-        if len(packages) == 1 and not os.path.isfile(os.path.join(path, SOURCE_MANIFEST)):
-            return self.install_package(
-                str(packages[0]),
-                install_dependencies=install_dependencies,
-                source=source,
-                progress=progress,
-            )
-        if not os.path.isfile(os.path.join(path, SOURCE_MANIFEST)):
-            raise ValueError("Plugin source must contain InxPackage.json or one .inxpkg")
-        with tempfile.TemporaryDirectory(prefix="infernux-plugin-source-") as workspace:
-            package = os.path.join(workspace, "Source.inxpkg")
-            _report_progress(progress, "build_source_package", 0.28)
-            InxPackage.export_source(path, package)
-            return self.install_package(
-                package,
-                install_dependencies=install_dependencies,
-                source=source,
-                progress=progress,
-            )
+        source_name = Path(path).name
+        if bool(source.get("source_snapshot")):
+            location_path = urlsplit(str(source.get("location", ""))).path.rstrip("/")
+            source_name = Path(location_path).stem or source_name
+        package = os.path.join(workspace, f"{source_name}.inxpkg")
+        _report_progress(progress, "build_source_package", 0.28)
+        InxPackage.export_source(path, package)
+        return package, dict(source)
 
     def _install_requirements(
         self,
@@ -1063,11 +1764,7 @@ class PluginManager:
         *,
         progress: _InstallProgress | None = None,
     ) -> tuple[tuple[str, ...], _PipInstallEffect | None]:
-        requirement_name = portable_path(
-            str(preview.metadata.get("requirements", "requirements.txt"))
-        ).strip("/")
-        if not requirement_name:
-            return (), None
+        requirement_name = "requirements.txt"
         requirement_record = next(
             (
                 item
@@ -1090,7 +1787,7 @@ class PluginManager:
                 continue
             nested = self._nested_requirement(preview, requirement_name, stripped)
             if nested is not None:
-                with tempfile.TemporaryDirectory(prefix="infernux-nested-package-") as workspace:
+                with self._package_cache().workspace("nested") as workspace:
                     path = os.path.join(workspace, "nested.inxpkg")
                     Path(path).write_bytes(nested)
                     state = self.install_package(path, progress=progress)
@@ -1107,31 +1804,6 @@ class PluginManager:
             _report_progress(progress, "install_python_dependencies", 0.58)
             effect = self._install_pip_lines(pip_lines)
         return tuple(dict.fromkeys(dependencies)), effect
-
-    def _install_manifest_dependencies(
-        self,
-        preview: InxPackagePreview,
-        *,
-        progress: _InstallProgress | None = None,
-    ) -> tuple[str, ...]:
-        """Resolve the package dependency manifest through the plugin registry."""
-
-        resolved: list[str] = []
-        for value in preview.metadata.get("dependencies", []):
-            reference = validate_reference(str(value))
-            installed = self.registry.installed_record(reference)
-            if installed is None:
-                state = self.install_reference(reference, progress=progress)
-                resolved.append(state.reference)
-                continue
-            installed_reference = str(installed.get("reference", reference))
-            if not bool(installed.get("enabled", True)):
-                self.set_enabled(installed_reference, True)
-            resolved.append(installed_reference)
-        unique: dict[str, str] = {}
-        for value in resolved:
-            unique.setdefault(value.casefold(), value)
-        return tuple(unique.values())
 
     def _nested_requirement(
         self, preview: InxPackagePreview, requirement_name: str, requirement: str
@@ -1184,7 +1856,7 @@ class PluginManager:
             name = candidate.split(";", 1)[0].split("@", 1)[0].strip()
             for marker in ("===", "==", ">=", "<=", "~=", "!=", ">", "<", "["):
                 name = name.split(marker, 1)[0].strip()
-        matched = self.registry.find(name)
+        matched = self.registry.installed_record(name) or self.registry.find(name)
         if matched is not None and parsed is not None and parsed.specifier:
             version = str(matched.get("version", "")).strip()
             if version and not parsed.specifier.contains(version, prereleases=True):
@@ -1193,6 +1865,130 @@ class PluginManager:
                     f"does not satisfy {parsed.specifier}"
                 )
         return str(matched["reference"]) if matched is not None else None
+
+    def _plan_update(
+        self, current: Mapping[str, object], preview: InxPackagePreview, *,
+        overwrite_modified: bool,
+    ) -> tuple[list[_PlannedFile], dict[str, object], list[str]]:
+        """Compare only at the update boundary; reuse the normal GUID routing."""
+        reference = str(current["reference"])
+        previous_path = str(current.get("package_path", ""))
+        previous = InxPackage.inspect(previous_path) if os.path.isfile(previous_path) else None
+        old_files = {str(item["guid"]).casefold(): item for item in current["files"]}
+        old_contents = {
+            str(item["guid"]).casefold(): item for item in previous.file_records
+        } if previous else {}
+        old_logical = {str(item["logical_path"]): str(item["guid"]).casefold()
+                       for item in current["files"]}
+        for item in preview.file_records:
+            logical = str(item["logical_path"])
+            if logical in old_logical and old_logical[logical] != str(item["guid"]).casefold():
+                raise PackageConflictError(f"Updated asset must retain its GUID: {logical}")
+        # A selective import stays selective; newly introduced members are included.
+        omitted = set(old_contents) - set(old_files)
+        selected = [str(item["logical_path"]) for item in preview.file_records
+                    if str(item["guid"]).casefold() not in omitted]
+        planned, control = self._plan_install(preview, selected)
+        if str(control["guid"]).casefold() != str(current["control"]["guid"]).casefold():
+            raise PackageConflictError("An update must preserve the package control GUID")
+        conflicts: list[str] = []
+
+        def check_edit(path: str, baseline: bytes | None, incoming: bytes | None) -> None:
+            actual = Path(path).read_bytes() if os.path.isfile(path) else None
+            if actual != incoming and (baseline is None or actual != baseline):
+                conflicts.append(portable_path(relative_path(path, self.project_root)))
+
+        def baseline_payload(guid: str) -> bytes | None:
+            record = old_contents.get(guid)
+            return read_entry(previous_path, str(record["archive_path"])) if record else None
+
+        def settings(payload: bytes) -> dict[str, object]:
+            document = json.loads(payload)
+            # InxResourceMeta and the default file loaders regenerate these
+            # observations on import. They are not authored importer settings.
+            for key in (
+                "content_hash", "file_path", "last_modified", "resource_type",
+                "file_type", "file_extension", "file_size", "is_readable",
+                "line_count", "character_count", "encoding", "binary_type",
+                "size_category",
+            ):
+                document["metadata"].pop(key, None)
+            return document
+
+        def local_meta(path: str, guid: str) -> tuple[bytes | None, bool]:
+            meta_path = Path(path + ".meta")
+            if not meta_path.is_file():
+                return None, False
+            payload = meta_path.read_bytes()
+            record = old_contents.get(guid)
+            baseline = read_entry(previous_path, str(record["meta_archive_path"])) if record else None
+            return payload, baseline is None or settings(payload) != settings(baseline)
+
+        replacements: list[_PlannedFile] = []
+        removed: list[str] = []
+        for item in planned:
+            guid = item.guid.casefold()
+            old = old_files.get(guid)
+            if old is None:
+                if not item.owned and Path(item.destination).read_bytes() != item.payload:
+                    raise PackageConflictError(f"Shared asset has different content: {item.destination}")
+                replacements.append(item)
+                continue
+            shared = self.registry.users_for_guid(guid, excluding=reference)
+            owned = bool(old.get("owned", True))
+            if shared or not owned:
+                if not os.path.isfile(item.destination) or Path(item.destination).read_bytes() != item.payload:
+                    raise PackageConflictError(f"Cannot replace a shared asset: {item.destination}")
+                # Retain ownership without writing through another package's asset.
+                replacements.append(replace(item, owned=owned,
+                    meta_payload=Path(item.destination + ".meta").read_bytes()))
+                continue
+            check_edit(item.destination, baseline_payload(guid), item.payload)
+            existing_meta, modified_meta = local_meta(item.destination, guid)
+            meta_payload = current_meta_bytes(
+                item.guid, item.payload,
+                existing=existing_meta if modified_meta else item.meta_payload,
+            )
+            old_destination = os.path.join(self.project_root, package_destination(
+                reference, str(old["logical_path"]), project_root=self.project_root,
+            ))
+            if str(old["logical_path"]) != item.logical_path and same_path(item.destination, old_destination):
+                # Follow publisher renames unless the user already moved this GUID.
+                destination_relative = package_destination(
+                    reference, item.logical_path, project_root=self.project_root,
+                )
+                destination = resolved_path(os.path.join(self.project_root, destination_relative))
+                if os.path.exists(destination):
+                    raise PackageConflictError(f"Updated destination is occupied: {destination}")
+                removed.append(item.destination)
+                item = replace(item, destination=destination,
+                               destination_relative=portable_path(destination_relative))
+            replacements.append(replace(item, owned=True, meta_payload=meta_payload))
+
+        new_guids = {item.guid.casefold() for item in replacements}
+        guid_index = self._guid_index()
+        for guid, old in old_files.items():
+            if guid in new_guids or not bool(old.get("owned", True)):
+                continue
+            if self.registry.users_for_guid(guid, excluding=reference):
+                # The other package must inherit ownership when we stop using it.
+                continue
+            path = guid_index.get(guid)
+            if path:
+                check_edit(path, baseline_payload(guid), None)
+                if local_meta(path, guid)[1]:
+                    conflicts.append(portable_path(relative_path(path + ".meta", self.project_root)))
+                removed.append(path)
+        control_path = str(control["absolute_path"])
+        old_control = (json.dumps(previous.metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8") if previous else None
+        new_control = (json.dumps(preview.metadata, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        check_edit(control_path, old_control, new_control)
+        if not bool(current["control"].get("owned", True)):
+            raise PackageConflictError("Cannot replace a shared package control file")
+        control["owned"] = True
+        if conflicts and not overwrite_modified:
+            raise PackageUpdateConflict(conflicts)
+        return replacements, control, removed
 
     def _plan_install(
         self, preview: InxPackagePreview, selected: Iterable[str] | None
@@ -1210,8 +2006,11 @@ class PluginManager:
                 logical in selected_set or destination_relative in selected_set
             ):
                 continue
+            physical_relative = package_destination(
+                reference, logical, project_root=self.project_root
+            )
             destination = resolved_path(
-                os.path.join(self.project_root, *destination_relative.split("/"))
+                os.path.join(self.project_root, *physical_relative.split("/"))
             )
             payload = read_entry(preview.package_path, str(record["archive_path"]))
             meta_payload = read_entry(
@@ -1220,7 +2019,6 @@ class PluginManager:
             owned, actual_destination = self._preflight_file(
                 destination,
                 str(record["guid"]),
-                str(record["sha256"]),
                 guid_index,
             )
             planned.append(
@@ -1229,7 +2027,6 @@ class PluginManager:
                     actual_destination,
                     portable_path(relative_path(actual_destination, self.project_root)),
                     str(record["guid"]),
-                    str(record["sha256"]),
                     str(record["role"]),
                     payload,
                     meta_payload,
@@ -1245,7 +2042,6 @@ class PluginManager:
         owned, actual_control = self._preflight_file(
             control_path,
             control_guid,
-            hashlib.sha256(manifest_payload).hexdigest(),
             guid_index,
         )
         control = {
@@ -1260,25 +2056,16 @@ class PluginManager:
         self,
         destination: str,
         guid: str,
-        digest: str,
         guid_index: Mapping[str, str],
     ) -> tuple[bool, str]:
         existing_guid_path = guid_index.get(guid.casefold())
         if existing_guid_path:
-            if _file_hash(existing_guid_path) != digest:
-                raise PackageConflictError(
-                    f"GUID {guid} already exists with different content: {existing_guid_path}"
-                )
             return False, existing_guid_path
         if os.path.exists(destination):
             target_guid = _meta_guid(destination)
             if target_guid.casefold() != guid.casefold():
                 raise PackageConflictError(
                     f"Destination is occupied by another GUID: {destination}"
-                )
-            if _file_hash(destination) != digest:
-                raise PackageConflictError(
-                    f"Destination contains modified content: {destination}"
                 )
             return False, destination
         return True, destination
@@ -1300,7 +2087,7 @@ class PluginManager:
                     path = resolved_path(
                         os.path.join(self.project_root, *hint.split("/"))
                     )
-                    if os.path.isfile(path):
+                    if os.path.isfile(path) and _meta_guid(path).casefold() == guid:
                         result[guid] = path
             return result
         except ValueError as exc:
@@ -1344,12 +2131,9 @@ class PluginManager:
         )
 
     def _attach_resource_events(self) -> None:
-        try:
-            from Infernux.engine.resources_manager import ResourcesManager
+        from Infernux.engine.resources_manager import ResourcesManager
 
-            manager = ResourcesManager.instance()
-        except Exception:
-            manager = None
+        manager = ResourcesManager.instance()
         if manager is not None:
             manager.register_script_catalog_callback(self._on_script_catalog_changed)
             self._resource_manager = manager
@@ -1357,38 +2141,130 @@ class PluginManager:
     def _on_script_catalog_changed(self, file_path: str, event_type: str) -> None:
         if not str(file_path).lower().endswith(".py"):
             return
+        if self._installing:
+            self._deferred_catalog_changes.add(resolved_path(file_path))
+            return
         self.preloads.reload_path(file_path)
         self._rebuild_states()
+
+    def _publish_package_runtime_scripts(self, reference: str) -> None:
+        """Publish installed Runtime components through the resource authority."""
+
+        record = self.registry.installed_record(reference)
+        if record is None:
+            raise KeyError(f"Plugin is not installed: {reference}")
+        if not bool(record.get("enabled", True)):
+            return
+        from Infernux.engine.resources_manager import ResourcesManager
+
+        manager = ResourcesManager.instance()
+        if manager is None:
+            return
+        if not same_path(getattr(manager, "_project_path", ""), self.project_root):
+            raise RuntimeError(
+                "Active ResourcesManager belongs to a different project during plugin install"
+            )
+
+        runtime_paths = self._package_runtime_script_paths(record)
+        if not runtime_paths:
+            return
+
+        transaction_id = manager.begin_script_transaction(runtime_paths)
+        submitted = False
+        for path in runtime_paths:
+            change = manager.submit_script_change(
+                path,
+                origin="editor",
+                catalog_event="created",
+                change_kind="created",
+                transaction_id=transaction_id,
+                force=True,
+            )
+            submitted = submitted or change is not None
+        if submitted:
+            manager.process_pending_reloads(force=True)
+
+    def _retire_package_runtime_scripts(self, record: Mapping[str, object]) -> None:
+        """Remove package gameplay types and modules from the active runtime."""
+
+        from Infernux.engine.resources_manager import ResourcesManager
+
+        manager = ResourcesManager.instance()
+        if manager is None:
+            return
+        if not same_path(getattr(manager, "_project_path", ""), self.project_root):
+            raise RuntimeError(
+                "Active ResourcesManager belongs to a different project during plugin retirement"
+            )
+        paths = self._package_runtime_script_paths(record, retiring=True)
+        if paths:
+            manager.retire_script_paths(paths)
+
+    def _package_runtime_script_paths(
+        self, record: Mapping[str, object], *, retiring: bool = False
+    ) -> list[str]:
+        """Current Runtime scripts, plus historical module paths for retirement."""
+
+        from Infernux.engine.project_context import package_script_reference
+
+        guid_paths = self._guid_index()
+        paths: dict[str, str] = {}
+        if retiring:
+            for item in record.get("files", []):
+                if not isinstance(item, Mapping) or item.get("role") != "runtime":
+                    continue
+                hint = portable_path(str(item.get("path_hint", ""))).strip("/")
+                if hint.casefold().endswith(".py"):
+                    # Removed or moved files can still have live modules at
+                    # their old paths. Never reinterpret the current Editor
+                    # destination of that GUID as a gameplay module to retire.
+                    path = resolved_path(os.path.join(self.project_root, *hint.split("/")))
+                    paths[path_key(path)] = path
+        reference = str(record["reference"])
+        root = package_control_root(self.project_root, reference)
+        for path in guid_paths.values():
+            if not path.casefold().endswith(".py") or not is_path_within(path, root, allow_root=False):
+                continue
+            logical = portable_path(relative_path(path, root))
+            if logical.partition("/")[0].casefold() != "runtime":
+                continue
+            current_reference = package_script_reference(path, self.project_root)
+            # A nested package is independent. During uninstall the removed
+            # control file may already be gone; the transaction's record still
+            # defines which surviving, user-authored scripts must be retired.
+            if current_reference and current_reference.casefold() != reference.casefold():
+                continue
+            paths[path_key(path)] = path
+        return [paths[key] for key in sorted(paths)]
 
     def _refresh_editor_assets(self) -> None:
         if threading.current_thread() is not threading.main_thread():
             return
-        database = getattr(self.engine, "get_asset_database", lambda: None)()
-        if database is None:
-            try:
-                from Infernux.lib import AssetRegistry
+        database = _asset_database(self.engine)
+        if database is not None and same_path(database.project_root, self.project_root):
+            database.refresh()
 
-                database = AssetRegistry.instance().get_asset_database()
-            except Exception:
-                database = None
-        if database is not None:
-            try:
-                database.refresh()
-            except Exception as exc:
-                Debug.log_suppressed("PluginManager.refresh_assets", exc)
-
-    def _prune_package_directories(self, reference: str) -> None:
-        roots = [
-            os.path.join(self.project_root, "Packages", *reference.split("/")),
-            os.path.join(
-                self.project_root, "Assets", "Plugins", *reference.split("/")
-            ),
-        ]
-        boundaries = [
+    def _prune_package_directories(self, removed_paths: Iterable[str]) -> None:
+        boundaries = (
             os.path.join(self.project_root, "Packages"),
             os.path.join(self.project_root, "Assets", "Plugins"),
-        ]
-        for root, boundary in zip(roots, boundaries):
+        )
+        roots = {
+            resolved_path(os.path.dirname(path))
+            for path in removed_paths
+            if path
+        }
+        for root in sorted(roots, key=lambda path: len(Path(path).parts), reverse=True):
+            boundary = next(
+                (
+                    candidate
+                    for candidate in boundaries
+                    if is_path_within(root, candidate, allow_root=False)
+                ),
+                "",
+            )
+            if not boundary:
+                continue
             current = root
             while is_path_within(current, boundary, allow_root=False):
                 try:
@@ -1399,38 +2275,33 @@ class PluginManager:
 
     def _project_python_executable(self) -> str:
         candidates = (
-            os.path.join(self.project_root, ".runtime", "python312", "python.exe"),
+            os.path.join(
+                self.project_root,
+                ".runtime",
+                PYTHON_RUNTIME_DIRECTORY,
+                "python.exe",
+            ),
             os.path.join(self.project_root, ".venv", "Scripts", "python.exe"),
             os.path.join(self.project_root, ".venv", "bin", "python"),
         )
         for candidate in candidates:
             if os.path.isfile(candidate):
                 return candidate
-        if is_path_within(sys.executable, self.project_root, allow_root=False):
-            return sys.executable
-        raise RuntimeError(
-            "Project Python environment is unavailable; create/install the project runtime before pip dependencies"
-        )
+        return sys.executable
 
-    def _cache_package(self, package_path: str, digest: str) -> tuple[str, str]:
-        relative = f"Library/InxPackageCache/{digest}{PACKAGE_EXTENSION}"
-        destination = resolved_path(
-            os.path.join(self.project_root, *relative.split("/"))
+    def _cache_package(
+        self,
+        package_path: str,
+        reference: str,
+        version: str,
+    ) -> tuple[str, str]:
+        cache = self._package_cache()
+        destination = cache.store(
+            package_path,
+            reference=reference,
+            version=version,
         )
-        if not os.path.isfile(destination) or _file_hash(destination) != digest:
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
-            temporary = destination + f".tmp.{uuid.uuid4().hex}"
-            try:
-                shutil.copy2(package_path, temporary)
-                if _file_hash(temporary) != digest:
-                    raise RuntimeError("InxPackage cache copy hash mismatch")
-                os.replace(temporary, destination)
-            finally:
-                try:
-                    os.remove(temporary)
-                except FileNotFoundError:
-                    pass
-        return destination, relative
+        return destination, cache.relative_path(reference, version)
 
     def _source_descriptor(
         self, source: Mapping[str, object] | str
@@ -1450,6 +2321,10 @@ class PluginManager:
                 source_type = "local"
             return {"type": source_type, "location": value}
         descriptor = dict(source)
+        unknown = set(descriptor).difference(_SOURCE_DESCRIPTOR_FIELDS)
+        if unknown:
+            fields = ", ".join(sorted(map(str, unknown)))
+            raise ValueError(f"Plugin source contains unknown fields: {fields}")
         source_type = str(descriptor.get("type", "")).strip().casefold()
         location = str(descriptor.get("location", "")).strip()
         if source_type not in {"local", "github", "git", "url"} or not location:
@@ -1460,19 +2335,38 @@ class PluginManager:
         descriptor["location"] = location
         return descriptor
 
-    @staticmethod
     def _run_process(
-        command: list[str], *, cwd: str | None = None
+        self, command: list[str], *, cwd: str | None = None
     ) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
+        is_pip = command[1:3] == ["-m", "pip"]
+        workspace_scope = (
+            self._package_cache().workspace("pip") if is_pip else nullcontext(None)
         )
+        with workspace_scope as workspace:
+            env = None
+            if is_pip:
+                env = dict(os.environ)
+                shared = env.get("INFERNUX_SHARED_DATA_ROOT", "").strip()
+                cache_root = (
+                    resolved_path(os.path.expandvars(os.path.expanduser(shared)))
+                    if shared else self.project_root
+                )
+                if not env.get("PIP_CACHE_DIR", "").strip():
+                    env["PIP_CACHE_DIR"] = os.path.join(cache_root, "Cache", "Python", "Pip")
+                # pip and its build subprocesses own no system-temp residue.
+                # Only this invocation sees these paths; the Editor's process
+                # environment and unrelated subprocesses remain untouched.
+                env.update(TMPDIR=workspace, TEMP=workspace, TMP=workspace)
+            result = subprocess.run(
+                command,
+                cwd=cwd,
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=False,
+            )
         if result.returncode:
             detail = (result.stderr or result.stdout).strip()
             raise RuntimeError(
@@ -1480,13 +2374,77 @@ class PluginManager:
             )
         return result
 
+    def _run_process_with_progress(
+        self,
+        command: list[str],
+        *,
+        stage: str,
+        progress: _InstallProgress | None,
+        start: float,
+        end: float,
+        cwd: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if progress is None:
+            return self._run_process(command, cwd=cwd)
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
+        output: list[str] = []
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+            output.append(line)
+            matches = _GIT_PROGRESS_PERCENT.findall(line)
+            fraction = int(matches[-1]) / 100.0 if matches else 0.0
+            _report_progress(
+                progress,
+                stage,
+                start + (end - start) * fraction,
+                line,
+            )
+        return_code = process.wait()
+        combined = "\n".join(output)
+        if return_code:
+            raise RuntimeError(f"Command failed ({return_code}): {combined[-4000:]}")
+        return subprocess.CompletedProcess(command, return_code, combined, "")
+
+
+def _script_bytecode_paths(source: str) -> tuple[str, ...]:
+    """Derived caches of this owned source, never other author files."""
+
+    if not source.endswith(".py"):
+        return ()
+    directory = os.path.join(os.path.dirname(source), "__pycache__")
+    if not os.path.isdir(directory) or os.path.islink(directory):
+        return ()
+    result = []
+    for entry in os.scandir(directory):
+        if entry.is_symlink() or not entry.is_file() or not entry.name.endswith(".pyc"):
+            continue
+        try:
+            cached_source = importlib.util.source_from_cache(entry.path)
+        except ValueError:
+            continue
+        if same_path(cached_source, source):
+            result.append(entry.path)
+    return tuple(sorted(result))
+
 
 class _InstallTransaction:
     def __init__(self, project_root: str) -> None:
         self.project_root = project_root
         self.id = uuid.uuid4().hex
         self.root = os.path.join(
-            project_root, "Library", "InxPackageStaging", self.id
+            project_root, "Cache", "Plugins", ".transactions", self.id
         )
         self.backups: list[tuple[str, str | None]] = []
         self.committed = False
@@ -1552,6 +2510,11 @@ def _download_url_package(
     *,
     progress: _InstallProgress | None = None,
 ) -> None:
+    # Repository acquisition is an Editor/package-manager concern.  Keep the
+    # HTTP client out of the module import closure so cooked runtimes can use
+    # PluginManager startup/preload without shipping urllib.request.
+    import urllib.request
+
     request = urllib.request.Request(
         str(location),
         headers={"User-Agent": f"Infernux/{ENGINE_VERSION}"},
@@ -1573,6 +2536,7 @@ def _download_url_package(
                         progress,
                         "download_package",
                         0.08 + 0.22 * fraction,
+                        _download_size_text(received, total),
                     )
         os.replace(partial, destination)
     finally:
@@ -1580,6 +2544,18 @@ def _download_url_package(
             os.remove(partial)
         except FileNotFoundError:
             pass
+
+
+def _download_size_text(received: int, total: int) -> str:
+    def size(value: int) -> str:
+        amount = float(value)
+        for unit in ("B", "KiB", "MiB", "GiB"):
+            if amount < 1024.0 or unit == "GiB":
+                return f"{amount:.1f} {unit}" if unit != "B" else f"{int(amount)} B"
+            amount /= 1024.0
+        raise AssertionError("unreachable")
+
+    return f"{size(received)} / {size(total)}" if total else size(received)
 
 
 def _pip_requirement_targets(
@@ -1645,16 +2621,17 @@ def _requirements_satisfied(
     return True
 
 
-def _same_install(record: Mapping[str, object], preview: InxPackagePreview) -> bool:
-    current = {
-        (str(item.get("logical_path", "")), str(item.get("guid", "")), str(item.get("sha256", "")))
-        for item in record.get("files", [])
+def _package_file_identities(files: Iterable[Mapping[str, object]]) -> set[tuple[str, str]]:
+    return {
+        (str(item.get("logical_path", "")), str(item.get("guid", "")))
+        for item in files
         if isinstance(item, Mapping)
     }
-    incoming = {
-        (str(item.get("logical_path", "")), str(item.get("guid", "")), str(item.get("sha256", "")))
-        for item in preview.file_records
-    }
+
+
+def _same_install(record: Mapping[str, object], preview: InxPackagePreview) -> bool:
+    current = _package_file_identities(record.get("files", []))
+    incoming = _package_file_identities(preview.file_records)
     return current == incoming and str(record.get("version", "")) == str(
         preview.metadata.get("version", "")
     )
@@ -1667,28 +2644,6 @@ def _meta_guid(asset_path: str) -> str:
         return str(document["metadata"]["guid"]["value"]).strip()
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         return ""
-
-
-def _file_hash(path: str) -> str:
-    digest = hashlib.sha256()
-    try:
-        with open(path, "rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError:
-        return ""
-    return digest.hexdigest()
-
-
-def _minimal_meta(guid: str) -> bytes:
-    return (
-        json.dumps(
-            {"metadata": {"guid": {"type": "string", "value": guid}}},
-            ensure_ascii=False,
-            indent=4,
-        )
-        + "\n"
-    ).encode("utf-8")
 
 
 __all__ = ["PackageConflictError", "PluginManager", "PluginState"]

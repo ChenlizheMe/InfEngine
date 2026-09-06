@@ -9,7 +9,7 @@
 音频剪辑资源。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.3.7
+**状态：** Preview · **验证版本：** 0.4.0
 
 当前可靠解码器支持 WAV。当 AudioSource Track 或 One-shot 仍可能引用时，应保持 Clip 已加载。
 <!-- USER CONTENT END -->
@@ -76,9 +76,9 @@
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux.core.audio_clip import AudioClip
+import infernux as inx
 
-clip = AudioClip.load("Assets/Audio/click.wav")
+clip = inx.AudioClip.load("Assets/Audio/click.wav")
 if clip is not None:
     print(clip.name, clip.duration, clip.sample_rate, clip.channels)
 ```

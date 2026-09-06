@@ -1,8 +1,10 @@
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QScrollArea, QWidget
 
+from android_support import AndroidSupportManager
+from i18n import tr
 from style import StyleManager
-from view.installs_view import _configure_install_scroll_area
+from view.installs_view import _AndroidSupportCard, _configure_install_scroll_area
 
 
 def _app():
@@ -27,3 +29,29 @@ def test_install_dialog_scroll_surface_uses_dark_hub_palette():
     assert container.palette().color(QPalette.ColorRole.Window).name() == "#191919"
 
     scroll.close()
+
+
+def test_common_message_boxes_use_shared_readable_metrics():
+    stylesheet = StyleManager.get_stylesheet(True)
+
+    assert "QMessageBox QLabel" in stylesheet
+    assert "font-size: 15px" in stylesheet
+    assert "min-width: 360px" in stylesheet
+    assert "QMessageBox QPushButton" in stylesheet
+    assert "min-height: 34px" in stylesheet
+
+
+def test_android_support_card_exposes_install_before_any_project_plugin(
+    tmp_path,
+):
+    _app()
+    card = _AndroidSupportCard(AndroidSupportManager(tmp_path / "missing"))
+
+    labels = [label.text() for label in card.findChildren(QLabel)]
+    buttons = [button.text() for button in card.findChildren(QPushButton)]
+    assert tr("Android compatibility") in labels
+    assert tr("Required before the Android platform plugin can be imported. "
+              "Large toolchains are installed once and shared by every project.") in labels
+    assert buttons == [tr("Install")]
+
+    card.close()

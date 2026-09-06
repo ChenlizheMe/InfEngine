@@ -1158,6 +1158,10 @@ void main() { }
            std::string_view::npos);
     assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find(
                "out_particle_local_uv = segment_local_uv") != std::string_view::npos);
+    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find(
+               "layout(location = 6) out vec4 out_line_color") != std::string_view::npos);
+    assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("out_line_color = vec4(1.0)") !=
+           std::string_view::npos);
     assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("view.alignment_reference.z") !=
            std::string_view::npos);
     assert(infernux::particle::GpuParticleRibbonRenderShaderSources::Vertex().find("source_instance_count") !=

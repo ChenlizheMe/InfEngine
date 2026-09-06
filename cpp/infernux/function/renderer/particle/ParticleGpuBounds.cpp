@@ -293,7 +293,8 @@ bool ParticleGpuBounds::Create(rhi::Device &device, const GpuParticleBoundsDesc 
     const std::array<ShaderBytecode, 3> shaders = {desc.program.prepare, desc.program.reset, desc.program.reduce};
     std::array<rhi::ComputePipelineHandle *, 3> pipelines = {&m_preparePipeline, &m_resetPipeline, &m_reducePipeline};
     for (size_t index = 0; index < shaders.size(); ++index) {
-        const auto shader = device.CreateShaderModule({shaders[index].words, shaders[index].wordCount});
+        const auto shader =
+            device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(shaders[index].words, shaders[index].wordCount));
         if (!shader.IsValid()) {
             Destroy();
             return false;

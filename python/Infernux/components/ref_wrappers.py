@@ -51,22 +51,16 @@ def _iter_reference_scenes():
 
 
 def _get_prefab_asset_database():
-    try:
-        from Infernux.core.asset_ref import _get_asset_database
-        db = _get_asset_database()
-        if db is not None:
-            return db
-    except Exception as exc:
-        Debug.log_suppressed("ref_wrappers._get_asset_database.editor_path", exc)
+    from Infernux.core.asset_ref import _get_asset_database
 
-    try:
-        from Infernux.lib import AssetRegistry
-        registry = AssetRegistry.instance()
-        if registry is not None:
-            return registry.get_asset_database()
-    except Exception as exc:
-        Debug.log_suppressed("ref_wrappers._get_asset_database.registry_path", exc)
+    db = _get_asset_database()
+    if db is not None:
+        return db
+    from Infernux.lib import AssetRegistry
 
+    registry = AssetRegistry.instance()
+    if registry is not None:
+        return registry.get_asset_database()
     return None
 
 
@@ -404,12 +398,8 @@ def _iter_live_components_on_game_object(game_object) -> list[Any]:
     for comp in candidates:
         if comp is None or getattr(comp, "_is_destroyed", False):
             continue
-        try:
-            comp_go = getattr(comp, "game_object", None)
-            if comp_go is None or int(comp_go.id) != go_id:
-                continue
-        except Exception as exc:
-            Debug.log_suppressed("ref_wrappers.collect_components.iter", exc)
+        comp_go = getattr(comp, "game_object", None)
+        if comp_go is None or not comp_go or int(comp_go.id) != go_id:
             continue
         if comp not in result:
             result.append(comp)
@@ -428,46 +418,33 @@ def _resolve_component_on_game_object(game_object, component_type: str = ""):
             if comp.__class__.__name__ == component_type or getattr(comp, "type_name", "") == component_type:
                 return comp
 
-        try:
-            from .builtin_component import BuiltinComponent
-            builtin_cls = BuiltinComponent._builtin_registry.get(component_type)
-            if builtin_cls is not None:
-                cpp_type = getattr(builtin_cls, "_cpp_type_name", component_type)
-                cpp_comp = game_object.get_cpp_component(cpp_type)
-                if cpp_comp is not None:
-                    return builtin_cls._get_or_create_wrapper(cpp_comp, game_object)
-        except Exception as exc:
-            Debug.log_suppressed("ref_wrappers.resolve_component.builtin_wrapper", exc)
+        from .builtin_component import BuiltinComponent
+        builtin_cls = BuiltinComponent._builtin_registry.get(component_type)
+        if builtin_cls is not None:
+            cpp_type = getattr(builtin_cls, "_cpp_type_name", component_type)
+            cpp_comp = game_object.get_cpp_component(cpp_type)
+            if cpp_comp is not None:
+                return builtin_cls._get_or_create_wrapper(cpp_comp, game_object)
 
-        try:
-            from .registry import get_type
-            component_cls = get_type(component_type)
-            if component_cls is not None:
-                py_comp = game_object.get_py_component(component_cls)
-                if py_comp is not None:
-                    return py_comp
-        except Exception as exc:
-            Debug.log_suppressed("ref_wrappers.resolve_component.py_component_lookup", exc)
+        from .registry import get_type
+        component_cls = get_type(component_type)
+        if component_cls is not None:
+            py_comp = game_object.get_py_component(component_cls)
+            if py_comp is not None:
+                return py_comp
 
-        try:
-            return game_object.get_cpp_component(component_type)
-        except Exception as exc:
-            Debug.log_suppressed("ref_wrappers.resolve_component.get_cpp_component", exc)
-            return None
+        return game_object.get_cpp_component(component_type)
 
     if live_components:
         return live_components[0]
 
-    try:
-        for comp in game_object.get_components() or []:
-            type_name = getattr(comp, "type_name", "")
-            if not type_name or type_name == "Transform" or _is_python_component_entry(comp):
-                continue
-            resolved = _resolve_component_on_game_object(game_object, type_name)
-            if resolved is not None:
-                return resolved
-    except Exception as exc:
-        Debug.log_suppressed("ref_wrappers.resolve_runtime_field_value", exc)
+    for comp in game_object.get_components() or []:
+        type_name = getattr(comp, "type_name", "")
+        if not type_name or type_name == "Transform" or _is_python_component_entry(comp):
+            continue
+        resolved = _resolve_component_on_game_object(game_object, type_name)
+        if resolved is not None:
+            return resolved
 
     return None
 

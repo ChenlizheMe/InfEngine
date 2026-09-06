@@ -226,27 +226,16 @@ def _get_cached_material_preview_tex(panel, native_mat, mat_data, state, cache_t
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _get_asset_database():
-    """Get the asset database from EditorServices or AssetRegistry (fallback)."""
-    try:
-        from .editor_services import EditorServices
-        adb = EditorServices.instance()._asset_database
-        if adb:
-            return adb
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        pass
-    try:
-        from Infernux.lib import AssetRegistry
-        return AssetRegistry.instance().get_asset_database()
-    except Exception as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return None
+    """Return the AssetManager-owned database for this engine lifetime."""
+    from Infernux.core.assets import AssetManager
+
+    return AssetManager.require_asset_database()
 
 
 def _resolve_path_to_guid(path_str):
     """Resolve a filesystem path to an asset GUID."""
     adb = _get_asset_database()
-    return adb.get_guid_from_path(path_str) or "" if adb else ""
+    return adb.get_guid_from_path(path_str) or ""
 
 
 def _resolve_texture_display(prop):
@@ -256,10 +245,9 @@ def _resolve_texture_display(prop):
     if not isinstance(tex_guid, str) or not tex_guid:
         return t("igui.none")
     adb = _get_asset_database()
-    if adb:
-        tex_path = adb.get_path_from_guid(tex_guid)
-        if tex_path:
-            return os.path.basename(tex_path)
+    tex_path = adb.get_path_from_guid(tex_guid)
+    if tex_path:
+        return os.path.basename(tex_path)
     return f"{t('material.missing_texture')} ({tex_guid[:8]}...)"
 
 
@@ -272,10 +260,10 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
         if "database" not in reference_cache:
             reference_cache["database"] = _get_asset_database()
         adb = reference_cache["database"]
-        database_generation = getattr(adb, "query_generation", -1) if adb else -1
+        database_generation = getattr(adb, "query_generation", -1)
         cache_key = (id(adb), int(database_generation or 0), tex_guid)
         if reference_cache.get("key") != cache_key:
-            tex_path = adb.get_path_from_guid(tex_guid) if adb and tex_guid else ""
+            tex_path = adb.get_path_from_guid(tex_guid) if tex_guid else ""
             reference_cache["key"] = cache_key
             reference_cache["path"] = tex_path or ""
             reference_cache["display"] = (
@@ -312,7 +300,7 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
         if texture_path:
             return texture_path
         adb = _get_asset_database()
-        return adb.get_path_from_guid(tex_guid) if adb and tex_guid else ""
+        return adb.get_path_from_guid(tex_guid) if tex_guid else ""
 
     IGUI.asset_reference_field(
         ctx,
@@ -1474,9 +1462,9 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
     )
 
 
-def _render_material_top_legacy(ctx, panel, state, mat_data, section_readonly,
-                                default_open_sections, is_embedded_slot):
-    """Compatibility path for bindings without the native material-top batch."""
+def _render_material_top(ctx, panel, state, mat_data, section_readonly,
+                         default_open_sections, is_embedded_slot):
+    """Render the material shader, surface, and preview controls."""
     changed = False
     requires_deserialize = False
     requires_pipeline_refresh = False
@@ -1635,7 +1623,7 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
     # contents on the shared field call path instead of folding them into the
     # native material-top batch, whose return boundary breaks popup identity.
     # Surface controls remain native-batched inside the shared implementation.
-    top_result = _render_material_top_legacy(
+    top_result = _render_material_top(
         ctx, panel, state, mat_data, section_readonly,
         default_open_sections, is_embedded_slot)
     (

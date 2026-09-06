@@ -63,27 +63,21 @@ void main() {
 A one-pass color transform can derive from `FullScreenEffect`:
 
 ```python
-from Infernux.components.fields import serialized_field
-from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import (
-    FullScreenEffect,
-    RoutePolicy,
-    render_effect_feature,
-)
+import infernux as inx
 
 
-@render_effect_feature(
+@inx.renderstack.render_effect_feature(
     "game.post.edge_fade",
-    route_policy=RoutePolicy.MASK_AND_MODIFY,
+    route_policy=inx.renderstack.RoutePolicy.MASK_AND_MODIFY,
 )
-class EdgeFadeEffect(FullScreenEffect):
+class EdgeFadeEffect(inx.renderstack.FullScreenEffect):
     name = "Edge Fade"
     menu_path = "Post-processing/Edge Fade"
     injection_point = "before_post_process"
     default_order = 200
     modifies = {"color"}
 
-    intensity: float = serialized_field(
+    intensity: float = inx.serialized_field(
         default=0.35,
         range=(0.0, 1.0),
         slider=False,
@@ -99,7 +93,7 @@ class EdgeFadeEffect(FullScreenEffect):
             output_name="_edge_fade_out",
             pass_name="EdgeFade_Apply",
             shader_name="Edge Fade",
-            format=Format.RGBA16_SFLOAT,
+            format=inx.rendergraph.Format.RGBA16_SFLOAT,
             params={"intensity": float(self.intensity)},
         )
 ```
@@ -306,27 +300,21 @@ void main() {
 单 Pass 颜色变换可以继承 `FullScreenEffect`：
 
 ```python
-from Infernux.components.fields import serialized_field
-from Infernux.rendergraph.graph import Format
-from Infernux.renderstack import (
-    FullScreenEffect,
-    RoutePolicy,
-    render_effect_feature,
-)
+import infernux as inx
 
 
-@render_effect_feature(
+@inx.renderstack.render_effect_feature(
     "game.post.edge_fade",
-    route_policy=RoutePolicy.MASK_AND_MODIFY,
+    route_policy=inx.renderstack.RoutePolicy.MASK_AND_MODIFY,
 )
-class EdgeFadeEffect(FullScreenEffect):
+class EdgeFadeEffect(inx.renderstack.FullScreenEffect):
     name = "Edge Fade"
     menu_path = "Post-processing/Edge Fade"
     injection_point = "before_post_process"
     default_order = 200
     modifies = {"color"}
 
-    intensity: float = serialized_field(
+    intensity: float = inx.serialized_field(
         default=0.35,
         range=(0.0, 1.0),
         slider=False,
@@ -342,7 +330,7 @@ class EdgeFadeEffect(FullScreenEffect):
             output_name="_edge_fade_out",
             pass_name="EdgeFade_Apply",
             shader_name="Edge Fade",
-            format=Format.RGBA16_SFLOAT,
+            format=inx.rendergraph.Format.RGBA16_SFLOAT,
             params={"intensity": float(self.intensity)},
         )
 ```

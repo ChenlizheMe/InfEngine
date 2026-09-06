@@ -12,6 +12,7 @@ from typing import Any, Callable, Optional
 from Infernux.lib import (
     _SceneDocumentReadTicket,
     _collect_scene_resource_dependencies,
+    _pump_inline_jobs,
     _schedule_scene_document_read,
 )
 from Infernux.engine.path_utils import resolved_path
@@ -177,16 +178,11 @@ class SceneDocumentTransaction:
         InxComponent._clear_all_instances()
         BuiltinComponent._clear_cache()
         scenes = [self._scene]
-        try:
-            from Infernux.lib import SceneManager
+        from Infernux.lib import SceneManager
 
-            persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
-            if persistent_scene is not None and persistent_scene is not self._scene:
-                scenes.append(persistent_scene)
-        except (AttributeError, RuntimeError):
-            # Source-only tests can run against an older installed native
-            # module until the consolidated preset build publishes this API.
-            pass
+        persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
+        if persistent_scene is not None and persistent_scene is not self._scene:
+            scenes.append(persistent_scene)
         for scene in scenes:
             for game_object in scene.get_all_objects():
                 for component in game_object.get_py_components() or []:
@@ -197,52 +193,15 @@ class SceneDocumentTransaction:
         """Restore only persistent components cleared by scene publication."""
         if not self._clear_registries:
             return
-        try:
-            from Infernux.lib import SceneManager
+        from Infernux.lib import SceneManager
 
-            persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
-        except (AttributeError, RuntimeError):
-            # Source-only tests can run against an older installed native
-            # module until the consolidated preset build publishes this API.
-            return
+        persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
         if persistent_scene is None or persistent_scene is self._scene:
             return
         for game_object in persistent_scene.get_all_objects():
             for component in game_object.get_py_components() or []:
                 component._set_game_object(game_object)
                 component._refresh_native_handle()
-
-    @staticmethod
-    def _scene_mesh_guids(document: dict[str, Any]) -> tuple[str, ...]:
-        """Collect external meshes that would otherwise load during commit."""
-        result: list[str] = []
-        seen: set[str] = set()
-
-        def visit(game_object: Any) -> None:
-            if not isinstance(game_object, dict):
-                return
-            for component in game_object.get("components", ()):
-                if not isinstance(component, dict):
-                    continue
-                type_id = str(component.get("type_id", ""))
-                if not (
-                    type_id.endswith(".MeshRenderer")
-                    or type_id.endswith(".SkinnedMeshRenderer")
-                ):
-                    continue
-                data = component.get("data")
-                if not isinstance(data, dict) or bool(data.get("useInlineMesh", False)):
-                    continue
-                guid = str(data.get("meshAssetGuid", "") or "").strip()
-                if guid and guid not in seen:
-                    seen.add(guid)
-                    result.append(guid)
-            for child in game_object.get("children", ()):
-                visit(child)
-
-        for root in document.get("objects", ()):
-            visit(root)
-        return tuple(result)
 
     def _start_asset_preloads(self) -> None:
         from Infernux.lib import AssetRegistry
@@ -515,9 +474,10 @@ class SceneDocumentTransaction:
         if self._state is SceneDocumentTransactionState.CREATED:
             self.start()
         while not self.poll():
+            inline_jobs = _pump_inline_jobs(64)
             if on_tick is not None:
                 on_tick()
-            if self._state is SceneDocumentTransactionState.READING:
+            if self._state is SceneDocumentTransactionState.READING and inline_jobs == 0:
                 time.sleep(0.001)
         if raise_on_failure and self._state is SceneDocumentTransactionState.FAILED:
             if self._failure_exception is not None:

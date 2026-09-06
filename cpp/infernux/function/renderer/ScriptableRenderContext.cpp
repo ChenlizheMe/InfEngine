@@ -113,7 +113,6 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
     ownedResult = bridge.CullAndBuildForCamera(camera, needsShadowDrawCalls);
     const std::vector<DrawCall> *drawCallsPtr =
         ownedResult.visibleDrawCallsRef ? ownedResult.visibleDrawCallsRef : &ownedResult.visibleDrawCalls;
-    results.visibleListIdentity = drawCallsPtr;
     results.visibleListRevision = ownedResult.visibleListRevision;
     results.shadowListRevision = ownedResult.shadowListRevision;
     results.renderWorldOwner = ownedResult.worldOwner;
@@ -140,7 +139,6 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
                                   RenderDomainBit(RenderDomain::SceneGeometry));
         }
     }
-    results.shadowListIdentity = results.shadowCasters.Empty() ? nullptr : &results.shadowCasters.DrawCalls();
     // Populate visible light count from the scene light collector.
     // CollectLights() runs earlier in the frame (InxRenderer::UpdateSceneLighting),
     // so the count is already available.
@@ -213,14 +211,10 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         submissionSignature ^= value;
         submissionSignature *= 1099511628211ULL;
     };
-    // RenderWorld publications rotate between recyclable frame objects, so
-    // the address of an otherwise unchanged draw-call vector is not a durable
-    // identity. Camera culling publishes a monotonic content revision; prefer
-    // it and retain pointer identity only for legacy callers that do not yet
-    // provide a revision.
+    // Camera culling publishes a monotonic content revision. RenderWorld
+    // publications rotate between recyclable frame objects, so pointer values
+    // cannot represent draw-list identity.
     mixSubmission(culling.visibleListRevision);
-    if (culling.visibleListRevision == 0)
-        mixSubmission(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(culling.visibleListIdentity)));
     // RenderWorld publications rotate between recyclable frame objects. The
     // shadow vector address therefore changes even when its contents do not.
     // Use the camera cache revision as the durable identity instead of that

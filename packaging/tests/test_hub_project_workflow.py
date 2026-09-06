@@ -13,9 +13,12 @@ PACKAGING_DIR = Path(__file__).resolve().parents[1]
 if str(PACKAGING_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGING_DIR))
 
+import database as database_module
 from database import ProjectDatabase
 import model.project_model as project_model_module
 from model.project_model import ProjectModel
+from hub_utils import HubLaunchContext
+from viewmodel.control_pane_viewmodel import ControlPaneViewModel
 from project_paths import ProjectPathError, inspect_existing_project, validate_project_name
 from project_migration import ProjectMigrationService
 from i18n import configure_language, resolve_language, tr
@@ -34,113 +37,165 @@ def _make_project(path: Path, *, name: str | None = None, version: str = "") -> 
     return path
 
 
-def test_dev_wheel_selection_prefers_the_newest_compatible_build(tmp_path: Path, monkeypatch):
-    output = tmp_path / "out" / "build" / "release" / "python_wheel"
-    dist = tmp_path / "dist" / "releases" / "0.2.9"
-    output.mkdir(parents=True)
-    dist.mkdir(parents=True)
-    old_wheel = dist / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
-    new_wheel = output / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
-    old_wheel.write_bytes(b"old")
-    new_wheel.write_bytes(b"new")
-    old_wheel.touch()
-    new_wheel.touch()
-    old_wheel_stat = old_wheel.stat()
-    new_wheel_stat = new_wheel.stat()
-    import os
-    os.utime(old_wheel, ns=(old_wheel_stat.st_atime_ns, new_wheel_stat.st_mtime_ns - 1_000_000))
+def test_default_project_database_lives_in_hub_state_root(tmp_path, monkeypatch):
+    root = tmp_path / "HubData"
+    monkeypatch.setattr(
+        database_module,
+        "get_hub_user_data_dir",
+        lambda: str(root),
+    )
 
-    monkeypatch.setattr(project_model_module, "_engine_root", lambda: str(tmp_path))
-    monkeypatch.setattr(project_model_module, "_python_cp_tag", lambda _python="": "cp312")
-    monkeypatch.setattr(project_model_module, "_wheel_matches_python", lambda *_args: True)
+    database = ProjectDatabase()
+    database.close()
 
-    assert project_model_module._find_dev_wheel("python.exe") == str(new_wheel)
+    assert (root / "State" / "projects.db").is_file()
+    assert not (tmp_path / ".infernux").exists()
 
 
-def test_dev_runtime_reinstalls_same_version_only_when_wheel_fingerprint_changes(
+def test_source_import_does_not_apply_installed_version_catalog_rules(
+    tmp_path: Path, monkeypatch
+):
+    project = _make_project(tmp_path / "Imported", name="Imported", version="9.9.9")
+    database = ProjectDatabase(str(tmp_path / "hub.db"))
+
+    class ProjectList:
+        def refresh(self):
+            pass
+
+        def select_project(self, _project_id):
+            pass
+
+    class VersionManager:
+        def is_installed(self, _version):
+            raise AssertionError("source imports must not query installed Hub versions")
+
+    monkeypatch.setattr(
+        "viewmodel.control_pane_viewmodel.QFileDialog.getExistingDirectory",
+        lambda *_args: str(project),
+    )
+    viewmodel = ControlPaneViewModel(
+        ProjectModel(database),
+        ProjectList(),
+        VersionManager(),
+        launch_context=HubLaunchContext.SOURCE,
+    )
+
+    viewmodel.open_existing_project(None)
+
+    assert database.find_project_by_path(str(project)) is not None
+    database.close()
+
+
+def test_installed_import_keeps_version_catalog_warning(tmp_path: Path, monkeypatch):
+    project = _make_project(tmp_path / "Imported", name="Imported", version="9.9.9")
+    database = ProjectDatabase(str(tmp_path / "hub.db"))
+    messages = []
+
+    class ProjectList:
+        def refresh(self):
+            pass
+
+        def select_project(self, _project_id):
+            pass
+
+    class VersionManager:
+        @staticmethod
+        def is_installed(_version):
+            return False
+
+    monkeypatch.setattr(
+        "viewmodel.control_pane_viewmodel.QFileDialog.getExistingDirectory",
+        lambda *_args: str(project),
+    )
+    monkeypatch.setattr(
+        "viewmodel.control_pane_viewmodel.QMessageBox.information",
+        lambda _parent, title, body: messages.append((title, body)),
+    )
+    viewmodel = ControlPaneViewModel(
+        ProjectModel(database),
+        ProjectList(),
+        VersionManager(),
+        launch_context=HubLaunchContext.INSTALLED,
+    )
+
+    viewmodel.open_existing_project(None)
+
+    assert messages and "9.9.9" in messages[0][1]
+    database.close()
+
+
+def test_source_project_creation_accepts_current_environment_without_version(
+    monkeypatch,
+):
+    class NewProjectDialog:
+        def __init__(self, *_args):
+            pass
+
+        @staticmethod
+        def exec():
+            return 1
+
+        @staticmethod
+        def get_data():
+            return "SourceProject", "C:/Projects", ""
+
+    class InitializationReached(RuntimeError):
+        pass
+
+    monkeypatch.setattr("view.new_project_view.NewProjectView", NewProjectDialog)
+    monkeypatch.setattr(
+        "viewmodel.control_pane_viewmodel.CustomProgressDialog",
+        lambda _parent: (_ for _ in ()).throw(InitializationReached()),
+    )
+
+    viewmodel = ControlPaneViewModel(
+        model=object(),
+        project_list=object(),
+        launch_context=HubLaunchContext.SOURCE,
+    )
+
+    with pytest.raises(InitializationReached):
+        viewmodel.create_project(None)
+
+
+def test_project_creation_requires_the_current_bundled_support_template(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(
+        project_model_module,
+        "__file__",
+        str(tmp_path / "packaging" / "model" / "project_model.py"),
+    )
+    destination = tmp_path / "project.gitignore"
+
+    with pytest.raises(RuntimeError, match="Required Infernux project template"):
+        ProjectModel(None)._copy_bundled_support_file(
+            "project.gitignore.txt", str(destination), ""
+        )
+
+    assert not destination.exists()
+
+
+def test_source_project_runtime_uses_active_environment_without_wheel_lookup(
     tmp_path: Path,
     monkeypatch,
 ):
     project = tmp_path / "Project"
-    project_python = project / ".venv" / "Scripts" / "python.exe"
-    site_packages = project / ".venv" / "Lib" / "site-packages"
+    project_python = Path(ProjectModel._get_project_python(str(project)))
     project_python.parent.mkdir(parents=True)
-    site_packages.mkdir(parents=True)
     project_python.write_bytes(b"")
-    wheel = tmp_path / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
-    wheel.write_bytes(b"current wheel")
-    commands = []
+    validated = []
 
     monkeypatch.setattr(project_model_module, "is_frozen", lambda: False)
-    monkeypatch.setattr(project_model_module, "_find_dev_wheel", lambda *_args, **_kwargs: str(wheel))
-    monkeypatch.setattr(project_model_module, "_distribution_files_present", lambda *_args: True)
-    monkeypatch.setattr(project_model_module, "_installed_distribution_version", lambda *_args: "0.2.9")
-    monkeypatch.setattr(project_model_module, "_run_hidden", lambda args, **_kwargs: commands.append(args))
-    monkeypatch.setattr(ProjectModel, "validate_python_runtime", staticmethod(lambda _path: None))
-
-    model = ProjectModel(None)
-    model._install_infernux_in_runtime(str(project), "0.2.9")
-    assert len(commands) == 1
-    assert "--force-reinstall" in commands[0]
-
-    model._install_infernux_in_runtime(str(project), "0.2.9")
-    assert len(commands) == 1
-
-
-def test_launch_runtime_sync_trusts_matching_wheel_marker_without_spawning_python(
-    tmp_path: Path,
-    monkeypatch,
-):
-    project = tmp_path / "Project"
-    project_python = project / ".venv" / "Scripts" / "python.exe"
-    site_packages = project / ".venv" / "Lib" / "site-packages"
-    project_python.parent.mkdir(parents=True)
-    site_packages.mkdir(parents=True)
-    project_python.write_bytes(b"")
-    wheel = tmp_path / "infernux-0.2.9-cp312-cp312-win_amd64.whl"
-    wheel.write_bytes(b"current wheel")
-
-    monkeypatch.setattr(project_model_module, "is_frozen", lambda: False)
-    monkeypatch.setattr(
-        project_model_module,
-        "_find_dev_wheel",
-        lambda *_args, **_kwargs: str(wheel),
-    )
-    monkeypatch.setattr(
-        project_model_module,
-        "_distribution_files_present",
-        lambda *_args: True,
-    )
-
-    model = ProjectModel(None)
-    marker = Path(project_model_module._project_wheel_marker(str(project)))
-    marker.write_text(
-        project_model_module._wheel_install_fingerprint(str(wheel)),
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(
-        project_model_module,
-        "_installed_distribution_version",
-        lambda *_args: (_ for _ in ()).throw(
-            AssertionError("matching marker must not start project Python")
-        ),
-    )
     monkeypatch.setattr(
         ProjectModel,
         "validate_python_runtime",
-        staticmethod(
-            lambda _path: (_ for _ in ()).throw(
-                AssertionError("launch fast path must defer validation to the editor")
-            )
-        ),
+        staticmethod(lambda path: validated.append(path)),
     )
 
-    model._install_infernux_in_runtime(
-        str(project),
-        "0.2.9",
-        validate_current=False,
-    )
+    model = ProjectModel(None)
+    model._install_infernux_in_runtime(str(project), "0.2.9")
+    assert validated == [str(project_python)]
 
 
 @pytest.mark.parametrize("name", ["..", ".", "foo/bar", "foo\\bar", "C:drive", "CON", "trail."])
@@ -182,10 +237,10 @@ def test_database_allows_same_name_but_deduplicates_canonical_path(tmp_path: Pat
         assert len(db.all_projects()) == 2
 
 
-def test_database_migrates_legacy_parent_paths(tmp_path: Path):
+def test_database_rejects_noncurrent_schema(tmp_path: Path):
     db_path = tmp_path / "legacy.db"
     parent = tmp_path / "projects"
-    project = _make_project(parent / "Legacy")
+    _make_project(parent / "Legacy")
     connection = sqlite3.connect(db_path)
     connection.execute(
         "CREATE TABLE projects ("
@@ -199,11 +254,8 @@ def test_database_migrates_legacy_parent_paths(tmp_path: Path):
     connection.commit()
     connection.close()
 
-    with ProjectDatabase(db_path) as db:
-        records = db.all_projects()
-        assert len(records) == 1
-        assert Path(records[0].path) == project.resolve()
-        assert db.find_project_by_path(str(project)).project_id == records[0].project_id
+    with pytest.raises(RuntimeError, match="current schema"):
+        ProjectDatabase(db_path)
 
 
 def test_register_existing_project_rejects_duplicate_path(tmp_path: Path):
@@ -239,7 +291,7 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
 
     monkeypatch.setattr(model, "_copy_bundled_requirements", lambda dest, _version: Path(dest).write_text("", encoding="utf-8"))
 
-    def create_runtime(project, on_status=None):
+    def create_runtime(project, python_version="", on_status=None):
         runtime_locations.append(Path(project))
         (Path(project) / ".venv").mkdir()
 
@@ -398,6 +450,10 @@ class _MigrationVersionManager:
         return version == "0.3.0"
 
     @staticmethod
+    def python_version_for_engine(_version):
+        return "3.13"
+
+    @staticmethod
     def write_project_version(project, version):
         (Path(project) / ".infernux-version").write_text(version + "\n", encoding="utf-8")
 
@@ -440,6 +496,11 @@ def test_project_migration_backs_up_and_replaces_runtime(tmp_path: Path):
     assert result.source_version == "0.2.0"
     assert (project / ".infernux-version").read_text(encoding="utf-8").strip() == "0.3.0"
     assert (project / ".venv" / "engine.txt").read_text(encoding="utf-8") == "0.3.0"
+    assert json.loads(
+        (project / "ProjectSettings" / "PythonRuntime.json").read_text(
+            encoding="utf-8"
+        )
+    )["pythonVersion"] == "3.13"
     assert not (project / ".venv" / "old.txt").exists()
     with zipfile.ZipFile(result.backup_path) as archive:
         assert "Assets/scene.inx" in archive.namelist()

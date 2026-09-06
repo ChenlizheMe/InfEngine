@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import ast
 import threading
 from pathlib import Path
@@ -134,6 +133,12 @@ def test_input_semantic_ui_console_and_docs_are_schema_operations(tmp_path):
         assert [event[1]["pressed"] for event in host.events[-4:]] == [True, True, False, False]
         assert [event[1]["key"] for event in host.events[-4:]] == ["ctrl", "s", "s", "ctrl"]
 
+        held = operations["infernux.input.key.hold"]("w", duration_seconds=0.001)
+        assert held["delivered"] is True
+        assert held["release_sequence"] > held["press_sequence"]
+        assert [event[1]["pressed"] for event in host.events[-2:]] == [True, False]
+        assert [event[1]["key"] for event in host.events[-2:]] == ["w", "w"]
+
         clicked = operations["infernux.input.pointer.click"](40.0, 80.0)
         assert clicked["release_sequence"] > clicked["press_sequence"] > clicked["move_sequence"]
         assert [event[0] for event in host.events[-3:]] == [
@@ -168,7 +173,8 @@ def test_capture_returns_review_artifact_metadata_without_pixels(tmp_path):
         assert requested["pixel_access"] is False
         status = operations["infernux.capture.status"](17)
         assert status["terminal"] is True
-        assert status["sha256"] == hashlib.sha256(b"engine-render-target").hexdigest()
+        assert status["byte_size"] == len(b"engine-render-target")
+        assert "sha256" not in status
         assert "output_path" not in status
         assert "pixels" not in status
         assert host.capture_path.name == "review.png"
@@ -194,7 +200,8 @@ def test_operation_handlers_depend_on_host_api_not_editor_implementation():
         / "external"
         / "plugins"
         / "infernux_mcp"
-        / "Editor"
+        / "package"
+        / "editor"
         / "infernux_mcp"
     )
     forbidden = (
@@ -278,7 +285,8 @@ def test_capture_surface_cannot_fall_back_to_operating_system_pixels():
         / "external"
         / "plugins"
         / "infernux_mcp"
-        / "Editor"
+        / "package"
+        / "editor"
         / "infernux_mcp"
         / "capture_operations.py"
     )
@@ -296,6 +304,32 @@ def test_capture_surface_cannot_fall_back_to_operating_system_pixels():
     native_text = "\n".join(path.read_text(encoding="utf-8", errors="ignore") for path in native_sources)
     forbidden_native = ("BitBlt(", "PrintWindow(", "GetDC(", "XGetImage(", "CGWindowListCreateImage")
     assert all(symbol not in native_text for symbol in forbidden_native)
+
+
+def test_mcp_automation_cannot_control_operating_system_window_activation():
+    plugin_root = (
+        Path(__file__).parents[2]
+        / "external"
+        / "plugins"
+        / "infernux_mcp"
+        / "package"
+        / "editor"
+        / "infernux_mcp"
+    )
+    python_sources = list(plugin_root.rglob("*.py"))
+    source_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore") for path in python_sources
+    )
+    forbidden_symbols = (
+        "SetForegroundWindow",
+        "BringWindowToTop",
+        "SetActiveWindow",
+        "AttachThreadInput",
+        "GetForegroundWindow",
+        "win32gui",
+        "pyautogui",
+    )
+    assert all(symbol not in source_text for symbol in forbidden_symbols)
 
 
 def test_player_schema_exposes_managed_input_and_motion_capture(tmp_path, monkeypatch):
@@ -364,15 +398,31 @@ def test_player_build_is_available_without_global_validation(tmp_path):
         return {"output_dir": str(tmp_path / "Build"), "executable_exists": True}
 
     host.build_player = build_player
+    host.player_build_targets = lambda: {
+        "current_host_target": "windows-x64",
+        "targets": [{"id": "windows-x64"}, {"id": "android-arm64"}],
+    }
     EditorAutomationHost.set_provider(host)
     try:
         operations = {item.schema.id: item.handler for item in build_operations(str(tmp_path))}
+        targets = operations["infernux.player.targets"]()
         result = operations["infernux.player.build"](
-            game_name="BalanceBall", debug_mode=True
+            target="android-arm64",
+            game_name="BalanceBall",
+            debug_mode=True,
+            android_artifact="aab",
+            compress_resources=True,
         )
+        assert [item["id"] for item in targets["targets"]] == [
+            "windows-x64",
+            "android-arm64",
+        ]
         assert result["executable_exists"] is True
         assert received["project_root"] == str(tmp_path)
         assert received["game_name"] == "BalanceBall"
         assert received["debug_mode"] is True
+        assert received["target"] == "android-arm64"
+        assert received["android_artifact"] == "aab"
+        assert received["compress_resources"] is True
     finally:
         EditorAutomationHost.set_provider(None)

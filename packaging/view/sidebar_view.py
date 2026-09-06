@@ -87,13 +87,14 @@ class ToggleSwitch(QWidget):
 
         app = QApplication.instance()
         is_dark = getattr(app, "is_dark_theme", True)
+        palette = StyleManager.palette(is_dark)
 
         if self._checked:
-            bg_color = QColor("#eb5757")
-            thumb_color = QColor("#ffffff")
+            bg_color = QColor(palette.accent)
+            thumb_color = QColor(palette.accent_text)
         else:
-            bg_color = QColor("#555555") if is_dark else QColor("#e9e9e7")
-            thumb_color = QColor("#cfcfcf") if is_dark else QColor("#ffffff")
+            bg_color = QColor(palette.border_hover if is_dark else palette.bg_surface_hover)
+            thumb_color = QColor(palette.border if is_dark else palette.accent_text)
 
         p.setBrush(QBrush(bg_color))
         p.drawRect(0, 0, self.width(), self.height())
@@ -166,6 +167,7 @@ class SidebarView(QWidget):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setFixedHeight(46)
             btn.setProperty("active", index == 0)
+            btn.setProperty("page", index)
             btn.clicked.connect(lambda _checked, i=index: self._switch_page(i))
             layout.addWidget(btn)
             self._nav_buttons.append(btn)
@@ -181,7 +183,7 @@ class SidebarView(QWidget):
                 animation.stop()
             btn._hub_hover_progress = 0.0
             btn.setStyleSheet("")
-            btn.setProperty("active", i == index)
+            btn.setProperty("active", btn.property("page") == index)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
         self.page_changed.emit(index)

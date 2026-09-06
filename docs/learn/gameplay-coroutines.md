@@ -22,9 +22,9 @@ def start(self):
     self._handle = self.start_coroutine(self.flash())
 
 def flash(self):
-    Debug.log("flash starts")
-    yield WaitForSeconds(0.5)
-    Debug.log("flash ends")
+    inx.Debug.log("flash starts")
+    yield inx.WaitForSeconds(0.5)
+    inx.Debug.log("flash ends")
 ```
 
 `start_coroutine()` runs the generator immediately until its first `yield`. In the example, `flash starts` is logged inside `start()`. The returned `Coroutine` handle represents the scheduled continuation. Its `is_finished` property becomes `True` after normal completion or cancellation.
@@ -38,25 +38,15 @@ The scheduler is cooperative and belongs to the component. A coroutine must yiel
 3. Attach `CoroutineTour` to `CoroutineLab`.
 4. Open **Console**, clear old messages, and enter Play mode.
 
-The example needs no Collider or Rigidbody. `WaitForFixedUpdate()` waits for the engine's next fixed-update phase even when this component does not override `fixed_update()`.
+The example needs no Collider or Rigidbody. `inx.WaitForFixedUpdate()` waits for the engine's next fixed-update phase even when this component does not override `fixed_update()`.
 
 ## Run every wait type {#complete-tour}
 
 ```python
-from Infernux.components import InxComponent
-from Infernux.coroutine import (
-    WaitForEndOfFrame,
-    WaitForFixedUpdate,
-    WaitForFrames,
-    WaitForSeconds,
-    WaitForSecondsRealtime,
-    WaitUntil,
-    WaitWhile,
-)
-from Infernux.debug import Debug
+import infernux as inx
 
 
-class CoroutineTour(InxComponent):
+class CoroutineTour(inx.InxComponent):
     def awake(self):
         self._sequence_handle = None
         self._gate_open = False
@@ -66,52 +56,52 @@ class CoroutineTour(InxComponent):
         self._sequence_handle = self.start_coroutine(self.run_sequence())
 
     def run_sequence(self):
-        Debug.log("1. sequence started immediately", self)
+        inx.Debug.log("1. sequence started immediately", self)
 
         yield None
-        Debug.log("2. one update frame passed", self)
+        inx.Debug.log("2. one update frame passed", self)
 
-        yield WaitForFrames(2)
-        Debug.log("3. two more update frames passed", self)
+        yield inx.WaitForFrames(2)
+        inx.Debug.log("3. two more update frames passed", self)
 
-        yield WaitForSeconds(0.5)
-        Debug.log("4. 0.5 scaled seconds passed", self)
+        yield inx.WaitForSeconds(0.5)
+        inx.Debug.log("4. 0.5 scaled seconds passed", self)
 
-        yield WaitForSecondsRealtime(0.25)
-        Debug.log("5. 0.25 real seconds passed", self)
+        yield inx.WaitForSecondsRealtime(0.25)
+        inx.Debug.log("5. 0.25 real seconds passed", self)
 
-        yield WaitForFixedUpdate()
-        Debug.log("6. resumed in fixed update", self)
+        yield inx.WaitForFixedUpdate()
+        inx.Debug.log("6. resumed in fixed update", self)
 
-        yield WaitForEndOfFrame(2)
-        Debug.log("7. two late-update phases passed", self)
+        yield inx.WaitForEndOfFrame(2)
+        inx.Debug.log("7. two late-update phases passed", self)
 
         self._gate_open = False
         self.start_coroutine(self.open_gate_later())
-        yield WaitUntil(lambda: self._gate_open)
-        Debug.log("8. WaitUntil observed an open gate", self)
+        yield inx.WaitUntil(lambda: self._gate_open)
+        inx.Debug.log("8. WaitUntil observed an open gate", self)
 
         self._busy = True
         self.start_coroutine(self.clear_busy_later())
-        yield WaitWhile(lambda: self._busy)
-        Debug.log("9. WaitWhile observed idle state", self)
+        yield inx.WaitWhile(lambda: self._busy)
+        inx.Debug.log("9. WaitWhile observed idle state", self)
 
         child = self.start_coroutine(self.child_sequence())
         yield child
-        Debug.log("10. child finished; parent finished", self)
+        inx.Debug.log("10. child finished; parent finished", self)
 
     def open_gate_later(self):
-        yield WaitForSeconds(0.2)
+        yield inx.WaitForSeconds(0.2)
         self._gate_open = True
 
     def clear_busy_later(self):
-        yield WaitForFrames(2)
+        yield inx.WaitForFrames(2)
         self._busy = False
 
     def child_sequence(self):
-        Debug.log("child started immediately", self)
-        yield WaitForSeconds(0.2)
-        Debug.log("child completed", self)
+        inx.Debug.log("child started immediately", self)
+        yield inx.WaitForSeconds(0.2)
+        inx.Debug.log("child completed", self)
 
     def cancel_sequence(self):
         """May be bound to a UI Button."""
@@ -133,13 +123,13 @@ Each yielded value selects the phase that will check the coroutine next.
 | Yielded value | Resume rule | Check phase |
 | --- | --- | --- |
 | `yield None` or bare `yield` | Wait one update frame. | `update` |
-| `WaitForFrames(n)` | Resume after exactly `n` update-phase checks. `n` must be an integer of at least 1; `bool` is rejected. | `update` |
-| `WaitForSeconds(seconds)` | Accumulate the update-phase frame delta until it reaches `seconds`. | `update` |
-| `WaitForSecondsRealtime(seconds)` | Resume on the first update check at or after its wall-clock target. | `update` |
-| `WaitForFixedUpdate()` | Resume on the next fixed-update scheduler pass. | `fixed_update` |
-| `WaitForEndOfFrame(n)` | Resume after `n` late-update scheduler passes. `n` has the same integer validation as `WaitForFrames`. | `late_update` |
-| `WaitUntil(predicate)` | Call `predicate()` on update checks and resume when its result is truthy. | `update` |
-| `WaitWhile(predicate)` | Call `predicate()` on update checks and resume when its result becomes falsy. | `update` |
+| `inx.WaitForFrames(n)` | Resume after exactly `n` update-phase checks. `n` must be an integer of at least 1; `bool` is rejected. | `update` |
+| `inx.WaitForSeconds(seconds)` | Accumulate the update-phase frame delta until it reaches `seconds`. | `update` |
+| `inx.WaitForSecondsRealtime(seconds)` | Resume on the first update check at or after its wall-clock target. | `update` |
+| `inx.WaitForFixedUpdate()` | Resume on the next fixed-update scheduler pass. | `fixed_update` |
+| `inx.WaitForEndOfFrame(n)` | Resume after `n` late-update scheduler passes. `n` has the same integer validation as `WaitForFrames`. | `late_update` |
+| `inx.WaitUntil(predicate)` | Call `predicate()` on update checks and resume when its result is truthy. | `update` |
+| `inx.WaitWhile(predicate)` | Call `predicate()` on update checks and resume when its result becomes falsy. | `update` |
 | a `Coroutine` handle | Resume after that handle is finished, including when it was stopped. | `update` |
 | any unsupported value | Current runtime treats it like a one-update-frame wait. | `update` |
 
@@ -176,7 +166,7 @@ Stopping a generator marks its handle finished and calls `close()`. Put essentia
 def temporary_state(self):
     self._busy = True
     try:
-        yield WaitForSeconds(5.0)
+        yield inx.WaitForSeconds(5.0)
     finally:
         self._busy = False
 ```
@@ -209,7 +199,7 @@ To inspect a handle during development, log `self._sequence_handle.is_finished`.
 ## Common errors {#common-errors}
 
 - **Passing the method instead of its generator**: call `self.start_coroutine(self.run_sequence())`, including the final parentheses.
-- **Using `time.sleep()`**: it blocks the thread and freezes other engine work. Yield `WaitForSecondsRealtime()` for a wall-clock delay.
+- **Using `time.sleep()`**: it blocks the thread and freezes other engine work. Yield `inx.WaitForSecondsRealtime()` for a wall-clock delay.
 - **Expecting an exact timestamp**: waits resume on scheduler checks, so a duration is a minimum and can overshoot by part of a frame.
 - **Expecting `WaitForSeconds` to respect pause**: the current scheduler feeds the raw update delta, so `time_scale` does not change this wait. Use realtime waiting for wall-clock delays, and accumulate `Time.delta_time` manually when a sequence must follow the game clock.
 - **Treating `WaitForEndOfFrame` as post-render capture**: it maps to late update in the current scheduler.
@@ -247,9 +237,9 @@ def start(self):
     self._handle = self.start_coroutine(self.flash())
 
 def flash(self):
-    Debug.log("flash starts")
-    yield WaitForSeconds(0.5)
-    Debug.log("flash ends")
+    inx.Debug.log("flash starts")
+    yield inx.WaitForSeconds(0.5)
+    inx.Debug.log("flash ends")
 ```
 
 `start_coroutine()` 会立即运行生成器，直到遇到第一个 `yield`。上例中的 `flash starts` 会在 `start()` 内记录。返回的 `Coroutine` 句柄代表后续调度；正常结束或取消后，`is_finished` 都会变成 `True`。
@@ -263,25 +253,15 @@ def flash(self):
 3. 把 `CoroutineTour` 挂到 `CoroutineLab`。
 4. 打开 **Console**，清除旧消息，再进入 Play 模式。
 
-示例不需要 Collider 或 Rigidbody。即使组件没有重写 `fixed_update()`，`WaitForFixedUpdate()` 仍会等待引擎的下一个固定更新阶段。
+示例不需要 Collider 或 Rigidbody。即使组件没有重写 `fixed_update()`，`inx.WaitForFixedUpdate()` 仍会等待引擎的下一个固定更新阶段。
 
 ## 运行全部等待类型 {#zh-complete-tour}
 
 ```python
-from Infernux.components import InxComponent
-from Infernux.coroutine import (
-    WaitForEndOfFrame,
-    WaitForFixedUpdate,
-    WaitForFrames,
-    WaitForSeconds,
-    WaitForSecondsRealtime,
-    WaitUntil,
-    WaitWhile,
-)
-from Infernux.debug import Debug
+import infernux as inx
 
 
-class CoroutineTour(InxComponent):
+class CoroutineTour(inx.InxComponent):
     def awake(self):
         self._sequence_handle = None
         self._gate_open = False
@@ -291,52 +271,52 @@ class CoroutineTour(InxComponent):
         self._sequence_handle = self.start_coroutine(self.run_sequence())
 
     def run_sequence(self):
-        Debug.log("1. sequence started immediately", self)
+        inx.Debug.log("1. sequence started immediately", self)
 
         yield None
-        Debug.log("2. one update frame passed", self)
+        inx.Debug.log("2. one update frame passed", self)
 
-        yield WaitForFrames(2)
-        Debug.log("3. two more update frames passed", self)
+        yield inx.WaitForFrames(2)
+        inx.Debug.log("3. two more update frames passed", self)
 
-        yield WaitForSeconds(0.5)
-        Debug.log("4. 0.5 scaled seconds passed", self)
+        yield inx.WaitForSeconds(0.5)
+        inx.Debug.log("4. 0.5 scaled seconds passed", self)
 
-        yield WaitForSecondsRealtime(0.25)
-        Debug.log("5. 0.25 real seconds passed", self)
+        yield inx.WaitForSecondsRealtime(0.25)
+        inx.Debug.log("5. 0.25 real seconds passed", self)
 
-        yield WaitForFixedUpdate()
-        Debug.log("6. resumed in fixed update", self)
+        yield inx.WaitForFixedUpdate()
+        inx.Debug.log("6. resumed in fixed update", self)
 
-        yield WaitForEndOfFrame(2)
-        Debug.log("7. two late-update phases passed", self)
+        yield inx.WaitForEndOfFrame(2)
+        inx.Debug.log("7. two late-update phases passed", self)
 
         self._gate_open = False
         self.start_coroutine(self.open_gate_later())
-        yield WaitUntil(lambda: self._gate_open)
-        Debug.log("8. WaitUntil observed an open gate", self)
+        yield inx.WaitUntil(lambda: self._gate_open)
+        inx.Debug.log("8. WaitUntil observed an open gate", self)
 
         self._busy = True
         self.start_coroutine(self.clear_busy_later())
-        yield WaitWhile(lambda: self._busy)
-        Debug.log("9. WaitWhile observed idle state", self)
+        yield inx.WaitWhile(lambda: self._busy)
+        inx.Debug.log("9. WaitWhile observed idle state", self)
 
         child = self.start_coroutine(self.child_sequence())
         yield child
-        Debug.log("10. child finished; parent finished", self)
+        inx.Debug.log("10. child finished; parent finished", self)
 
     def open_gate_later(self):
-        yield WaitForSeconds(0.2)
+        yield inx.WaitForSeconds(0.2)
         self._gate_open = True
 
     def clear_busy_later(self):
-        yield WaitForFrames(2)
+        yield inx.WaitForFrames(2)
         self._busy = False
 
     def child_sequence(self):
-        Debug.log("child started immediately", self)
-        yield WaitForSeconds(0.2)
-        Debug.log("child completed", self)
+        inx.Debug.log("child started immediately", self)
+        yield inx.WaitForSeconds(0.2)
+        inx.Debug.log("child completed", self)
 
     def cancel_sequence(self):
         """可绑定到 UI Button。"""
@@ -358,13 +338,13 @@ class CoroutineTour(InxComponent):
 | `yield` 值 | 恢复规则 | 检查阶段 |
 | --- | --- | --- |
 | `yield None` 或单独 `yield` | 等待一个更新帧。 | `update` |
-| `WaitForFrames(n)` | 经过恰好 `n` 次更新阶段检查后恢复。`n` 必须是至少为 1 的整数，`bool` 会被拒绝。 | `update` |
-| `WaitForSeconds(seconds)` | 累加更新阶段的帧间隔，达到 `seconds` 后恢复。 | `update` |
-| `WaitForSecondsRealtime(seconds)` | 墙钟时间达到目标后，在首次更新检查时恢复。 | `update` |
-| `WaitForFixedUpdate()` | 在下一次固定更新调度中恢复。 | `fixed_update` |
-| `WaitForEndOfFrame(n)` | 经过 `n` 次后期更新调度后恢复。`n` 与 `WaitForFrames` 使用相同的整数校验。 | `late_update` |
-| `WaitUntil(predicate)` | 每次更新检查都调用 `predicate()`，结果为真时恢复。 | `update` |
-| `WaitWhile(predicate)` | 每次更新检查都调用 `predicate()`，结果变为假时恢复。 | `update` |
+| `inx.WaitForFrames(n)` | 经过恰好 `n` 次更新阶段检查后恢复。`n` 必须是至少为 1 的整数，`bool` 会被拒绝。 | `update` |
+| `inx.WaitForSeconds(seconds)` | 累加更新阶段的帧间隔，达到 `seconds` 后恢复。 | `update` |
+| `inx.WaitForSecondsRealtime(seconds)` | 墙钟时间达到目标后，在首次更新检查时恢复。 | `update` |
+| `inx.WaitForFixedUpdate()` | 在下一次固定更新调度中恢复。 | `fixed_update` |
+| `inx.WaitForEndOfFrame(n)` | 经过 `n` 次后期更新调度后恢复。`n` 与 `WaitForFrames` 使用相同的整数校验。 | `late_update` |
+| `inx.WaitUntil(predicate)` | 每次更新检查都调用 `predicate()`，结果为真时恢复。 | `update` |
+| `inx.WaitWhile(predicate)` | 每次更新检查都调用 `predicate()`，结果变为假时恢复。 | `update` |
 | `Coroutine` 句柄 | 句柄结束后恢复，被停止的句柄也算结束。 | `update` |
 | 任意不支持的值 | 当前运行时把它当作等待一个更新帧。 | `update` |
 
@@ -401,7 +381,7 @@ yield child
 def temporary_state(self):
     self._busy = True
     try:
-        yield WaitForSeconds(5.0)
+        yield inx.WaitForSeconds(5.0)
     finally:
         self._busy = False
 ```
@@ -434,7 +414,7 @@ def temporary_state(self):
 ## 常见错误 {#zh-common-errors}
 
 - **传入方法本身**：应写成 `self.start_coroutine(self.run_sequence())`，末尾括号不能省略。
-- **使用 `time.sleep()`**：它会阻塞线程并冻结其他引擎工作。墙钟延时请 `yield WaitForSecondsRealtime()`。
+- **使用 `time.sleep()`**：它会阻塞线程并冻结其他引擎工作。墙钟延时请 `yield inx.WaitForSecondsRealtime()`。
 - **期待精确时间点**：等待只能在调度检查时恢复，所以指定时长是下限，可能多出一小段帧时间。
 - **期待 `WaitForSeconds` 响应暂停**：当前调度器传入的是原始更新 delta，`time_scale` 不会改变这个等待。墙钟延时用实时等待；流程必须跟随游戏时钟时，请自行累计 `Time.delta_time`。
 - **把 `WaitForEndOfFrame` 当成渲染后截图点**：当前调度器把它映射到后期更新。

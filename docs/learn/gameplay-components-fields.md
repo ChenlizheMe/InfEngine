@@ -20,49 +20,37 @@ Create `TargetReporter.py` under `Assets` and use this complete script:
 ```python
 from typing import Annotated
 
-from Infernux import Debug, GameObject
-from Infernux.components import (
-    Header,
-    InxComponent,
-    MeshRenderer,
-    Range,
-    RequiredComponent,
-    Rigidbody,
-    Tooltip,
-    component_field,
-    disallow_multiple,
-    require_component,
-)
+import infernux as inx
 
 
-@disallow_multiple
-@require_component(Rigidbody)
-class TargetReporter(InxComponent):
+@inx.disallow_multiple
+@inx.require_component(inx.Rigidbody)
+class TargetReporter(inx.InxComponent):
     speed: Annotated[
         float,
-        Header("Movement"),
-        Range(0.0, 12.0),
-        Tooltip("Maximum movement speed in units per second."),
+        inx.components.Header("Movement"),
+        inx.components.Range(0.0, 12.0),
+        inx.components.Tooltip("Maximum movement speed in units per second."),
     ] = 3.0
 
     target: Annotated[
-        GameObject,
-        Header("References"),
-        RequiredComponent("MeshRenderer"),
-        Tooltip("Target must have a MeshRenderer."),
+        inx.GameObject,
+        inx.components.Header("References"),
+        inx.components.RequiredComponent("MeshRenderer"),
+        inx.components.Tooltip("Target must have a MeshRenderer."),
     ]
 
-    body: Rigidbody = component_field(
+    body: inx.Rigidbody = inx.component_field(
         component_type="Rigidbody",
         tooltip="Rigidbody used by this reporter.",
     )
 
     def start(self) -> None:
         if self.target is None or self.body is None:
-            Debug.log_warning("TargetReporter has an unassigned reference.", self)
+            inx.Debug.log_warning("TargetReporter has an unassigned reference.", self)
             return
 
-        Debug.log(
+        inx.Debug.log(
             f"{self.game_object.name} -> {self.target.name}; speed={self.speed}",
             self,
         )
@@ -154,49 +142,37 @@ Run these checks in order:
 ```python
 from typing import Annotated
 
-from Infernux import Debug, GameObject
-from Infernux.components import (
-    Header,
-    InxComponent,
-    MeshRenderer,
-    Range,
-    RequiredComponent,
-    Rigidbody,
-    Tooltip,
-    component_field,
-    disallow_multiple,
-    require_component,
-)
+import infernux as inx
 
 
-@disallow_multiple
-@require_component(Rigidbody)
-class TargetReporter(InxComponent):
+@inx.disallow_multiple
+@inx.require_component(inx.Rigidbody)
+class TargetReporter(inx.InxComponent):
     speed: Annotated[
         float,
-        Header("Movement"),
-        Range(0.0, 12.0),
-        Tooltip("Maximum movement speed in units per second."),
+        inx.components.Header("Movement"),
+        inx.components.Range(0.0, 12.0),
+        inx.components.Tooltip("Maximum movement speed in units per second."),
     ] = 3.0
 
     target: Annotated[
-        GameObject,
-        Header("References"),
-        RequiredComponent("MeshRenderer"),
-        Tooltip("Target must have a MeshRenderer."),
+        inx.GameObject,
+        inx.components.Header("References"),
+        inx.components.RequiredComponent("MeshRenderer"),
+        inx.components.Tooltip("Target must have a MeshRenderer."),
     ]
 
-    body: Rigidbody = component_field(
+    body: inx.Rigidbody = inx.component_field(
         component_type="Rigidbody",
         tooltip="Rigidbody used by this reporter.",
     )
 
     def start(self) -> None:
         if self.target is None or self.body is None:
-            Debug.log_warning("TargetReporter has an unassigned reference.", self)
+            inx.Debug.log_warning("TargetReporter has an unassigned reference.", self)
             return
 
-        Debug.log(
+        inx.Debug.log(
             f"{self.game_object.name} -> {self.target.name}; speed={self.speed}",
             self,
         )

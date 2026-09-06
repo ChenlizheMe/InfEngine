@@ -26,7 +26,6 @@ import copy
 import threading
 import weakref
 
-from Infernux.debug import Debug
 from Infernux.lib import GameObject
 
 
@@ -40,8 +39,7 @@ class ComponentNativeMixin:
             return False
         try:
             return isinstance(game_object, GameObject) and int(game_object.id) > 0
-        except Exception as exc:
-            Debug.log_suppressed("_component_native.is_valid_game_object", exc)
+        except RuntimeError:
             return False
 
     @staticmethod
@@ -51,8 +49,7 @@ class ComponentNativeMixin:
             return False
         try:
             return int(component.component_id) > 0
-        except Exception as exc:
-            Debug.log_suppressed("_component_native.is_valid_native_component", exc)
+        except RuntimeError:
             return False
 
     def _try_get_game_object(self) -> Optional['GameObject']:
@@ -156,25 +153,10 @@ class ComponentNativeMixin:
             self._set_game_object(game_object)
 
         if cpp_component is not None:
-            try:
-                self._component_id = int(cpp_component.component_id)
-            except Exception as exc:
-                from Infernux.debug import Debug
-                Debug.log_warning(f"[InxComponent] Failed to read component_id during bind: {exc}")
-            try:
-                self._execution_order = int(cpp_component.execution_order)
-            except Exception as exc:
-                from Infernux.debug import Debug
-                Debug.log_warning(f"[InxComponent] Failed to read execution_order during bind: {exc}")
-            try:
-                self._enabled = bool(cpp_component.enabled)
-            except Exception as exc:
-                from Infernux.debug import Debug
-                Debug.log_warning(f"[InxComponent] Failed to read enabled during bind: {exc}")
-            # A coroutine may have started before the native proxy existed, or
-            # this may be a rebind to a new proxy. Do not let the cached Python
-            # publication state suppress the first authoritative update.
-            self._sync_native_coroutine_scheduler_state(force=True)
+            self._component_id = int(cpp_component.component_id)
+            self._execution_order = int(cpp_component.execution_order)
+            self._enabled = bool(cpp_component.enabled)
+            self._sync_coroutine_scheduler_state()
 
     def _sync_native_state(
         self,
@@ -203,7 +185,6 @@ class ComponentNativeMixin:
         """Invalidate native references after scene rebuild/destruction."""
         self._release_component_data_slot()
         self._cpp_component = None
-        self.__dict__.pop("_native_coroutine_scheduler_state", None)
         self._native_handle = None
         self._native_scene = None
         self._bound_structure_version = None
@@ -221,7 +202,7 @@ class ComponentNativeMixin:
         scheduler = getattr(self, '_coroutine_scheduler', None)
         if scheduler is not None:
             scheduler.stop_all()
-            self._sync_native_coroutine_scheduler_state()
+            self._sync_coroutine_scheduler_state()
             self._coroutine_scheduler = None
         self._invalidate_native_binding()
 
@@ -311,9 +292,6 @@ class ComponentNativeMixin:
         try:
             comp_id = int(cpp_component.component_id)
         except RuntimeError:
-            self._invalidate_native_binding()
-            return None
-        except Exception:
             self._invalidate_native_binding()
             return None
         if comp_id <= 0:

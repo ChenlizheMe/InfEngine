@@ -222,19 +222,19 @@ CreateTexturedComponentGizmoIconMaterial(const std::string &name, const std::str
     material->SetShader("Gizmo Icon");
 
     RenderState state;
-    state.cullMode = VK_CULL_MODE_NONE;
-    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    state.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    state.cullMode = MaterialCullMode::None;
+    state.frontFace = MaterialFrontFace::Clockwise;
+    state.topology = MaterialPrimitiveTopology::TriangleList;
     state.depthTestEnable = true;
     state.depthWriteEnable = false;
-    state.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    state.depthCompareOp = MaterialCompareOp::LessOrEqual;
     state.blendEnable = true;
-    state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    state.colorBlendOp = VK_BLEND_OP_ADD;
-    state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    state.alphaBlendOp = VK_BLEND_OP_ADD;
+    state.srcColorBlendFactor = MaterialBlendFactor::SourceAlpha;
+    state.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+    state.colorBlendOp = MaterialBlendOp::Add;
+    state.srcAlphaBlendFactor = MaterialBlendFactor::One;
+    state.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+    state.alphaBlendOp = MaterialBlendOp::Add;
     // Camera and particle icons keep their soft source edges.  The light
     // icon is authored as a binary white mask, so use a cutout there to
     // prevent bilinear sampling from creating a gray translucent fringe.
@@ -251,20 +251,20 @@ CreateTexturedComponentGizmoIconMaterial(const std::string &name, const std::str
     return material;
 }
 
-VkCompareOp ParseDepthCompareOpString(const std::string &value, VkCompareOp fallback)
+MaterialCompareOp ParseDepthCompareOpString(const std::string &value, MaterialCompareOp fallback)
 {
     if (value == "on" || value == "true" || value == "less")
-        return VK_COMPARE_OP_LESS;
+        return MaterialCompareOp::Less;
     if (value == "less_equal")
-        return VK_COMPARE_OP_LESS_OR_EQUAL;
+        return MaterialCompareOp::LessOrEqual;
     if (value == "always")
-        return VK_COMPARE_OP_ALWAYS;
+        return MaterialCompareOp::Always;
     if (value == "never")
-        return VK_COMPARE_OP_NEVER;
+        return MaterialCompareOp::Never;
     if (value == "greater")
-        return VK_COMPARE_OP_GREATER;
+        return MaterialCompareOp::Greater;
     if (value == "greater_equal")
-        return VK_COMPARE_OP_GREATER_OR_EQUAL;
+        return MaterialCompareOp::GreaterOrEqual;
     return fallback;
 }
 
@@ -292,7 +292,7 @@ bool ApplyDepthTestMeta(RenderState &renderState, const std::string &depthTest, 
         return changed;
     }
 
-    VkCompareOp newOp = ParseDepthCompareOpString(depthTest, renderState.depthCompareOp);
+    MaterialCompareOp newOp = ParseDepthCompareOpString(depthTest, renderState.depthCompareOp);
     if (newOp != renderState.depthCompareOp) {
         renderState.depthCompareOp = newOp;
         changed = true;
@@ -320,57 +320,57 @@ bool ApplyBlendMeta(RenderState &renderState, const std::string &blend, bool can
 
     if (blend == "alpha") {
         renderState.blendEnable = true;
-        renderState.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        renderState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        renderState.colorBlendOp = VK_BLEND_OP_ADD;
-        renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-        renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        renderState.alphaBlendOp = VK_BLEND_OP_ADD;
+        renderState.srcColorBlendFactor = MaterialBlendFactor::SourceAlpha;
+        renderState.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+        renderState.colorBlendOp = MaterialBlendOp::Add;
+        renderState.srcAlphaBlendFactor = MaterialBlendFactor::Zero;
+        renderState.dstAlphaBlendFactor = MaterialBlendFactor::One;
+        renderState.alphaBlendOp = MaterialBlendOp::Add;
         return true;
     }
     if (blend == "premultiply" || blend == "premultiplied" || blend == "premultiplied_alpha") {
         renderState.blendEnable = true;
-        renderState.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        renderState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        renderState.colorBlendOp = VK_BLEND_OP_ADD;
-        renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        renderState.alphaBlendOp = VK_BLEND_OP_ADD;
+        renderState.srcColorBlendFactor = MaterialBlendFactor::One;
+        renderState.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+        renderState.colorBlendOp = MaterialBlendOp::Add;
+        renderState.srcAlphaBlendFactor = MaterialBlendFactor::One;
+        renderState.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+        renderState.alphaBlendOp = MaterialBlendOp::Add;
         return true;
     }
     if (blend == "additive") {
         renderState.blendEnable = true;
-        renderState.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        renderState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        renderState.colorBlendOp = VK_BLEND_OP_ADD;
-        renderState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        renderState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        renderState.alphaBlendOp = VK_BLEND_OP_ADD;
+        renderState.srcColorBlendFactor = MaterialBlendFactor::One;
+        renderState.dstColorBlendFactor = MaterialBlendFactor::One;
+        renderState.colorBlendOp = MaterialBlendOp::Add;
+        renderState.srcAlphaBlendFactor = MaterialBlendFactor::One;
+        renderState.dstAlphaBlendFactor = MaterialBlendFactor::One;
+        renderState.alphaBlendOp = MaterialBlendOp::Add;
         return true;
     }
 
     return false;
 }
 
-VkStencilOp ParseStencilOpString(const std::string &value)
+MaterialStencilOp ParseStencilOpString(const std::string &value)
 {
     if (value == "keep")
-        return VK_STENCIL_OP_KEEP;
+        return MaterialStencilOp::Keep;
     if (value == "zero")
-        return VK_STENCIL_OP_ZERO;
+        return MaterialStencilOp::Zero;
     if (value == "replace")
-        return VK_STENCIL_OP_REPLACE;
+        return MaterialStencilOp::Replace;
     if (value == "incr" || value == "increment_clamp")
-        return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+        return MaterialStencilOp::IncrementAndClamp;
     if (value == "decr" || value == "decrement_clamp")
-        return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+        return MaterialStencilOp::DecrementAndClamp;
     if (value == "invert")
-        return VK_STENCIL_OP_INVERT;
+        return MaterialStencilOp::Invert;
     if (value == "incr_wrap" || value == "increment_wrap")
-        return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+        return MaterialStencilOp::IncrementAndWrap;
     if (value == "decr_wrap" || value == "decrement_wrap")
-        return VK_STENCIL_OP_DECREMENT_AND_WRAP;
-    return VK_STENCIL_OP_KEEP;
+        return MaterialStencilOp::DecrementAndWrap;
+    return MaterialStencilOp::Keep;
 }
 
 std::vector<std::string> SplitTrimmed(const std::string &text, char separator)
@@ -399,16 +399,16 @@ bool ApplyStencilMeta(RenderState &renderState, const std::string &stencil)
         return false;
     }
 
-    VkStencilOpState opState{};
-    opState.compareOp = ParseDepthCompareOpString(parts[0], VK_COMPARE_OP_ALWAYS);
+    MaterialStencilOpState opState{};
+    opState.compareOp = ParseDepthCompareOpString(parts[0], MaterialCompareOp::Always);
     try {
         opState.reference = static_cast<uint32_t>(std::stoi(parts[1]));
     } catch (...) {
         opState.reference = 0;
     }
-    opState.passOp = (parts.size() > 2) ? ParseStencilOpString(parts[2]) : VK_STENCIL_OP_KEEP;
-    opState.failOp = (parts.size() > 3) ? ParseStencilOpString(parts[3]) : VK_STENCIL_OP_KEEP;
-    opState.depthFailOp = (parts.size() > 4) ? ParseStencilOpString(parts[4]) : VK_STENCIL_OP_KEEP;
+    opState.passOp = (parts.size() > 2) ? ParseStencilOpString(parts[2]) : MaterialStencilOp::Keep;
+    opState.failOp = (parts.size() > 3) ? ParseStencilOpString(parts[3]) : MaterialStencilOp::Keep;
+    opState.depthFailOp = (parts.size() > 4) ? ParseStencilOpString(parts[4]) : MaterialStencilOp::Keep;
     opState.compareMask = 0xFF;
     opState.writeMask = 0xFF;
 
@@ -431,14 +431,13 @@ bool RenderState::operator==(const RenderState &other) const
            depthBiasSlopeFactor == other.depthBiasSlopeFactor && depthBiasClamp == other.depthBiasClamp &&
            topology == other.topology && depthTestEnable == other.depthTestEnable &&
            depthWriteEnable == other.depthWriteEnable && depthCompareOp == other.depthCompareOp &&
-           stencilTestEnable == other.stencilTestEnable &&
-           std::memcmp(&stencilFront, &other.stencilFront, sizeof(VkStencilOpState)) == 0 &&
-           std::memcmp(&stencilBack, &other.stencilBack, sizeof(VkStencilOpState)) == 0 &&
-           blendEnable == other.blendEnable && srcColorBlendFactor == other.srcColorBlendFactor &&
-           dstColorBlendFactor == other.dstColorBlendFactor && srcAlphaBlendFactor == other.srcAlphaBlendFactor &&
-           dstAlphaBlendFactor == other.dstAlphaBlendFactor && colorBlendOp == other.colorBlendOp &&
-           alphaBlendOp == other.alphaBlendOp && alphaClipEnabled == other.alphaClipEnabled &&
-           alphaClipThreshold == other.alphaClipThreshold && renderQueue == other.renderQueue;
+           stencilTestEnable == other.stencilTestEnable && stencilFront == other.stencilFront &&
+           stencilBack == other.stencilBack && blendEnable == other.blendEnable &&
+           srcColorBlendFactor == other.srcColorBlendFactor && dstColorBlendFactor == other.dstColorBlendFactor &&
+           srcAlphaBlendFactor == other.srcAlphaBlendFactor && dstAlphaBlendFactor == other.dstAlphaBlendFactor &&
+           colorBlendOp == other.colorBlendOp && alphaBlendOp == other.alphaBlendOp &&
+           alphaClipEnabled == other.alphaClipEnabled && alphaClipThreshold == other.alphaClipThreshold &&
+           renderQueue == other.renderQueue;
 }
 
 size_t RenderState::Hash() const
@@ -539,6 +538,14 @@ InxMaterial::InxMaterial(const InxMaterial &other)
     // GPU-transient state must never be copied across logical material instances.
 }
 
+void InxMaterial::ResetRenderStateAuthorship()
+{
+    if (m_renderStateOverrides == 0)
+        return;
+    m_renderStateOverrides = 0;
+    m_pipelineDirty = true;
+}
+
 InxMaterial &InxMaterial::operator=(const InxMaterial &other)
 {
     if (this == &other) {
@@ -559,9 +566,11 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
 
     // Reset runtime-only GPU state so this instance cannot retain stale handles.
     ClearAllPassPipelines();
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     m_uboBuffer = VK_NULL_HANDLE;
     m_uboAllocator = VK_NULL_HANDLE;
     m_uboAllocation = VK_NULL_HANDLE;
+#endif
     m_uboMappedData = nullptr;
     m_pipelineDirty = true;
     m_propertiesDirty = true;
@@ -813,11 +822,11 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
             assign(m_renderState.renderQueue, defaults.renderQueue);
 
         assign(m_renderState.stencilTestEnable, defaults.stencilTestEnable);
-        if (std::memcmp(&m_renderState.stencilFront, &defaults.stencilFront, sizeof(VkStencilOpState)) != 0) {
+        if (m_renderState.stencilFront != defaults.stencilFront) {
             m_renderState.stencilFront = defaults.stencilFront;
             changed = true;
         }
-        if (std::memcmp(&m_renderState.stencilBack, &defaults.stencilBack, sizeof(VkStencilOpState)) != 0) {
+        if (m_renderState.stencilBack != defaults.stencilBack) {
             m_renderState.stencilBack = defaults.stencilBack;
             changed = true;
         }
@@ -829,13 +838,13 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
 
     // Cull: none / front / back. Skip when the material overrides CullMode.
     if (!cullMode.empty() && !HasOverride(RenderStateOverride::CullMode)) {
-        VkCullModeFlags newCull = m_renderState.cullMode;
+        MaterialCullMode newCull = m_renderState.cullMode;
         if (cullMode == "none" || cullMode == "off")
-            newCull = VK_CULL_MODE_NONE;
+            newCull = MaterialCullMode::None;
         else if (cullMode == "front")
-            newCull = VK_CULL_MODE_FRONT_BIT;
+            newCull = MaterialCullMode::Front;
         else if (cullMode == "back")
-            newCull = VK_CULL_MODE_BACK_BIT;
+            newCull = MaterialCullMode::Back;
         if (newCull != m_renderState.cullMode) {
             m_renderState.cullMode = newCull;
             changed = true;
@@ -945,7 +954,7 @@ nlohmann::json InxMaterial::SerializeDocument() const
     rs["renderQueue"] = m_renderState.renderQueue;
     rs["stencilTestEnable"] = m_renderState.stencilTestEnable;
     if (m_renderState.stencilTestEnable) {
-        auto stencilOpToJson = [](const VkStencilOpState &op) {
+        auto stencilOpToJson = [](const MaterialStencilOpState &op) {
             json s;
             s["failOp"] = static_cast<int>(op.failOp);
             s["passOp"] = static_cast<int>(op.passOp);
@@ -1124,25 +1133,25 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &document)
         m_fragmentShader = DeserializeShaderReference(shaders["fragment"]);
 
         const auto &rs = j["renderState"];
-        m_renderState.cullMode = static_cast<VkCullModeFlags>(rs["cullMode"].get<int>());
-        m_renderState.frontFace = static_cast<VkFrontFace>(rs["frontFace"].get<int>());
-        m_renderState.polygonMode = static_cast<VkPolygonMode>(rs["polygonMode"].get<int>());
+        m_renderState.cullMode = static_cast<MaterialCullMode>(rs["cullMode"].get<int>());
+        m_renderState.frontFace = static_cast<MaterialFrontFace>(rs["frontFace"].get<int>());
+        m_renderState.polygonMode = static_cast<MaterialPolygonMode>(rs["polygonMode"].get<int>());
         m_renderState.lineWidth = rs["lineWidth"].get<float>();
         m_renderState.depthBiasEnable = rs["depthBiasEnable"].get<bool>();
         m_renderState.depthBiasConstantFactor = rs["depthBiasConstantFactor"].get<float>();
         m_renderState.depthBiasSlopeFactor = rs["depthBiasSlopeFactor"].get<float>();
         m_renderState.depthBiasClamp = rs["depthBiasClamp"].get<float>();
-        m_renderState.topology = static_cast<VkPrimitiveTopology>(rs["topology"].get<int>());
+        m_renderState.topology = static_cast<MaterialPrimitiveTopology>(rs["topology"].get<int>());
         m_renderState.depthTestEnable = rs["depthTestEnable"].get<bool>();
         m_renderState.depthWriteEnable = rs["depthWriteEnable"].get<bool>();
-        m_renderState.depthCompareOp = static_cast<VkCompareOp>(rs["depthCompareOp"].get<int>());
+        m_renderState.depthCompareOp = static_cast<MaterialCompareOp>(rs["depthCompareOp"].get<int>());
         m_renderState.blendEnable = rs["blendEnable"].get<bool>();
-        m_renderState.srcColorBlendFactor = static_cast<VkBlendFactor>(rs["srcColorBlendFactor"].get<int>());
-        m_renderState.dstColorBlendFactor = static_cast<VkBlendFactor>(rs["dstColorBlendFactor"].get<int>());
-        m_renderState.colorBlendOp = static_cast<VkBlendOp>(rs["colorBlendOp"].get<int>());
-        m_renderState.srcAlphaBlendFactor = static_cast<VkBlendFactor>(rs["srcAlphaBlendFactor"].get<int>());
-        m_renderState.dstAlphaBlendFactor = static_cast<VkBlendFactor>(rs["dstAlphaBlendFactor"].get<int>());
-        m_renderState.alphaBlendOp = static_cast<VkBlendOp>(rs["alphaBlendOp"].get<int>());
+        m_renderState.srcColorBlendFactor = static_cast<MaterialBlendFactor>(rs["srcColorBlendFactor"].get<int>());
+        m_renderState.dstColorBlendFactor = static_cast<MaterialBlendFactor>(rs["dstColorBlendFactor"].get<int>());
+        m_renderState.colorBlendOp = static_cast<MaterialBlendOp>(rs["colorBlendOp"].get<int>());
+        m_renderState.srcAlphaBlendFactor = static_cast<MaterialBlendFactor>(rs["srcAlphaBlendFactor"].get<int>());
+        m_renderState.dstAlphaBlendFactor = static_cast<MaterialBlendFactor>(rs["dstAlphaBlendFactor"].get<int>());
+        m_renderState.alphaBlendOp = static_cast<MaterialBlendOp>(rs["alphaBlendOp"].get<int>());
         m_renderState.alphaClipEnabled = rs["alphaClipEnabled"].get<bool>();
         m_renderState.alphaClipThreshold = rs["alphaClipThreshold"].get<float>();
         m_renderState.renderQueue = rs["renderQueue"].get<int32_t>();
@@ -1151,11 +1160,11 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &document)
         m_renderState.stencilBack = {};
         if (m_renderState.stencilTestEnable) {
             const auto jsonToStencilOp = [](const json &state) {
-                VkStencilOpState result{};
-                result.failOp = static_cast<VkStencilOp>(state["failOp"].get<int>());
-                result.passOp = static_cast<VkStencilOp>(state["passOp"].get<int>());
-                result.depthFailOp = static_cast<VkStencilOp>(state["depthFailOp"].get<int>());
-                result.compareOp = static_cast<VkCompareOp>(state["compareOp"].get<int>());
+                MaterialStencilOpState result{};
+                result.failOp = static_cast<MaterialStencilOp>(state["failOp"].get<int>());
+                result.passOp = static_cast<MaterialStencilOp>(state["passOp"].get<int>());
+                result.depthFailOp = static_cast<MaterialStencilOp>(state["depthFailOp"].get<int>());
+                result.compareOp = static_cast<MaterialCompareOp>(state["compareOp"].get<int>());
                 result.compareMask = state["compareMask"].get<uint32_t>();
                 result.writeMask = state["writeMask"].get<uint32_t>();
                 result.reference = state["reference"].get<uint32_t>();
@@ -1248,8 +1257,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLit()
 
     // Default lit opaque render state
     RenderState state;
-    state.cullMode = VK_CULL_MODE_BACK_BIT;
-    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.cullMode = MaterialCullMode::Back;
+    state.frontFace = MaterialFrontFace::Clockwise;
     state.depthTestEnable = true;
     state.depthWriteEnable = true;
     state.blendEnable = false;
@@ -1281,8 +1290,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultUnlit()
 
     // Default unlit opaque render state
     RenderState state;
-    state.cullMode = VK_CULL_MODE_BACK_BIT;
-    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.cullMode = MaterialCullMode::Back;
+    state.frontFace = MaterialFrontFace::Clockwise;
     state.depthTestEnable = true;
     state.depthWriteEnable = true;
     state.blendEnable = false;
@@ -1295,6 +1304,40 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultUnlit()
     return material;
 }
 
+std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLineMaterial()
+{
+    auto material = std::make_shared<InxMaterial>("DefaultLineMaterial");
+    material->SetVertShader("Standard");
+    material->SetFragShader("Unlit");
+
+    // A camera-facing ribbon is not a closed surface: both windings must be
+    // visible. Line colour alpha is carried per vertex, so the default also
+    // needs the conventional transparent blend state instead of DefaultLit's
+    // opaque depth-writing state.
+    RenderState state;
+    state.cullMode = MaterialCullMode::None;
+    state.frontFace = MaterialFrontFace::Clockwise;
+    state.depthTestEnable = true;
+    state.depthWriteEnable = false;
+    state.blendEnable = true;
+    state.srcColorBlendFactor = MaterialBlendFactor::SourceAlpha;
+    state.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+    state.colorBlendOp = MaterialBlendOp::Add;
+    state.srcAlphaBlendFactor = MaterialBlendFactor::One;
+    state.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+    state.alphaBlendOp = MaterialBlendOp::Add;
+    state.renderQueue = 3000;
+    // SetRenderState claims authorship of every field, so the "Unlit" surface
+    // shader's annotation defaults (Cull Back, Queue 2000) can never replace
+    // this state. Back-face culling in particular would delete every section
+    // of a trail that folds back on itself (reversed winding) and flicker the
+    // live tip as its winding flips frame to frame.
+    material->SetRenderState(state);
+    material->SetColor("baseColor", glm::vec4(1.0f));
+    material->SetBuiltin(true);
+    return material;
+}
+
 std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
 {
     auto material = std::make_shared<InxMaterial>("ParticleSpriteMaterial");
@@ -1302,17 +1345,17 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSpriteMaterial()
     material->SetFragShader("Particle Unlit");
 
     RenderState state;
-    state.cullMode = VK_CULL_MODE_NONE;
-    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.cullMode = MaterialCullMode::None;
+    state.frontFace = MaterialFrontFace::Clockwise;
     state.depthTestEnable = true;
     state.depthWriteEnable = false;
     state.blendEnable = true;
-    state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    state.colorBlendOp = VK_BLEND_OP_ADD;
-    state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    state.alphaBlendOp = VK_BLEND_OP_ADD;
+    state.srcColorBlendFactor = MaterialBlendFactor::SourceAlpha;
+    state.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+    state.colorBlendOp = MaterialBlendOp::Add;
+    state.srcAlphaBlendFactor = MaterialBlendFactor::One;
+    state.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+    state.alphaBlendOp = MaterialBlendOp::Add;
     state.renderQueue = 3000;
     material->SetRenderState(state);
     material->SetColor("baseColor", glm::vec4(1.0f));
@@ -1329,17 +1372,17 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateParticleSixWaySmokeMaterial()
     material->SetFragShader("Particle Six-Way Smoke");
 
     RenderState state;
-    state.cullMode = VK_CULL_MODE_NONE;
-    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.cullMode = MaterialCullMode::None;
+    state.frontFace = MaterialFrontFace::Clockwise;
     state.depthTestEnable = true;
     state.depthWriteEnable = false;
     state.blendEnable = true;
-    state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    state.colorBlendOp = VK_BLEND_OP_ADD;
-    state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    state.alphaBlendOp = VK_BLEND_OP_ADD;
+    state.srcColorBlendFactor = MaterialBlendFactor::One;
+    state.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+    state.colorBlendOp = MaterialBlendOp::Add;
+    state.srcAlphaBlendFactor = MaterialBlendFactor::One;
+    state.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+    state.alphaBlendOp = MaterialBlendOp::Add;
     state.renderQueue = 3000;
     material->SetRenderState(state);
 
@@ -1373,8 +1416,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGizmoMaterial()
 
     // Gizmo render state: no culling (double-sided), depth test, depth write
     RenderState state;
-    state.cullMode = VK_CULL_MODE_NONE; // Double-sided for grid visibility
-    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.cullMode = MaterialCullMode::None; // Double-sided for grid visibility
+    state.frontFace = MaterialFrontFace::Clockwise;
     state.depthTestEnable = true;
     state.depthWriteEnable = true;
     state.blendEnable = false;
@@ -1392,11 +1435,11 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGridMaterial()
 
     // Grid render state: double-sided, alpha-blended, depth test but no depth write
     RenderState state;
-    state.cullMode = VK_CULL_MODE_NONE;
-    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.cullMode = MaterialCullMode::None;
+    state.frontFace = MaterialFrontFace::Clockwise;
     state.depthTestEnable = true;
     state.depthWriteEnable = false; // Transparent — don't write depth
-    state.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    state.depthCompareOp = MaterialCompareOp::LessOrEqual;
     // Keep only a tiny constant bias. Slope-scaled bias explodes at grazing
     // angles when the editor camera is close to the XZ plane, which produces
     // driver-dependent stair-step artifacts on older AMD GPUs.
@@ -1405,14 +1448,14 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateGridMaterial()
     state.depthBiasSlopeFactor = 0.0f;
     state.depthBiasClamp = 0.0f;
     state.blendEnable = true;
-    state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    state.colorBlendOp = VK_BLEND_OP_ADD;
+    state.srcColorBlendFactor = MaterialBlendFactor::SourceAlpha;
+    state.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+    state.colorBlendOp = MaterialBlendOp::Add;
     // Alpha channel: preserve destination alpha (1.0 from opaques/skybox) so
     // the scene texture stays fully opaque when displayed in ImGui viewport.
-    state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    state.alphaBlendOp = VK_BLEND_OP_ADD;
+    state.srcAlphaBlendFactor = MaterialBlendFactor::Zero;
+    state.dstAlphaBlendFactor = MaterialBlendFactor::One;
+    state.alphaBlendOp = MaterialBlendOp::Add;
     state.renderQueue = 20001; // Editor gizmo layer (20001-25000), renders after all user passes
     material->SetRenderState(state);
 
@@ -1434,8 +1477,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateEditorToolsMaterial()
 
     // Editor tools render state: always on top (no depth test), double-sided
     RenderState state;
-    state.cullMode = VK_CULL_MODE_NONE;
-    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.cullMode = MaterialCullMode::None;
+    state.frontFace = MaterialFrontFace::Clockwise;
     state.depthTestEnable = false;  // Render on top of everything
     state.depthWriteEnable = false; // Don't affect depth buffer
     state.blendEnable = false;
@@ -1456,9 +1499,9 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmosMaterial()
 
     // Component gizmos: depth-tested (occluded by scene geometry), double-sided, LINE topology
     RenderState state;
-    state.cullMode = VK_CULL_MODE_NONE;
-    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
-    state.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    state.cullMode = MaterialCullMode::None;
+    state.frontFace = MaterialFrontFace::Clockwise;
+    state.topology = MaterialPrimitiveTopology::LineList;
     state.depthTestEnable = true;
     state.depthWriteEnable = false; // Don't affect depth buffer
     state.blendEnable = false;
@@ -1506,11 +1549,11 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateSkyboxProceduralMaterial()
     // - renderQueue = EngineConfig::skyboxQueue (last; after opaque+transparent
     //   and outside the shadow-caster range so it never casts shadows)
     RenderState state;
-    state.cullMode = VK_CULL_MODE_BACK_BIT;
-    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.cullMode = MaterialCullMode::Back;
+    state.frontFace = MaterialFrontFace::Clockwise;
     state.depthTestEnable = true;
     state.depthWriteEnable = false;
-    state.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    state.depthCompareOp = MaterialCompareOp::LessOrEqual;
     state.blendEnable = false;
     state.renderQueue = EngineConfig::Get().skyboxQueue; // After all opaque/transparent, outside shadow caster range
     material->SetRenderState(state);
@@ -1538,8 +1581,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateErrorMaterial()
 
     // Double-sided so the error pattern is visible from all angles
     RenderState state;
-    state.cullMode = VK_CULL_MODE_NONE;
-    state.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    state.cullMode = MaterialCullMode::None;
+    state.frontFace = MaterialFrontFace::Clockwise;
     state.depthTestEnable = true;
     state.depthWriteEnable = true;
     state.blendEnable = false;

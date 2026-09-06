@@ -66,19 +66,9 @@ def _find_py_ordinal(object_id: int, py_comp: Any) -> int:
 
 
 def _resolve_live_py(obj, type_name: str, script_guid: str, type_guid: str,
-                     ordinal: int, fallback: Any = None):
-    live = _get_nth_live_py_component(obj.id, type_name, ordinal, script_guid, type_guid)
-    if live is not None:
-        return live
-    if fallback is None:
-        return None
-    try:
-        for current in obj.get_py_components():
-            if current is fallback:
-                return current
-    except Exception as exc:
-        Debug.log_suppressed("undo._component_commands._resolve_live_py.fallback_lookup", exc)
-    return None
+                     ordinal: int):
+    """Resolve a live Python component by its GUID-anchored identity only."""
+    return _get_nth_live_py_component(obj.id, type_name, ordinal, script_guid, type_guid)
 
 
 def _instantiate_py_snapshot(type_name: str, script_guid: str, type_guid: str,
@@ -196,9 +186,9 @@ def _add_native_from_snapshot(object_id: int, type_name: str,
 
 
 def _snapshot_and_remove_py(object_id: int, type_name: str, script_guid: str, type_guid: str,
-                            ordinal: int, py_comp_ref: Any, label: str):
+                            ordinal: int, label: str):
     _scene, obj = _require_scene_object(object_id, label)
-    live = _resolve_live_py(obj, type_name, script_guid, type_guid, ordinal, py_comp_ref)
+    live = _resolve_live_py(obj, type_name, script_guid, type_guid, ordinal)
     if live is None:
         raise RuntimeError(f"[Undo] {label}: component not found")
     fields_json = _snapshot_py_fields(live)
@@ -655,7 +645,7 @@ class AddPyComponentCommand(UndoCommand):
         fj, en, live = _snapshot_and_remove_py(
             self._object_id, self._type_name_str, self._script_guid,
             self._type_guid,
-            self._ordinal, self._py_comp_ref,
+            self._ordinal,
             f"AddPy('{self._type_name_str}').undo")
         self._fields_json, self._enabled, self._py_comp_ref = fj, en, live
 
@@ -702,7 +692,7 @@ class RemovePyComponentCommand(UndoCommand):
         fj, en, live = _snapshot_and_remove_py(
             self._object_id, self._type_name_str, self._script_guid,
             self._type_guid,
-            self._ordinal, self._py_comp_ref,
+            self._ordinal,
             f"RemovePy('{self._type_name_str}')")
         self._fields_json, self._enabled, self._py_comp_ref = fj, en, live
 

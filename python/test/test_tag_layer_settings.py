@@ -134,6 +134,10 @@ class _LayerContext:
     def get_content_region_avail_width():
         return 300.0
 
+    @staticmethod
+    def get_dpi_scale():
+        return 1.0
+
     def text_input(self, _label, value, _maximum):
         if value == "OldName" and self.replacement is not None:
             return self.replacement

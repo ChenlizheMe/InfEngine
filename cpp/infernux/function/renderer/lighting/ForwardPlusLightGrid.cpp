@@ -102,7 +102,7 @@ bool ForwardPlusLightGrid::Initialize(rhi::Device &device, uint32_t framesInFlig
     consumerLayoutDesc.entryCount = 3;
     m_consumerLayout = device.CreateBindingLayout(consumerLayoutDesc);
 
-    const auto shader = device.CreateShaderModule({program.words, program.wordCount});
+    const auto shader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(program.words, program.wordCount));
     if (m_layout.IsValid() && m_consumerLayout.IsValid() && shader.IsValid()) {
         rhi::ComputePipelineDesc pipelineDesc;
         pipelineDesc.computeShader = shader;
@@ -331,6 +331,11 @@ void main() {
     for (uint word = gl_LocalInvocationIndex; word < pc.domain_mask_words.y; word += gl_WorkGroupSize.x) {
         tile_light_masks[offset + word] = 0u;
     }
+    // barrier() only synchronizes invocation progress. SSBO writes require an
+    // explicit buffer-memory barrier before another invocation in the same
+    // workgroup can safely feed the cleared words to atomicOr. Desktop drivers
+    // commonly hide this omission; tiled mobile GPUs do not.
+    memoryBarrierBuffer();
     barrier();
 
     uint directional_count = counts_generation.x;
@@ -341,6 +346,7 @@ void main() {
         if ((light.metadata.w & pc.domain_mask_words.x) == 0u || !overlaps_tile(light, tile)) continue;
         atomicOr(tile_light_masks[offset + (local_index >> 5u)], 1u << (local_index & 31u));
     }
+    memoryBarrierBuffer();
     barrier();
     if (gl_LocalInvocationIndex == 0u) {
         if (tile_index == 0u) {

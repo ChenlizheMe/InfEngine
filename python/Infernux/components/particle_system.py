@@ -14,7 +14,12 @@ import time
 from enum import Enum
 from typing import Optional
 
-import numpy as np
+try:
+    import numpy as np
+except ModuleNotFoundError as exc:
+    if exc.name != "numpy":
+        raise
+    np = None
 
 from Infernux.application import Application
 from Infernux.core.asset_ref import ParticleGraphRef
@@ -25,7 +30,7 @@ from Infernux.graph import (
     ValueType,
     builtin_mesh_name,
 )
-from Infernux.graph.ramp import Curve, Gradient
+from Infernux.graph.ramp import AnimationCurve, Gradient
 from Infernux.particle import (
     GpuParticleEmitterController,
     EmitterShapeKind,
@@ -696,14 +701,14 @@ class ParticleSystem(InxComponent):
         )
         return AssetReference.from_dict(value)
 
-    def set_curve(self, name: str, value: Curve | dict) -> None:
+    def set_curve(self, name: str, value: AnimationCurve | dict) -> None:
         self._set_typed_parameter(name, value, ValueType.CURVE)
 
-    def get_curve(self, name: str) -> Curve:
+    def get_curve(self, name: str) -> AnimationCurve:
         value = self._get_typed_parameter(
-            name, ValueType.CURVE, Curve().to_dict()
+            name, ValueType.CURVE, AnimationCurve().to_dict()
         )
-        return Curve.from_dict(value)
+        return AnimationCurve.from_dict(value)
 
     def set_gradient(self, name: str, value: Gradient | dict) -> None:
         self._set_typed_parameter(name, value, ValueType.GRADIENT)
@@ -886,6 +891,26 @@ class ParticleSystem(InxComponent):
             "events": self.runtime_event_schema(),
             "emitters": emitters,
         }
+
+    @property
+    def is_resident(self) -> bool:
+        """Whether this system currently owns valid native GPU runtime state."""
+        return bool(self.runtime_diagnostics()["resident"])
+
+    @property
+    def is_playing(self) -> bool:
+        """Whether at least one enabled resident emitter is advancing."""
+        return bool(self.runtime_diagnostics()["playing"])
+
+    @property
+    def time(self) -> float:
+        """Authoritative graph simulation time in seconds."""
+        return int(getattr(self, "_graph_simulation_time_ticks", 0)) / 1_000_000_000.0
+
+    @property
+    def last_compile_error(self) -> str:
+        """Most recent graph compilation error, or an empty string."""
+        return str(self._last_compile_error)
 
     def request_gpu_diagnostics(
         self, sample_frames: int = 60, state_sample_count: int = 0
@@ -1246,7 +1271,7 @@ class ParticleSystem(InxComponent):
                 # paused still refreshes world-space particles without building
                 # controllers, bounds, and a full batch every frame.
                 emitter_to_world = self._emitter_matrix()
-                if self._emitter_to_world_cache is not None and np.array_equal(
+                if self._emitter_to_world_cache is not None and self._matrix_equal(
                     emitter_to_world, self._emitter_to_world_cache
                 ):
                     return
@@ -1616,78 +1641,58 @@ class ParticleSystem(InxComponent):
                 )
             guid = getattr(graph_ref, "guid", "")
             editor_source = Application.is_editor() and os.path.isfile(path)
-            artifact = ParticleArtifactRegistry.get(path, guid=guid)
-            recovery_attempted = False
-            if artifact is None:
-                runtime_load_error = None
-                try:
+            if editor_source:
+                artifact = ParticleArtifactRegistry.compile_path(path, guid=guid)
+            else:
+                artifact = ParticleArtifactRegistry.get(path, guid=guid)
+                if artifact is None:
                     artifact = ParticleArtifactRegistry.load_runtime_reference(
                         path, guid=guid
                     )
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                    runtime_load_error = exc
-                if artifact is None:
-                    if editor_source:
-                        artifact = ParticleArtifactRegistry.compile_path(
-                            path, guid=guid, force_recompile=True
-                        )
-                        recovery_attempted = True
-                    elif runtime_load_error is not None:
-                        raise runtime_load_error
             if artifact is None:
                 raise RuntimeError(
                     "ParticleGraph AOT artifact is missing or stale; save the "
                     "ParticleGraph before Play"
                 )
 
-            while True:
-                try:
-                    metadata, kernel, decoded_emitters = (
-                        ParticleArtifactRegistry.decode_runtime_artifact(artifact)
+            metadata, kernel, decoded_emitters = (
+                ParticleArtifactRegistry.decode_runtime_artifact(artifact)
+            )
+            revision = artifact.revision
+            source_key = artifact.source_key
+            self._reconcile_parameter_overrides(metadata.parameters)
+            self._reconcile_emitter_overrides(metadata.emitters)
+            previous_metadata = getattr(self, "_particle_metadata", None)
+            previous_kernel = getattr(self, "_particle_kernel", None)
+            reload_compatibility = [None] * len(metadata.emitters)
+            if previous_metadata is not None and previous_kernel is not None:
+                previous_emitters = {
+                    emitter.stable_id: (emitter, kernel_emitter)
+                    for emitter, kernel_emitter in (
+                        zip(previous_metadata.emitters, previous_kernel.emitters)
                     )
-                    revision = artifact.revision
-                    source_key = artifact.source_key
-                    self._reconcile_parameter_overrides(metadata.parameters)
-                    self._reconcile_emitter_overrides(metadata.emitters)
-                    previous_metadata = getattr(self, "_particle_metadata", None)
-                    previous_kernel = getattr(self, "_particle_kernel", None)
-                    reload_compatibility = [None] * len(metadata.emitters)
-                    if previous_metadata is not None and previous_kernel is not None:
-                        previous_emitters = {
-                            emitter.stable_id: (emitter, kernel_emitter)
-                            for emitter, kernel_emitter in (
-                                zip(previous_metadata.emitters, previous_kernel.emitters)
-                            )
-                        }
-                        for emitter_index, (emitter, kernel_emitter) in enumerate(
-                            zip(metadata.emitters, kernel.emitters)
-                        ):
-                            previous = previous_emitters.get(emitter.stable_id)
-                            if previous is None:
-                                continue
-                            previous_emitter, previous_kernel_emitter = previous
-                            compatibility = classify_emitter_update(
-                                previous_kernel_emitter,
-                                kernel_emitter,
-                                previous_emitter.settings,
-                                emitter.settings,
-                            )
-                            reload_compatibility[emitter_index] = compatibility
-                    self._publish_gpu_particle_graph(
-                        artifact,
-                        metadata,
-                        kernel,
-                        reload_compatibility,
-                        decoded_emitters,
+                }
+                for emitter_index, (emitter, kernel_emitter) in enumerate(
+                    zip(metadata.emitters, kernel.emitters)
+                ):
+                    previous = previous_emitters.get(emitter.stable_id)
+                    if previous is None:
+                        continue
+                    previous_emitter, previous_kernel_emitter = previous
+                    compatibility = classify_emitter_update(
+                        previous_kernel_emitter,
+                        kernel_emitter,
+                        previous_emitter.settings,
+                        emitter.settings,
                     )
-                    break
-                except (OSError, RuntimeError, TypeError, ValueError):
-                    if recovery_attempted or not editor_source:
-                        raise
-                    artifact = ParticleArtifactRegistry.compile_path(
-                        path, guid=guid, force_recompile=True
-                    )
-                    recovery_attempted = True
+                    reload_compatibility[emitter_index] = compatibility
+            self._publish_gpu_particle_graph(
+                artifact,
+                metadata,
+                kernel,
+                reload_compatibility,
+                decoded_emitters,
+            )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._report_compile_failure(exc)
             return False
@@ -1874,6 +1879,7 @@ class ParticleSystem(InxComponent):
                     "owner_object_id": int(self.game_object.id),
                     "owner_layer_mask": 1 << int(self.game_object.layer),
                     "artifact_revision": artifact.revision,
+                    "kernel_hash": glsl_emitter["kernel_hash"],
                     "stable_id": emitter.stable_id,
                     "capacity": emitter.settings.capacity,
                     "state_stride": glsl_emitter["state_stride"],
@@ -2049,14 +2055,17 @@ class ParticleSystem(InxComponent):
         if native is None or metadata is None:
             return
         emitter_to_world = self._emitter_matrix()
-        if self._emitter_to_world_cache is None or not np.array_equal(
+        if self._emitter_to_world_cache is None or not self._matrix_equal(
             emitter_to_world, self._emitter_to_world_cache
         ):
             self._emitter_to_world_cache = emitter_to_world
             self._gpu_transform_buffers = {}
 
         frame_items = []
-        emitter_position = tuple(float(value) for value in emitter_to_world[0:3, 3])
+        if np is None:
+            emitter_position = tuple(float(emitter_to_world[index]) for index in (12, 13, 14))
+        else:
+            emitter_position = tuple(float(value) for value in emitter_to_world[0:3, 3])
         bounds_mode, manual_bounds_lower, manual_bounds_upper = (
             self._gpu_bounds_request(emitter_to_world)
         )
@@ -2282,9 +2291,7 @@ class ParticleSystem(InxComponent):
             remaining = max(0.0, remaining - delta_time)
         return result
 
-    def _gpu_bounds_request(
-        self, emitter_to_world: np.ndarray
-    ) -> tuple[str, list[float], list[float]]:
+    def _gpu_bounds_request(self, emitter_to_world) -> tuple[str, list[float], list[float]]:
         raw_mode = get_raw_field_value(self, "bounds_mode")
         try:
             mode = (
@@ -2299,14 +2306,44 @@ class ParticleSystem(InxComponent):
 
         center_value = get_raw_field_value(self, "manual_bounds_center")
         size_value = get_raw_field_value(self, "manual_bounds_size")
-        center = np.asarray(
-            [center_value.x, center_value.y, center_value.z], dtype=np.float32
-        )
-        half_size = np.abs(
-            np.asarray([size_value.x, size_value.y, size_value.z], dtype=np.float32)
-        ) * np.float32(0.5)
-        if not np.all(np.isfinite(center)) or not np.all(np.isfinite(half_size)):
+        center_values = tuple(float(value) for value in (center_value.x, center_value.y, center_value.z))
+        half_size_values = tuple(abs(float(value)) * 0.5 for value in (size_value.x, size_value.y, size_value.z))
+        if not all(math.isfinite(value) for value in center_values + half_size_values):
             raise ValueError("particle manual bounds must contain finite values")
+
+        if np is None:
+            matrix = tuple(float(value) for value in emitter_to_world)
+            world_corners = []
+            for sx, sy, sz in (
+                (-1.0, -1.0, -1.0),
+                (-1.0, -1.0, 1.0),
+                (-1.0, 1.0, -1.0),
+                (-1.0, 1.0, 1.0),
+                (1.0, -1.0, -1.0),
+                (1.0, -1.0, 1.0),
+                (1.0, 1.0, -1.0),
+                (1.0, 1.0, 1.0),
+            ):
+                x = center_values[0] + sx * half_size_values[0]
+                y = center_values[1] + sy * half_size_values[1]
+                z = center_values[2] + sz * half_size_values[2]
+                world_corners.append(
+                    (
+                        matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
+                        matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
+                        matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14],
+                    )
+                )
+            if not all(math.isfinite(value) for corner in world_corners for value in corner):
+                raise ValueError("particle manual bounds transform produced non-finite values")
+            return (
+                mode.value,
+                [min(corner[axis] for corner in world_corners) for axis in range(3)],
+                [max(corner[axis] for corner in world_corners) for axis in range(3)],
+            )
+
+        center = np.asarray(center_values, dtype=np.float32)
+        half_size = np.asarray(half_size_values, dtype=np.float32)
 
         signs = np.asarray(
             [
@@ -2652,17 +2689,42 @@ class ParticleSystem(InxComponent):
         loaded = self._load_saved_artifact(force=had_controllers)
         return bool(loaded and self._gpu_runtime_resident()), bool(loaded)
 
-    def _emitter_matrix(self) -> np.ndarray:
+    @staticmethod
+    def _matrix_equal(left, right) -> bool:
+        if np is None:
+            return tuple(left) == tuple(right)
+        return bool(np.array_equal(left, right))
+
+    def _emitter_matrix(self):
         flat = self.transform.local_to_world_matrix()
+        if np is None:
+            return tuple(float(value) for value in flat)
         return np.asarray(flat, dtype=np.float32).reshape((4, 4), order="F")
 
-    def _gpu_transform_buffer(self, local_simulation: bool) -> np.ndarray:
+    def _gpu_transform_buffer(self, local_simulation: bool):
         cached = self._gpu_transform_buffers.get(local_simulation)
         if cached is not None:
             return cached
         emitter_to_world = self._emitter_to_world_cache
         if emitter_to_world is None:
             emitter_to_world = self._emitter_matrix()
+        if np is None:
+            emitter_values = tuple(float(value) for value in emitter_to_world)
+            world_to_emitter = tuple(
+                float(value) for value in self.transform.world_to_local_matrix()
+            )
+            identity = (
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            )
+            simulation_to_world = emitter_values if local_simulation else identity
+            world_to_simulation = world_to_emitter if local_simulation else identity
+            result = emitter_values + world_to_emitter + simulation_to_world + world_to_simulation
+            self._gpu_transform_buffers[local_simulation] = result
+            return result
+
         try:
             world_to_emitter = np.linalg.inv(emitter_to_world).astype(np.float32)
         except np.linalg.LinAlgError:
@@ -3387,7 +3449,11 @@ class ParticleSystem(InxComponent):
         kind = parameter.value_type.value_type
         if kind is ValueType.CURVE:
             try:
-                curve = value if isinstance(value, Curve) else Curve.from_dict(value)
+                curve = (
+                    value
+                    if isinstance(value, AnimationCurve)
+                    else AnimationCurve.from_dict(value)
+                )
             except (TypeError, ValueError) as exc:
                 raise TypeError(
                     f"particle parameter {parameter.name!r} requires a Curve"
@@ -3484,6 +3550,11 @@ class ParticleSystem(InxComponent):
 
     @staticmethod
     def _native_engine():
+        from Infernux.runtime_services import get_runtime_service
+
+        service = get_runtime_service("gpu-particles")
+        if service is not None:
+            return service
         from Infernux.application import Application
 
         engine = Application._current_engine()

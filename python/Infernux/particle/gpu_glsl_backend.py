@@ -17,7 +17,7 @@ from Infernux.graph.ramp import (
     CURVE_WRAP_MODES,
     GRADIENT_MODES,
     MAX_RAMP_KEYS,
-    Curve,
+    AnimationCurve,
     Gradient,
 )
 
@@ -85,6 +85,7 @@ layout(location = 2) out vec4 out_tangent;
 layout(location = 3) out vec3 out_color;
 layout(location = 4) out vec2 out_uv;
 layout(location = 5) out float out_view_depth;
+layout(location = 6) out vec4 out_line_color;
 layout(location = 9) out vec2 out_particle_local_uv;
 layout(location = 10) out vec2 out_particle_next_uv;
 layout(location = 11) out float out_particle_blend;
@@ -169,6 +170,7 @@ void main() {
     vec2 next_flipbook_cell = vec2(mod(next_frame, flipbook_grid.x), floor(next_frame / flipbook_grid.x));
     out_uv = (local_uv + flipbook_cell) / flipbook_grid;
     out_view_depth = gl_Position.w;
+    out_line_color = vec4(1.0);
     out_particle_local_uv = local_uv;
     out_particle_next_uv = (local_uv + next_flipbook_cell) / flipbook_grid;
     out_particle_blend = fract(frame_position);
@@ -722,6 +724,7 @@ layout(location = 2) out vec4 out_tangent;
 layout(location = 3) out vec3 out_color;
 layout(location = 4) out vec2 out_uv;
 layout(location = 5) out float out_view_depth;
+layout(location = 6) out vec4 out_line_color;
 layout(location = 9) out vec2 out_particle_local_uv;
 layout(location = 10) out vec2 out_particle_next_uv;
 layout(location = 11) out float out_particle_blend;
@@ -790,6 +793,7 @@ void main() {
     out_uv = vertex.uv.xy;
     out_world_position = world_position;
     out_view_depth = gl_Position.w;
+    out_line_color = vec4(1.0);
     out_particle_local_uv = vertex.uv.xy;
     out_particle_next_uv = vertex.uv.xy;
     out_particle_blend = 0.0;
@@ -2540,7 +2544,7 @@ class _StageCompiler:
                 "state.spawn_generation)"
             )
         elif opcode == "sample_curve":
-            curve = Curve.from_dict(immediate["curve"])
+            curve = AnimationCurve.from_dict(immediate["curve"])
             sample_time = f"{result}_time"
             self._lines.append(
                 f"float {sample_time} = {_glsl_wrapped_curve_time(operands[0], curve)};"
@@ -2863,7 +2867,7 @@ def _glsl_curve_wrap(value: str, first: float, last: float, mode: str) -> str:
     )
 
 
-def _glsl_wrapped_curve_time(source: str, curve: Curve) -> str:
+def _glsl_wrapped_curve_time(source: str, curve: AnimationCurve) -> str:
     first = curve.keys[0].time
     last = curve.keys[-1].time
     if first == last:
@@ -2896,7 +2900,7 @@ def _glsl_curve_segment(sample_time: str, left, right) -> str:
     )
 
 
-def _glsl_curve_sample(sample_time: str, curve: Curve) -> str:
+def _glsl_curve_sample(sample_time: str, curve: AnimationCurve) -> str:
     if len(curve.keys) == 1:
         return _float_literal(curve.keys[0].value)
     expression = _float_literal(curve.keys[-1].value)
@@ -2937,7 +2941,6 @@ def _data_interface_layout(
     parameter_slots: Mapping[str, tuple[int, TypeRef]],
 ) -> dict[str, Any]:
     layout = {
-        "version": 1,
         "metadata_binding": 0,
     }
     layout.update(_volume_interface_layout(emitter))
@@ -5636,8 +5639,10 @@ def _shader_prelude(
 } pc;"""
     )
     return f"""#version 450
+#ifndef INX_WEBGPU
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_ballot : require
+#endif
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
@@ -5874,11 +5879,15 @@ uint inx_alive_index(uint slot, uint index) {{
     return slot == 0u ? alive_indices_a[index] : alive_indices_b[index];
 }}
 
-void inx_append_alive(uint slot, uint particle_index) {{
+bool inx_append_alive(uint slot, uint particle_index) {{
     uint destination = atomicAdd(alive_control.alive_counts[min(slot, 1u)], 1u);
-    if (destination >= pc.capacity) return;
+    if (destination >= pc.capacity) {{
+        atomicAdd(alive_control.alive_counts[min(slot, 1u)], 0xffffffffu);
+        return false;
+    }}
     if (slot == 0u) alive_indices_a[destination] = particle_index;
     else alive_indices_b[destination] = particle_index;
+    return true;
 }}
 
 void inx_store_alive(uint slot, uint index, uint particle_index) {{
@@ -6751,10 +6760,17 @@ vec3 inx_sample_shape_position(uint kind, float radius, float angle_degrees, vec
     return inx_shape_direction(kind, angle_degrees, slots, particle_id, generation) * (pow(random_value.z, 1.0 / 3.0) * radius);
 }}
 
+#ifdef INX_WEBGPU
+bool inx_finite(float value) {{ return value == value && abs(value) <= 3.402823466e38; }}
+bool inx_finite(vec2 value) {{ return all(equal(value, value)) && all(lessThanEqual(abs(value), vec2(3.402823466e38))); }}
+bool inx_finite(vec3 value) {{ return all(equal(value, value)) && all(lessThanEqual(abs(value), vec3(3.402823466e38))); }}
+bool inx_finite(vec4 value) {{ return all(equal(value, value)) && all(lessThanEqual(abs(value), vec4(3.402823466e38))); }}
+#else
 bool inx_finite(float value) {{ return !isnan(value) && !isinf(value); }}
 bool inx_finite(vec2 value) {{ return !any(isnan(value)) && !any(isinf(value)); }}
 bool inx_finite(vec3 value) {{ return !any(isnan(value)) && !any(isinf(value)); }}
 bool inx_finite(vec4 value) {{ return !any(isnan(value)) && !any(isinf(value)); }}
+#endif
 """
 
 
@@ -6808,14 +6824,18 @@ void main() {{
     uint invocation = gl_GlobalInvocationID.x;
     uint group_first_invocation = invocation - gl_LocalInvocationIndex;
     if (gl_LocalInvocationIndex == 0u) {{
+        uint authoritative_spawn_count = pc.reserved != 0u
+            ? pc.invocation_count
+            : emitter_spawn.spawn_count;
         uint requested_count = 0u;
         // Spawn Prepare is the authority for this frame. Rechecking mutable
         // play/simulation state here can discard a burst that was already
-        // accepted and encoded into the indirect dispatch.
-        if (group_first_invocation < emitter_spawn.spawn_count) {{
+        // accepted and encoded into the indirect dispatch. Portable hosts
+        // without Spawn Prepare explicitly select the push-constant schedule.
+        if (group_first_invocation < authoritative_spawn_count) {{
             requested_count = min(
                 gl_WorkGroupSize.x,
-                emitter_spawn.spawn_count - group_first_invocation);
+                authoritative_spawn_count - group_first_invocation);
         }}
         inx_particle_init_accepted_count = inx_reserve_free_block(
             requested_count, inx_particle_init_old_free_count);
@@ -6832,9 +6852,15 @@ void main() {{
     state.lifecycle_flags = INX_PARTICLE_ALIVE;
     state.update_resume_step = 0xffffffffu;
     state.rendering_resume_step = 0xffffffffu;
-    uint particle_id = emitter_spawn.spawn_base_id + invocation;
+    uint authoritative_spawn_base_id = pc.reserved != 0u
+        ? pc.spawn_base_id
+        : emitter_spawn.spawn_base_id;
+    uint authoritative_spawn_generation = pc.reserved != 0u
+        ? pc.spawn_generation
+        : emitter_spawn.spawn_generation;
+    uint particle_id = authoritative_spawn_base_id + invocation;
     state.{id_field} = particle_id;
-    state.spawn_generation = emitter_spawn.spawn_generation + uint(particle_id < emitter_spawn.spawn_base_id);
+    state.spawn_generation = authoritative_spawn_generation + uint(particle_id < authoritative_spawn_base_id);
     bool particle_alive = true;
     bool inx_stage_suspended = false;
 {body}
@@ -6844,14 +6870,25 @@ void main() {{
     if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE;
     state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
     states[particle_index] = state;
-    if (particle_alive) inx_append_alive(pc.alive_read_slot, particle_index);
-    else inx_push_free(particle_index);
+    if (particle_alive && !inx_append_alive(pc.alive_read_slot, particle_index)) {{
+        state.lifecycle_flags = 0u;
+        states[particle_index] = state;
+        inx_push_free(particle_index);
+        atomicAdd(counters.dropped_count, 1u);
+    }} else if (!particle_alive) inx_push_free(particle_index);
 }}
 """
 
 
 def _alive_compact_tail(candidate: str, particle_index: str) -> str:
     return f"""
+#ifdef INX_WEBGPU
+    if ({candidate}) {{
+        uint inx_particle_alive_output = atomicAdd(
+            alive_control.alive_counts[pc.alive_write_slot], 1u);
+        inx_store_alive(pc.alive_write_slot, inx_particle_alive_output, {particle_index});
+    }}
+#else
     uvec4 inx_particle_alive_mask = subgroupBallot({candidate});
     uint inx_particle_alive_local_index = subgroupBallotExclusiveBitCount(
         inx_particle_alive_mask);
@@ -6877,6 +6914,7 @@ def _alive_compact_tail(candidate: str, particle_index: str) -> str:
             inx_particle_alive_group_base + inx_particle_alive_local_index;
         inx_store_alive(pc.alive_write_slot, inx_particle_alive_output, {particle_index});
     }}
+#endif
 """
 
 
@@ -7007,6 +7045,17 @@ def _render_instance_write(
 
 def _render_compact_tail(instance_write: str) -> str:
     return f"""
+#ifdef INX_WEBGPU
+    if (inx_particle_render_candidate) {{
+        uint output_index = atomicAdd(counters.visible_count, 1u);
+        if (output_index < pc.capacity) {{
+            atomicAdd(indirect_args.instance_count, 1u);
+{instance_write}
+        }} else {{
+            atomicAdd(counters.visible_count, 0xffffffffu);
+        }}
+    }}
+#else
     uvec4 inx_particle_render_mask = subgroupBallot(inx_particle_render_candidate);
     uint inx_particle_render_local_index = subgroupBallotExclusiveBitCount(
         inx_particle_render_mask);
@@ -7037,11 +7086,28 @@ def _render_compact_tail(instance_write: str) -> str:
 {instance_write}
         }}
     }}
+#endif
 """
 
 
 def _fused_compact_tail(instance_write: str) -> str:
     return f"""
+#ifdef INX_WEBGPU
+    if (inx_particle_active_candidate) {{
+        uint alive_output = atomicAdd(
+            alive_control.alive_counts[pc.alive_write_slot], 1u);
+        inx_store_alive(pc.alive_write_slot, alive_output, particle_index);
+    }}
+    if (inx_particle_render_candidate) {{
+        uint output_index = atomicAdd(counters.visible_count, 1u);
+        if (output_index < pc.capacity) {{
+            atomicAdd(indirect_args.instance_count, 1u);
+{instance_write}
+        }} else {{
+            atomicAdd(counters.visible_count, 0xffffffffu);
+        }}
+    }}
+#else
     uvec4 inx_particle_alive_mask = subgroupBallot(inx_particle_active_candidate);
     uvec4 inx_particle_render_mask = subgroupBallot(inx_particle_render_candidate);
     uint inx_particle_alive_local_index = subgroupBallotExclusiveBitCount(
@@ -7090,6 +7156,7 @@ def _fused_compact_tail(instance_write: str) -> str:
 {instance_write}
         }}
     }}
+#endif
 """
 
 
@@ -7652,7 +7719,7 @@ def pack_gpu_particle_parameters(
         slot_width = _parameter_slot_width(parameter.value_type)
         if kind is ValueType.CURVE:
             try:
-                curve = Curve.from_dict(value)
+                curve = AnimationCurve.from_dict(value)
             except (TypeError, ValueError) as exc:
                 raise GpuParticleCompileError(
                     f"particle parameter {parameter.name!r} requires a Curve"

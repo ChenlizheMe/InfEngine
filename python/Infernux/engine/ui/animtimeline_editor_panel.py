@@ -750,7 +750,6 @@ class AnimTimelineEditorPanel(EditorPanel):
         self._timeline.file_path = snapshot.target_path
         self._file_path = snapshot.target_path
         self._persist_panel_state()
-        Debug.log(f"[TimelineEditor] Saved: {snapshot.target_path}")
         try:
             from Infernux.core.assets import AssetManager
 

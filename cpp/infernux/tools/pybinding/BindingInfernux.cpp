@@ -1,3 +1,4 @@
+#include "BindingRegistration.h"
 #include "Infernux.h"
 // Explicit includes for types now only forward-declared in InxRenderer.h
 #include <SDL3/SDL.h>
@@ -21,6 +22,7 @@
 #include <function/scene/EditorCameraController.h>
 #include <function/scene/SkinnedMeshRenderer.h>
 #include <glm/glm.hpp>
+#include <platform/window/NativeFileDialog.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -191,20 +193,19 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
             if (sourceOffset % sizeof(uint32_t) != 0 || destinationOffset % sizeof(uint32_t) != 0 || byteSize == 0 ||
                 byteSize % sizeof(uint32_t) != 0)
                 throw std::invalid_argument("GPU particle migration range must be uint32 aligned");
-            decoded.copyRanges.push_back({sourceOffset / sizeof(uint32_t), destinationOffset / sizeof(uint32_t),
-                                          byteSize / sizeof(uint32_t), 0});
+            constexpr uint32_t wordSize = static_cast<uint32_t>(sizeof(uint32_t));
+            decoded.copyRanges.push_back(
+                {sourceOffset / wordSize, destinationOffset / wordSize, byteSize / wordSize, 0});
         }
         program.migration = std::move(decoded);
     }
 
     if (value.contains("data_interface_layout") && !value["data_interface_layout"].is_none()) {
         const py::dict layout = py::cast<py::dict>(value["data_interface_layout"]);
-        for (const char *field : {"version", "metadata_binding", "mesh_interfaces"}) {
+        for (const char *field : {"metadata_binding", "mesh_interfaces"}) {
             if (!layout.contains(field))
                 throw std::invalid_argument(std::string("GPU data interface layout is missing ") + field);
         }
-        if (py::cast<uint32_t>(layout["version"]) != 1)
-            throw std::invalid_argument("GPU data interface layout version is unsupported");
         const py::sequence meshInterfaces = py::cast<py::sequence>(layout["mesh_interfaces"]);
         program.meshInterfaces.reserve(meshInterfaces.size());
         for (const py::handle item : meshInterfaces) {
@@ -520,8 +521,8 @@ std::string ResolveGpuParticleOutputPrograms(InxRenderer &renderer,
                 state.blendEnable,
                 state.depthTestEnable,
                 state.depthWriteEnable,
-                state.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
-                    state.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                state.srcColorBlendFactor == MaterialBlendFactor::One &&
+                    state.dstColorBlendFactor == MaterialBlendFactor::OneMinusSourceAlpha,
             };
         }
     }
@@ -542,28 +543,7 @@ particle::GpuParticleTransforms DecodeGpuParticleTransforms(const py::buffer &va
 
 } // namespace
 
-namespace infernux
-{
-void RegisterGUIBindings(py::module_ &m);
-void RegisterVector2Bindings(py::module_ &m);
-void RegisterVector3Bindings(py::module_ &m);
-void RegisterVec4fBindings(py::module_ &m);
-void RegisterResourceBindings(py::module_ &m);
-void RegisterSceneBindings(py::module_ &m);
-void RegisterAssetDatabaseBindings(py::module_ &m);
-void RegisterAssetRegistryBindings(py::module_ &m);
-void RegisterRhiBindings(py::module_ &m);
-void RegisterRenderGraphBindings(py::module_ &m);
-void RegisterRenderPipelineBindings(py::module_ &m);
-void RegisterCommandBufferBindings(py::module_ &m);
-void RegisterTagLayerBindings(py::module_ &m);
-void RegisterInputBindings(py::module_ &m);
-void RegisterPhysicsBindings(py::module_ &m);
-void RegisterAudioBindings(py::module_ &m);
-void RegisterBatchBindings(py::module_ &m);
-} // namespace infernux
-
-PYBIND11_MODULE(_Infernux, m)
+void infernux::RegisterInfernuxBindings(py::module_ &m)
 {
     m.doc() = "Python bindings for Infernux";
 
@@ -831,6 +811,10 @@ PYBIND11_MODULE(_Infernux, m)
             "Measure text size using the active UI font. Returns (width, height).")
         .def("has_commands", &InxScreenUIRenderer::HasCommands, py::arg("list"),
              "Check if the specified draw list has any draw commands")
+        .def("last_submitted_draw_count", &InxScreenUIRenderer::GetLastSubmittedDrawCount, py::arg("list"),
+             "Return the most recent submitted draw count for the specified list")
+        .def("last_submitted_index_count", &InxScreenUIRenderer::GetLastSubmittedIndexCount, py::arg("list"),
+             "Return the most recent submitted index count for the specified list")
         .def("set_enabled", &InxScreenUIRenderer::SetEnabled, py::arg("enabled"),
              "Enable or disable rendering (commands still accumulate)")
         .def("is_enabled", &InxScreenUIRenderer::IsEnabled, "Check if rendering is enabled");
@@ -893,7 +877,9 @@ PYBIND11_MODULE(_Infernux, m)
         .def("init_headless", &Infernux::InitHeadless, py::arg("project_path"),
              py::arg("builtin_resource_path") = std::string(),
              "Initialize scene, physics, assets, and workers without SDL/Vulkan/ImGui/audio")
-        .def("tick", &Infernux::Tick, py::arg("delta_time"), "Advance one deterministic headless frame")
+        .def("tick", &Infernux::Tick, py::arg("delta_time"),
+             "Advance one deterministic frame: simulation-only in headless mode, a fully simulated and "
+             "rendered frame in graphical mode (unavailable while run() drives the loop)")
         .def_property_readonly("exit_requested", &Infernux::IsExitRequested, "Whether shutdown has been requested")
         .def_property_readonly("runtime_mode", &Infernux::GetRuntimeMode)
         .def("begin_prepare_linked_shader_programs", &Infernux::BeginPrepareLinkedShaderPrograms,
@@ -1452,7 +1438,9 @@ PYBIND11_MODULE(_Infernux, m)
             "get_display_scale",
             [](Infernux &self) -> float {
                 auto *r = self.GetRenderer();
-                return r ? r->GetDisplayScale() : 1.0f;
+                if (!r)
+                    throw std::logic_error("Cannot query display scale without an initialized renderer");
+                return r->GetDisplayScale();
             },
             "Get the OS display scale factor (e.g. 2.0 for 200%% scaling)")
         .def(
@@ -1583,7 +1571,22 @@ PYBIND11_MODULE(_Infernux, m)
              py::arg("window_id"), py::arg("allow_during_modal") = false)
         .def("reset_imgui_layout", &Infernux::ResetImGuiLayout, "Clear ImGui docking layout and delete saved ini")
         .def("exit", &Infernux::Exit, "Exit the Infernux application")
-        .def("cleanup", &Infernux::Cleanup, "Destroy renderer and release all GPU resources")
+        .def(
+            "cleanup",
+            [](Infernux &self) {
+                // Python frame callbacks must be released while this binding
+                // still owns the GIL. Native teardown may then release it while
+                // joining workers and waiting for the GPU without destroying a
+                // py::function from a GIL-free scope.
+                self.SetPreSceneUpdateCallback(nullptr);
+                if (auto *renderer = self.GetRenderer()) {
+                    renderer->SetPreGuiCallback(nullptr);
+                    renderer->SetPostDrawCallback(nullptr);
+                }
+                py::gil_scoped_release release;
+                self.Cleanup();
+            },
+            "Destroy renderer and release all GPU resources")
         .def(
             "is_close_requested",
             [](Infernux &self) -> bool {
@@ -1670,6 +1673,8 @@ PYBIND11_MODULE(_Infernux, m)
                     r->SetWindowResizable(resizable);
             },
             py::arg("resizable"), "Set whether the window is resizable")
+        .def("is_shader_loaded", &Infernux::IsShaderLoaded, py::arg("shader_id"), py::arg("shader_type"),
+             "Query published standalone stages and linked material programs without loading resources.")
         .def("reload_shader_runtime", &Infernux::ReloadShaderRuntime, py::arg("shader_path"),
              py::arg("previous_shader_id"),
              "Compile an already-imported shader and refresh renderer state. Returns empty string on success.")
@@ -1691,7 +1696,7 @@ PYBIND11_MODULE(_Infernux, m)
                 const py::buffer_info info = pixels.request();
                 if (info.ndim != 1 || info.itemsize != 1 || info.strides[0] != 1)
                     throw std::invalid_argument("ImGui pixels must be a contiguous one-dimensional byte buffer");
-                VkFilter f = nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+                rhi::FilterMode f = nearest ? rhi::FilterMode::Nearest : rhi::FilterMode::Linear;
                 py::gil_scoped_release release;
                 return r->SubmitTextureForImGui(name, static_cast<const unsigned char *>(info.ptr), info.size, width,
                                                 height, f, pinned);
@@ -1934,7 +1939,6 @@ PYBIND11_MODULE(_Infernux, m)
                 result["capture_id"] = value.id;
                 result["source"] = CaptureSourceName(value.source);
                 result["pixel_origin"] = "engine_render_target";
-                result["os_capture_fallback"] = false;
                 result["status"] = CaptureStatusName(value.status);
                 result["source_generation"] = value.sourceGeneration;
                 result["render_view_id"] = value.view.id;
@@ -1955,6 +1959,14 @@ PYBIND11_MODULE(_Infernux, m)
                 return renderer && renderer->CancelCapture(captureId);
             },
             py::arg("capture_id"), "Cancel an unfinished engine capture request")
+        .def(
+            "open_url",
+            [](Infernux &, const std::string &url) {
+                if (!SDL_OpenURL(url.c_str()))
+                    throw std::runtime_error(std::string("SDL_OpenURL failed: ") + SDL_GetError());
+                return true;
+            },
+            py::arg("url"), "Open a canonical URL through the active platform handler")
         .def(
             "resize_game_render_target",
             [](Infernux &self, uint32_t width, uint32_t height) {
@@ -2185,20 +2197,35 @@ PYBIND11_MODULE(_Infernux, m)
             },
             "Get editor-mode FPS cap")
         .def(
+            "set_play_fps_cap",
+            [](Infernux &self, float fps) {
+                auto *r = self.GetRenderer();
+                if (r)
+                    r->SetPlayFpsCap(fps);
+            },
+            py::arg("fps"), "Set play/player-mode FPS cap. 0 = uncapped.")
+        .def(
+            "get_play_fps_cap",
+            [](Infernux &self) -> float {
+                auto *r = self.GetRenderer();
+                return r ? r->GetPlayFpsCap() : 0.0f;
+            },
+            "Get play/player-mode FPS cap")
+        .def(
             "set_play_mode_rendering",
             [](Infernux &self, bool play) {
                 auto *r = self.GetRenderer();
                 if (r)
                     r->SetPlayModeRendering(play);
             },
-            py::arg("play"), "Enable/disable play-mode rendering (uncapped FPS, no idle)")
+            py::arg("play"), "Enable/disable play-mode rendering (optional explicit FPS cap, no idle)")
         .def(
             "is_play_mode_rendering",
             [](Infernux &self) -> bool {
                 auto *r = self.GetRenderer();
                 return r && r->IsPlayModeRendering();
             },
-            "Check if renderer is in play-mode (uncapped FPS)")
+            "Check if renderer is in play-mode")
         // ========================================================================
         // Scene Picking API - for editor selection
         // ========================================================================
@@ -2887,24 +2914,41 @@ PYBIND11_MODULE(_Infernux, m)
         "inflog_internal", [](const std::string &msg) { INXLOG_INFO_INTERNAL(msg); }, py::arg("msg"),
         "Write an internal INFO-level message to the engine log without surfacing it in the editor console.");
 
-    // Register all binding modules
-    RegisterGUIBindings(m);
-    RegisterVector2Bindings(m);
-    RegisterVector3Bindings(m);
-    RegisterVec4fBindings(m);
-    RegisterResourceBindings(m);
-    RegisterAssetDatabaseBindings(m);
-    RegisterAssetRegistryBindings(m);
-    RegisterSceneBindings(m);
-    RegisterTagLayerBindings(m);
-    RegisterRhiBindings(m);
-    RegisterRenderGraphBindings(m);
-    RegisterCommandBufferBindings(m);
-    RegisterRenderPipelineBindings(m);
-    RegisterInputBindings(m);
-    RegisterPhysicsBindings(m);
-    RegisterAudioBindings(m);
-    RegisterBatchBindings(m);
+    m.def(
+        "_show_native_file_dialog",
+        [](const std::string &kind, const std::string &title, const std::string &defaultLocation,
+           const std::vector<std::pair<std::string, std::string>> &filters) {
+            NativeFileDialogKind nativeKind;
+            if (kind == "open_file")
+                nativeKind = NativeFileDialogKind::OpenFile;
+            else if (kind == "save_file")
+                nativeKind = NativeFileDialogKind::SaveFile;
+            else if (kind == "open_folder")
+                nativeKind = NativeFileDialogKind::OpenFolder;
+            else
+                throw py::value_error("Unknown native file dialog kind: " + kind);
+
+            std::vector<NativeFileDialogFilter> nativeFilters;
+            nativeFilters.reserve(filters.size());
+            for (const auto &[name, pattern] : filters)
+                nativeFilters.push_back({name, pattern});
+
+            NativeFileDialogResult result;
+            {
+                py::gil_scoped_release release;
+                result = ShowNativeFileDialog(nativeKind, title, defaultLocation, nativeFilters);
+            }
+            py::dict payload;
+            payload["accepted"] = result.accepted;
+            payload["cancelled"] = result.cancelled;
+            payload["path"] = result.path;
+            payload["error"] = result.error;
+            payload["selected_filter"] = result.selectedFilter;
+            return payload;
+        },
+        py::arg("kind"), py::arg("title"), py::arg("default_location") = "",
+        py::arg("filters") = std::vector<std::pair<std::string, std::string>>{},
+        "Show one modal system file dialog through SDL's platform backend.");
 
     // ====================================================================
     // Gizmo geometry generation helpers (pure math, no engine state needed)

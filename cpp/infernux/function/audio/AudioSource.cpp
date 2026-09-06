@@ -43,7 +43,10 @@ void AudioSource::Awake()
 void AudioSource::Start()
 {
     const auto clip = m_tracks.empty() ? nullptr : m_tracks[0].GetClip();
-    if (m_playOnAwake && clip && clip->IsLoaded()) {
+    // The Web host cannot open its audio device until a trusted user gesture.
+    // Awake() has already registered this source, so AudioEngine::Initialize()
+    // owns the one authoritative deferred play-on-awake transition.
+    if (AudioEngine::Instance().IsInitialized() && m_playOnAwake && !IsPlaying() && clip && clip->IsLoaded()) {
         Play(0);
     }
 }

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <core/log/InxLog.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
@@ -533,6 +534,15 @@ void LineRenderer::Simplify(float tolerance)
     RebuildMesh();
 }
 
+std::shared_ptr<InxMaterial> LineRenderer::GetEffectiveMaterial(uint32_t slot) const
+{
+    if (GetMaterial(slot) || (slot < GetMaterialCount() && !GetMaterialGuid(slot).empty()))
+        return MeshRenderer::GetEffectiveMaterial(slot);
+
+    auto material = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLineMaterial");
+    return material ? material : MeshRenderer::GetEffectiveMaterial(slot);
+}
+
 glm::mat4 LineRenderer::ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMatrix) const
 {
     return m_useWorldSpace ? glm::mat4(1.0f) : objectWorldMatrix;
@@ -577,7 +587,25 @@ void LineRenderer::RebuildMesh()
 {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
-    if (m_positions.size() < 2) {
+
+    // Consecutive duplicate samples are common in runtime trails while an
+    // object is stationary. Keeping them creates degenerate triangles and
+    // arbitrary fallback tangents, which twist or flicker when movement resumes.
+    // Preserve the authored point list, but build only meaningful segments.
+    std::vector<glm::vec3> geometryPositions;
+    geometryPositions.reserve(m_positions.size());
+    for (const glm::vec3 &position : m_positions) {
+        if (geometryPositions.empty() ||
+            glm::dot(position - geometryPositions.back(), position - geometryPositions.back()) >
+                DIRECTION_EPSILON * DIRECTION_EPSILON)
+            geometryPositions.push_back(position);
+    }
+    if (geometryPositions.size() > 2 && m_loop &&
+        glm::dot(geometryPositions.back() - geometryPositions.front(),
+                 geometryPositions.back() - geometryPositions.front()) <= DIRECTION_EPSILON * DIRECTION_EPSILON)
+        geometryPositions.pop_back();
+
+    if (geometryPositions.size() < 2) {
         SetProceduralMesh(std::move(vertices), std::move(indices));
         return;
     }
@@ -593,7 +621,7 @@ void LineRenderer::RebuildMesh()
         float widthScale = 1.0f;
     };
 
-    const size_t authoredCount = m_positions.size();
+    const size_t authoredCount = geometryPositions.size();
     const size_t segmentCount = m_loop && authoredCount > 2 ? authoredCount : authoredCount - 1;
     std::vector<float> distances(authoredCount, 0.0f);
     const auto metricLength = [&](const glm::vec3 &delta) {
@@ -604,10 +632,10 @@ void LineRenderer::RebuildMesh()
         return glm::length(delta);
     };
     for (size_t index = 1; index < authoredCount; ++index)
-        distances[index] = distances[index - 1] + metricLength(m_positions[index] - m_positions[index - 1]);
+        distances[index] = distances[index - 1] + metricLength(geometryPositions[index] - geometryPositions[index - 1]);
     float totalLength = distances.back();
     if (m_loop && authoredCount > 2)
-        totalLength += metricLength(m_positions.front() - m_positions.back());
+        totalLength += metricLength(geometryPositions.front() - geometryPositions.back());
 
     const auto safeDirection = [&](const glm::vec3 &from, const glm::vec3 &to) {
         const glm::vec3 direction = to - from;
@@ -627,9 +655,10 @@ void LineRenderer::RebuildMesh()
         const bool hasOutgoing = index + 1 < authoredCount || (m_loop && authoredCount > 2);
         const size_t previous = index > 0 ? index - 1 : authoredCount - 1;
         const size_t next = index + 1 < authoredCount ? index + 1 : 0;
-        const glm::vec3 incoming = hasIncoming ? safeDirection(m_positions[previous], m_positions[index])
-                                               : safeDirection(m_positions[index], m_positions[next]);
-        const glm::vec3 outgoing = hasOutgoing ? safeDirection(m_positions[index], m_positions[next]) : incoming;
+        const glm::vec3 incoming = hasIncoming ? safeDirection(geometryPositions[previous], geometryPositions[index])
+                                               : safeDirection(geometryPositions[index], geometryPositions[next]);
+        const glm::vec3 outgoing =
+            hasOutgoing ? safeDirection(geometryPositions[index], geometryPositions[next]) : incoming;
         const float distance = distances[index];
         const float t = normalizedDistance(distance, index);
         const float distributed = static_cast<float>(index) / static_cast<float>(segmentCount);
@@ -643,13 +672,20 @@ void LineRenderer::RebuildMesh()
                     tangent = corner * 2u < m_numCornerVertices ? incoming : outgoing;
                 else
                     tangent = glm::normalize(tangent);
-                samples.push_back({m_positions[index], tangent, distance, t, distributed, segment, 1.0f});
+                samples.push_back({geometryPositions[index], tangent, distance, t, distributed, segment, 1.0f});
             }
         } else {
-            glm::vec3 tangent = glm::normalize(incoming + outgoing);
-            if (!std::isfinite(tangent.x) || !std::isfinite(tangent.y) || !std::isfinite(tangent.z))
-                tangent = outgoing;
-            samples.push_back({m_positions[index], tangent, distance, t, distributed, segment, 1.0f});
+            // Near a perfect reversal incoming + outgoing is a near-zero
+            // vector whose direction is pure float noise; normalizing it
+            // yields a garbage tangent that swings the expanded ribbon a full
+            // width at the turn point. Threshold the sum before normalizing
+            // (this also covers the exact-zero NaN case) and keep the
+            // deterministic outgoing direction instead.
+            const glm::vec3 combined = incoming + outgoing;
+            const glm::vec3 tangent = glm::dot(combined, combined) > DIRECTION_EPSILON * DIRECTION_EPSILON
+                                          ? glm::normalize(combined)
+                                          : outgoing;
+            samples.push_back({geometryPositions[index], tangent, distance, t, distributed, segment, 1.0f});
         }
     }
 
@@ -687,6 +723,17 @@ void LineRenderer::RebuildMesh()
             capped.push_back(sample);
         }
         samples = std::move(capped);
+    }
+
+    // A ribbon tangent represents an axis, not an oriented travel vector:
+    // t and -t produce the same width plane.  Preserve a continuous tangent
+    // hemisphere along the strip so a path that doubles back does not swap
+    // its left/right vertices and turn the adjacent quad into a bow-tie.  Cap
+    // centers are positioned first with the true endpoint directions above;
+    // this pass only stabilizes the orientation used for camera-facing width.
+    for (size_t index = 1; index < samples.size(); ++index) {
+        if (glm::dot(samples[index - 1].tangent, samples[index].tangent) < 0.0f)
+            samples[index].tangent = -samples[index].tangent;
     }
 
     vertices.reserve(samples.size() * 2u);

@@ -12,7 +12,7 @@ from .commands import CommandContext, CommandResult, CommandSource, CommandStatu
 from .shortcuts import KeyChord, ShortcutBinding, ShortcutEvent, ShortcutModifier, ShortcutPhase, ShortcutRouteResult, ShortcutRouteStatus, ShortcutRouter, ShortcutScope
 from .command_palette import COMMAND_PALETTE_CONTEXT_ID, COMMAND_PALETTE_MODAL_ID, CommandPaletteEntry, CommandPaletteService
 from .history import HistoryEntrySnapshot, HistoryModel, HistorySnapshot
-from .shortcut_profiles import DEFAULT_PROFILE_ID, DEFAULT_PROFILE_NAME, SHORTCUT_PROFILES_SCHEMA, SHORTCUT_PROFILES_VERSION, ShortcutBindingSnapshot, ShortcutOverrideSnapshot, ShortcutProfileDiff, ShortcutProfileDiffKind, ShortcutProfileModel, ShortcutProfileSnapshot, ShortcutProfilesSnapshot
+from .shortcut_profiles import DEFAULT_PROFILE_ID, DEFAULT_PROFILE_NAME, SHORTCUT_PROFILES_SCHEMA, ShortcutBindingSnapshot, ShortcutOverrideSnapshot, ShortcutProfileDiff, ShortcutProfileDiffKind, ShortcutProfileModel, ShortcutProfileSnapshot, ShortcutProfilesSnapshot
 from .session import EditorInteractionCore
 from .continuous_edits import ContinuousEditService, ContinuousEditSession
 from .authoring_mutations import AuthoringMutationService

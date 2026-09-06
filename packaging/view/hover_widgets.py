@@ -8,6 +8,8 @@ from PySide6.QtCore import Property, QEasingCurve, QEvent, QObject, QPropertyAni
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QComboBox, QFrame, QLineEdit, QPushButton, QWidget
 
+from style import StyleManager
+
 
 def _mix(start: QColor, end: QColor, amount: float) -> QColor:
     amount = max(0.0, min(1.0, amount))
@@ -83,14 +85,10 @@ class AnimatedSurfaceFrame(QFrame):
         self._hover_animation.start()
 
     def paintEvent(self, event):
-        if _is_dark():
-            surface = QColor("#252525")
-            hover_top = QColor("#353535")
-            hover_bottom = QColor("#2b2b2b")
-        else:
-            surface = QColor("#f2f2f2")
-            hover_top = QColor("#e8e8e8")
-            hover_bottom = QColor("#dddddd")
+        palette = StyleManager.palette(_is_dark())
+        surface = QColor(palette.bg_surface)
+        hover_top = QColor(palette.bg_surface_selected)
+        hover_bottom = QColor(palette.button_surface)
 
         top = _mix(surface, hover_top, self._hover_progress)
         bottom = _mix(surface, hover_bottom, self._hover_progress)
@@ -105,7 +103,7 @@ class AnimatedSurfaceFrame(QFrame):
         painter.drawRoundedRect(self.rect(), 4, 4)
 
         if self._selection_progress > 0.001:
-            accent = QColor("#eb5757")
+            accent = QColor(palette.accent)
             accent.setAlpha(round(255 * self._selection_progress))
             painter.setBrush(QColor(0, 0, 0, 0))
             painter.setPen(QPen(accent, 1.5))
@@ -192,41 +190,41 @@ class HoverAnimationFilter(QObject):
 
     def _apply(self, widget: QWidget, progress: float):
         widget._hub_hover_progress = progress
-        dark = _is_dark()
+        palette = StyleManager.palette(_is_dark())
         if isinstance(widget, QPushButton):
             name = widget.objectName()
-            text_base = QColor("#f2f2f2" if dark else "#202020")
+            text_base = QColor(palette.text_primary)
             text_hover = text_base
             if name in {"primaryBtn", "createBtn"}:
-                base, hover = QColor("#eb5757"), QColor("#f26a6a")
-                text_base = text_hover = QColor("#ffffff")
+                base, hover = QColor(palette.accent), QColor(palette.accent_hover)
+                text_base = text_hover = QColor(palette.accent_text)
             elif name == "dangerBtn":
-                base = QColor("#3a3a3a" if dark else "#dddddd")
-                hover = QColor("#b83f3f" if dark else "#b8313b")
-                text_base = QColor("#eb5757" if dark else "#b8313b")
-                text_hover = QColor("#ffffff")
+                base = QColor(palette.button_surface)
+                hover = QColor(palette.accent_pressed)
+                text_base = QColor(palette.danger)
+                text_hover = QColor(palette.accent_text)
             elif name == "navItem":
                 if bool(widget.property("active")):
-                    base = QColor("#414141" if dark else "#d5d5d5")
+                    base = QColor(palette.nav_active)
                 else:
-                    base = QColor("#232323" if dark else "#e8e8e8")
-                hover = QColor("#333333" if dark else "#dedede")
-                text_base = QColor("#bdbdbd" if dark else "#5f5f5f")
-                text_hover = QColor("#f2f2f2" if dark else "#202020")
+                    base = QColor(palette.sidebar_bg)
+                hover = QColor(palette.nav_hover)
+                text_base = QColor(palette.text_secondary)
+                text_hover = QColor(palette.text_primary)
             else:
-                base = QColor("#3a3a3a" if dark else "#dddddd")
-                hover = QColor("#4a4a4a" if dark else "#cccccc")
+                base = QColor(palette.button_surface)
+                hover = QColor(palette.button_hover)
             widget.setStyleSheet(
                 f"background-color: {_hex(_mix(base, hover, progress))};"
                 f"color: {_hex(_mix(text_base, text_hover, progress))};"
             )
             return
 
-        base = QColor("#191919" if dark else "#f2f2f2")
-        hover = QColor("#292929" if dark else "#e8e8e8")
-        border_base = QColor("#363636" if dark else "#cfcfcf")
-        border_hover = QColor("#585858" if dark else "#999999")
-        border = QColor("#eb5757") if widget.hasFocus() else _mix(border_base, border_hover, progress)
+        base = QColor(palette.bg_input)
+        hover = QColor(palette.bg_surface_hover)
+        border_base = QColor(palette.border)
+        border_hover = QColor(palette.border_hover)
+        border = QColor(palette.accent) if widget.hasFocus() else _mix(border_base, border_hover, progress)
         widget.setStyleSheet(
             f"background-color: {_hex(_mix(base, hover, progress))};"
             f"border-color: {_hex(border)};"
@@ -256,9 +254,6 @@ def ensure_hover_animation_filter(app: QApplication | None = None) -> HoverAnima
     else:
         animator._install_once()
 
-    # Keep the old attribute as a compatibility/debug handle, but never use it
-    # as the ownership or identity source.
-    current._infernux_hover_animator = animator
     return animator
 
 

@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 import os
-import shutil
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QScrollArea, QFrame, QDialog, QFileDialog, QMessageBox,
-    QProgressBar, QApplication,
+    QScrollArea, QFrame, QDialog, QFileDialog, QMessageBox, QApplication,
 )
-from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QThread, Signal
 
-from version_manager import VersionManager, EngineVersion, DownloadCancelled
+from version_manager import VersionManager, EngineVersion
+from install_queue import InstallQueue
+from android_support import AndroidSupportManager
 from i18n import tr
 from view.hover_widgets import AnimatedSurfaceFrame
+
+
+def _update_install_buttons(view, queue):
+    for button in view.findChildren(QPushButton):
+        key = button.property("installationKey")
+        if key:
+            pending = queue.is_pending(key)
+            button.setEnabled(not pending)
+            button.setText(tr("In queue") if pending else button.property("idleText"))
 
 
 def _configure_install_scroll_area(scroll: QScrollArea, container: QWidget) -> None:
@@ -78,130 +87,107 @@ class _VersionCard(AnimatedSurfaceFrame):
         layout.addWidget(remove_btn)
 
 
+class _RuntimeCard(AnimatedSurfaceFrame):
+    install_clicked = Signal(str)
+
+    def __init__(self, version: str, path: str, *, default: bool, parent=None):
+        super().__init__("versionCard", parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(72)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(14)
+
+        info = QVBoxLayout()
+        info.setSpacing(3)
+        title = QLabel(
+            tr("Python {version} (default)", version=version)
+            if default
+            else tr("Python {version}", version=version)
+        )
+        title.setObjectName("cardName")
+        info.addWidget(title)
+        detail = QLabel(
+            path
+            if path
+            else tr("Not installed. Install this runtime before using its engine wheels.")
+        )
+        detail.setObjectName("cardPath")
+        detail.setWordWrap(True)
+        info.addWidget(detail)
+        layout.addLayout(info, 1)
+
+        button = QPushButton(
+            tr("Reinstall") if path else tr("Install")
+        )
+        button.setObjectName("normalBtn" if path else "primaryBtn")
+        button.setFixedHeight(34)
+        button.setMinimumWidth(96)
+        button.setProperty("installationKey", f"python:{version}")
+        button.setProperty("idleText", button.text())
+        button.clicked.connect(lambda: self.install_clicked.emit(version))
+        layout.addWidget(button)
+
+
+class _AndroidSupportCard(AnimatedSurfaceFrame):
+    install_clicked = Signal()
+
+    def __init__(self, manager: AndroidSupportManager, parent=None):
+        super().__init__("versionCard", parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(86)
+        status = manager.status()
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(12)
+        info = QVBoxLayout()
+        info.setSpacing(3)
+        title = QLabel(tr("Android compatibility"))
+        title.setObjectName("cardName")
+        info.addWidget(title)
+        if status.installed:
+            detail_text = tr(
+                "SDK, NDK, JDK, Gradle and Android CPython are managed once for every project.\n{path}",
+                path=str(status.root),
+            )
+        elif status.error:
+            detail_text = tr("Installed files need repair: {message}", message=status.error)
+        else:
+            detail_text = tr(
+                "Required before the Android platform plugin can be imported. "
+                "Large toolchains are installed once and shared by every project."
+            )
+        detail = QLabel(detail_text)
+        detail.setObjectName("cardPath")
+        detail.setWordWrap(True)
+        info.addWidget(detail)
+        layout.addLayout(info, 1)
+
+        install = QPushButton(tr("Repair") if status.installed or status.error else tr("Install"))
+        install.setObjectName("normalBtn" if status.installed else "primaryBtn")
+        install.setFixedHeight(34)
+        install.setMinimumWidth(96)
+        install.setProperty("installationKey", "android")
+        install.setProperty("idleText", install.text())
+        install.clicked.connect(self.install_clicked.emit)
+        layout.addWidget(install)
+
+
 # ─── Install Editor dialog (pick version from GitHub releases) ───────
 
-class _FetchWorker(QObject):
+class _FetchWorker(QThread):
     """Fetch available versions on a background thread."""
-    finished = Signal(list)  # list[EngineVersion]
+    loaded = Signal(list)  # list[EngineVersion]
 
-    def __init__(self, vm: VersionManager):
-        super().__init__()
+    def __init__(self, vm: VersionManager, parent):
+        super().__init__(parent)
         self._vm = vm
 
     def run(self):
         versions = self._vm.list_versions(include_prerelease=True)
-        self.finished.emit(versions)
-
-
-class _DownloadWorker(QObject):
-    """Download a version wheel on a background thread (cancellable)."""
-    progress = Signal(int, int)  # downloaded, total
-    finished = Signal(str)  # wheel path
-    cancelled = Signal()
-    error = Signal(str)
-
-    def __init__(self, vm: VersionManager, version: str):
-        super().__init__()
-        self._vm = vm
-        self._version = version
-        self._cancel_requested = False
-
-    def cancel(self):
-        """Request cooperative cancellation (checked per 64 KB chunk)."""
-        self._cancel_requested = True
-
-    def run(self):
-        try:
-            path = self._vm.download_version(
-                self._version,
-                on_progress=lambda d, t: self.progress.emit(d, t),
-                should_cancel=lambda: self._cancel_requested,
-            )
-            self.finished.emit(path)
-        except DownloadCancelled:
-            self.cancelled.emit()
-        except Exception as exc:
-            self.error.emit(str(exc))
-
-
-class _RuntimeInstallWorker(QObject):
-    finished = Signal(str)
-    error = Signal(str)
-
-    def __init__(self, runtime_manager, *, reinstall: bool = False):
-        super().__init__()
-        self._runtime_manager = runtime_manager
-        self._reinstall = reinstall
-
-    def run(self):
-        try:
-            if self._reinstall:
-                python_exe = self._runtime_manager.reinstall_runtime()
-            else:
-                python_exe = self._runtime_manager.ensure_runtime()
-        except Exception as exc:
-            self.error.emit(str(exc))
-            return
-        self.finished.emit(python_exe)
-
-
-class PythonRuntimeInstallDialog(QDialog):
-    def __init__(self, runtime_manager, parent=None, *, reinstall: bool = False):
-        super().__init__(parent)
-        self.setWindowTitle(tr("Preparing Python 3.12"))
-        self.setModal(True)
-        self.setFixedSize(420, 140)
-        self.result_path = ""
-        self.error_text = ""
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(12)
-
-        title = QLabel(tr("Preparing Python 3.12 for Infernux Hub"))
-        title.setObjectName("cardName")
-        layout.addWidget(title)
-
-        detail = QLabel(tr(
-            "A background setup process is extracting an isolated full Python 3.12 runtime "
-            "under C:\\Users\\Public\\InfernuxHub. Each new project will receive its own copy of this runtime. "
-            "Your existing Python installations are not used or changed. This window will close automatically when setup finishes."
-        ))
-        detail.setWordWrap(True)
-        detail.setObjectName("cardPath")
-        layout.addWidget(detail)
-
-        progress = QProgressBar(self)
-        progress.setRange(0, 0)
-        progress.setTextVisible(False)
-        progress.setFixedHeight(6)
-        layout.addWidget(progress)
-
-        self._thread = QThread(self)
-        self._worker = _RuntimeInstallWorker(runtime_manager, reinstall=reinstall)
-        self._worker.moveToThread(self._thread)
-
-        self._thread.started.connect(self._worker.run)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.error.connect(self._on_error)
-        self._worker.finished.connect(self._thread.quit)
-        self._worker.error.connect(self._thread.quit)
-        self._thread.finished.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.start()
-
-    def _on_finished(self, python_exe: str):
-        self.result_path = python_exe
-        self.accept()
-
-    def _on_error(self, message: str):
-        self.error_text = message
-        self.reject()
-
-    def reject(self):
-        if self._thread.isRunning() and not self.error_text:
-            return
-        super().reject()
+        self.loaded.emit(versions)
 
 
 class _VersionRow(AnimatedSurfaceFrame):
@@ -221,6 +207,11 @@ class _VersionRow(AnimatedSurfaceFrame):
         ver_label = QLabel(ev.display_name)
         ver_label.setObjectName("cardName")
         layout.addWidget(ver_label)
+
+        if ev.python_version:
+            python_label = QLabel(f"Python {ev.python_version}")
+            python_label.setObjectName("cardDate")
+            layout.addWidget(python_label)
 
         if ev.wheel_size:
             size_mb = ev.wheel_size / (1024 * 1024)
@@ -243,15 +234,17 @@ class _VersionRow(AnimatedSurfaceFrame):
 class InstallEditorDialog(QDialog):
     """Dialog that lists available versions from GitHub for installation."""
 
-    def __init__(self, version_manager: VersionManager, parent=None):
+    runtime_install_requested = Signal(str)
+
+    def __init__(self, version_manager: VersionManager, queue: InstallQueue, parent=None):
         super().__init__(parent)
         self.setWindowTitle(tr("Install Engine Version"))
         self.setMinimumSize(520, 420)
         self._vm = version_manager
         self._selected: EngineVersion | None = None
         self._rows: list[tuple[EngineVersion, _VersionRow]] = []
-        self._dl_thread: QThread | None = None
-        self._dl_worker: _DownloadWorker | None = None
+        self._queue = queue
+        self._queue.job_finished.connect(self._refresh_selection)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -259,7 +252,15 @@ class InstallEditorDialog(QDialog):
 
         self._status = QLabel(tr("Fetching available versions..."))
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status.setWordWrap(True)
         layout.addWidget(self._status)
+
+        self._btn_runtime = QPushButton()
+        self._btn_runtime.setObjectName("primaryBtn")
+        self._btn_runtime.setMinimumHeight(34)
+        self._btn_runtime.hide()
+        self._btn_runtime.clicked.connect(self._on_install_runtime)
+        layout.addWidget(self._btn_runtime)
 
         # Scroll area for version rows
         self._scroll = QScrollArea()
@@ -273,13 +274,6 @@ class InstallEditorDialog(QDialog):
         self._list_layout.setContentsMargins(0, 0, 4, 0)
         self._scroll.setWidget(self._container)
         layout.addWidget(self._scroll, 1)
-
-        # Progress bar (hidden until download starts)
-        self._progress_bar = QProgressBar()
-        self._progress_bar.setFixedHeight(6)
-        self._progress_bar.setTextVisible(False)
-        self._progress_bar.hide()
-        layout.addWidget(self._progress_bar)
 
         # Buttons
         btn_row = QHBoxLayout()
@@ -302,12 +296,9 @@ class InstallEditorDialog(QDialog):
         layout.addLayout(btn_row)
 
         # Kick off fetch in background
-        self._fetch_thread = QThread()
-        self._fetch_worker = _FetchWorker(self._vm)
-        self._fetch_worker.moveToThread(self._fetch_thread)
-        self._fetch_thread.started.connect(self._fetch_worker.run)
-        self._fetch_worker.finished.connect(self._on_versions_loaded)
-        self._fetch_worker.finished.connect(self._fetch_thread.quit)
+        self._fetch_thread = _FetchWorker(self._vm, self)
+        self._fetch_thread.loaded.connect(self._on_versions_loaded)
+        QApplication.instance().aboutToQuit.connect(self._fetch_thread.wait)
         self._fetch_thread.start()
 
     # ── Slots ────────────────────────────────────────────────────────
@@ -331,261 +322,250 @@ class InstallEditorDialog(QDialog):
 
     def _select(self, ev: EngineVersion):
         self._selected = ev
-        self._btn_install.setEnabled(not ev.installed and bool(ev.wheel_url))
+        self._btn_runtime.hide()
+        block_reason = self._vm.installation_block_reason(ev)
+        if block_reason:
+            self._btn_install.setEnabled(False)
+            if (
+                ev.python_version and ev.wheel_url
+                and not ev.compatibility_error
+                and not self._vm.is_python_runtime_installed(ev.python_version)
+            ):
+                self._status.setText(
+                    tr(
+                        "Infernux {engine} needs its managed runtime (Python {version}). "
+                        "Install it here; no Python or Conda setup is required.",
+                        engine=ev.version,
+                        version=ev.python_version,
+                    )
+                )
+                self._btn_runtime.setText(
+                    tr("Install required runtime (Python {version})", version=ev.python_version)
+                )
+                self._btn_runtime.setEnabled(not self._queue.is_pending(f"python:{ev.python_version}"))
+                self._btn_runtime.show()
+            else:
+                self._status.setText(block_reason)
+            self._status.show()
+            for candidate, row in self._rows:
+                row.set_selected(candidate is ev)
+            return
+        self._btn_install.setEnabled(
+            not ev.installed and bool(ev.wheel_url)
+            and not self._queue.is_pending(f"engine:{ev.version}")
+        )
+        self._status.hide()
         for v, row in self._rows:
-            row.set_selected(v.version == ev.version)
+            row.set_selected(v is ev)
+
+    def _on_install_runtime(self):
+        engine = self._selected
+        self.runtime_install_requested.emit(engine.python_version)
+        self._select(engine)
+
+    def _refresh_selection(self, _job):
+        if self._selected is not None:
+            self._select(self._selected)
 
     def _on_install(self):
-        if not self._selected or self._selected.installed:
+        engine = self._selected
+        if engine is None or not self._btn_install.isEnabled():
             return
-        if self._dl_thread is not None and self._dl_thread.isRunning():
-            return  # one download at a time
-        # Start download
-        self._btn_install.setEnabled(False)
-        self._progress_bar.setRange(0, 100)
-        self._progress_bar.setValue(0)
-        self._progress_bar.show()
-
-        self._dl_thread = QThread()
-        self._dl_worker = _DownloadWorker(self._vm, self._selected.version)
-        self._dl_worker.moveToThread(self._dl_thread)
-        self._dl_thread.started.connect(self._dl_worker.run)
-        self._dl_worker.progress.connect(self._on_dl_progress)
-        self._dl_worker.finished.connect(self._on_dl_finished)
-        self._dl_worker.cancelled.connect(self._on_dl_cancelled)
-        self._dl_worker.error.connect(self._on_dl_error)
-        self._dl_worker.finished.connect(self._dl_thread.quit)
-        self._dl_worker.cancelled.connect(self._dl_thread.quit)
-        self._dl_worker.error.connect(self._dl_thread.quit)
-        self._dl_thread.start()
-
-    def _cancel_active_download(self, *, wait_ms: int = 10000) -> None:
-        """Cooperatively stop the in-flight download and wait for the thread.
-
-        The worker deletes its partial temp file before exiting, so closing
-        the dialog mid-download can no longer corrupt the version cache
-        (issue #43).
-        """
-        if self._dl_worker is not None:
-            self._dl_worker.cancel()
-        if self._dl_thread is not None and self._dl_thread.isRunning():
-            self._dl_thread.quit()
-            self._dl_thread.wait(wait_ms)
-
-    def reject(self):
-        self._cancel_active_download()
-        super().reject()
-
-    def closeEvent(self, event):
-        self._cancel_active_download()
-        super().closeEvent(event)
-
-    def _on_dl_progress(self, downloaded: int, total: int):
-        if total > 0:
-            self._progress_bar.setValue(int(downloaded * 100 / total))
-
-    def _on_dl_finished(self, _path: str):
-        self._progress_bar.hide()
+        manager = self._vm
+        self._queue.submit(
+            f"engine:{engine.version}", f"Infernux {engine.version}",
+            lambda report: manager.download_version(
+                engine.version,
+                on_progress=lambda done, total: report(tr("Downloading"), done, total),
+            ),
+        )
         self.accept()
-
-    def _on_dl_cancelled(self):
-        self._progress_bar.hide()
-        self._btn_install.setEnabled(True)
-
-    def _on_dl_error(self, msg: str):
-        self._progress_bar.hide()
-        QMessageBox.critical(self, tr("Download Failed"), msg)
-        self._btn_install.setEnabled(True)
 
 
 # ─── Main Installs page ─────────────────────────────────────────────
 
 class InstallsView(QWidget):
-    """Page showing installed engine versions with install/locate actions."""
+    """Engine installations only; all writes are owned by the shared queue."""
 
-    def __init__(self, version_manager: VersionManager, runtime_manager=None, parent=None):
+    runtime_install_requested = Signal(str)
+
+    def __init__(self, version_manager, queue: InstallQueue, parent=None):
         super().__init__(parent)
         self._vm = version_manager
-        self._runtime_manager = runtime_manager
-
+        self._queue = queue
+        self._install_dialog = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
-
-        self._runtime_card = AnimatedSurfaceFrame("versionCard")
-        self._runtime_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        runtime_layout = QHBoxLayout(self._runtime_card)
-        runtime_layout.setContentsMargins(16, 12, 16, 12)
-        runtime_layout.setSpacing(14)
-
-        runtime_info = QVBoxLayout()
-        runtime_info.setSpacing(4)
-        runtime_info.setContentsMargins(0, 0, 0, 0)
-        self._runtime_status = QLabel()
-        self._runtime_status.setObjectName("cardName")
-        runtime_info.addWidget(self._runtime_status)
-        self._runtime_path = QLabel()
-        self._runtime_path.setObjectName("cardPath")
-        self._runtime_path.setWordWrap(True)
-        runtime_info.addWidget(self._runtime_path)
-        runtime_layout.addLayout(runtime_info, 1)
-
-        self._runtime_button = QPushButton(tr("Install Python 3.12"))
-        self._runtime_button.setObjectName("primaryBtn")
-        self._runtime_button.setFixedHeight(34)
-        self._runtime_button.clicked.connect(self._on_install_python)
-        runtime_layout.addWidget(self._runtime_button)
-
-        # ── Header ───────────────────────────────────────────────────
         header = QHBoxLayout()
-        header.setContentsMargins(4, 0, 0, 12)
-
-        title_block = QVBoxLayout()
-        title_block.setSpacing(2)
-        title = QLabel(tr("Installs"))
+        title = QLabel(tr("Engine versions"))
         title.setObjectName("pageTitle")
-        title_block.addWidget(title)
-        subtitle = QLabel(tr("Installs and managed runtime"))
-        subtitle.setObjectName("pageSubtitle")
-        title_block.addWidget(subtitle)
-        header.addLayout(title_block)
+        header.addWidget(title)
         header.addStretch()
-
         self.btn_locate = QPushButton(tr("Locate"))
         self.btn_locate.setObjectName("normalBtn")
-        self.btn_locate.setFixedHeight(36)
-        self.btn_locate.setMinimumWidth(90)
+        self.btn_locate.setMinimumHeight(36)
         self.btn_locate.clicked.connect(self._on_locate)
         header.addWidget(self.btn_locate)
-
-        spacer = QLabel("")
-        spacer.setFixedWidth(8)
-        header.addWidget(spacer)
-
         self.btn_install = QPushButton(tr("Install Editor"))
         self.btn_install.setObjectName("primaryBtn")
-        self.btn_install.setFixedHeight(36)
-        self.btn_install.setMinimumWidth(130)
+        self.btn_install.setMinimumHeight(36)
         self.btn_install.clicked.connect(self._on_install_editor)
         header.addWidget(self.btn_install)
-
         layout.addLayout(header)
-        layout.addWidget(self._runtime_card)
-
-        # ── Version list (scrollable) ────────────────────────────────
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         layout.addWidget(scroll, 1)
-
         self._container = QWidget()
         _configure_install_scroll_area(scroll, self._container)
         self._card_layout = QVBoxLayout(self._container)
         self._card_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._card_layout.setSpacing(6)
-        self._card_layout.setContentsMargins(0, 0, 4, 0)
         scroll.setWidget(self._container)
-
+        queue.job_finished.connect(self._on_job_finished)
         self.refresh()
 
-    # ── Public API ───────────────────────────────────────────────────
+    def _on_job_finished(self, _job):
+        self.refresh()
 
     def refresh(self):
-        self._refresh_runtime_status()
-
-        # Clear existing cards
         while self._card_layout.count():
             item = self._card_layout.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-
+            if item.widget():
+                item.widget().deleteLater()
         versions = self._vm.installed_versions()
         if not versions:
-            empty = QLabel(tr("No engine versions installed.\nClick 'Install Editor' or 'Locate' to add one."))
-            empty.setObjectName("emptyHint")
-            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._card_layout.addWidget(empty)
-        else:
-            for ver in versions:
-                wheel = self._vm.get_wheel_path(ver) or ""
-                card = _VersionCard(ver, wheel)
-                card.remove_clicked.connect(self._on_remove_version)
-                self._card_layout.addWidget(card)
-
-        self._card_layout.addStretch()
-
-    def _refresh_runtime_status(self):
-        if self._runtime_manager is None:
-            self._runtime_card.hide()
-            return
-
-        self._runtime_card.show()
-        runtime_path = self._runtime_manager.get_runtime_path()
-        if runtime_path:
-            self._runtime_status.setText(tr("Python 3.12 runtime is ready"))
-            self._runtime_path.setText(runtime_path)
-            self._runtime_button.setText(tr("Reinstall Python 3.12"))
-        else:
-            self._runtime_status.setText(tr("Python 3.12 runtime is missing"))
-            self._runtime_path.setText(
-                tr("The private Python runtime is not ready. Hub will extract its isolated Python 3.12 archive when you choose Install.")
-            )
-            self._runtime_button.setText(tr("Install Python 3.12"))
-
-    # ── Actions ──────────────────────────────────────────────────────
+            label = QLabel(tr("No engine versions installed.\nClick 'Install Editor' or 'Locate' to add one."))
+            label.setObjectName("emptyHint")
+            self._card_layout.addWidget(label)
+        for version in versions:
+            card = _VersionCard(version, self._vm.get_wheel_path(version) or "")
+            card.remove_clicked.connect(self._on_remove_version)
+            self._card_layout.addWidget(card)
 
     def _on_install_editor(self):
-        dlg = InstallEditorDialog(self._vm, parent=self)
-        if dlg.exec() == QDialog.Accepted:
-            self.refresh()
-
-    def _on_install_python(self):
-        if self._runtime_manager is None:
-            return
-
-        dlg = PythonRuntimeInstallDialog(
-            self._runtime_manager,
-            self,
-            reinstall=self._runtime_manager.has_runtime(),
-        )
-        if dlg.exec() == QDialog.Accepted:
-            QMessageBox.information(
-                self,
-                tr("Python Installed"),
-                tr("Python 3.12 is ready at:\n{path}", path=dlg.result_path),
-            )
-        elif dlg.error_text:
-            QMessageBox.critical(self, tr("Python Installation Failed"), dlg.error_text)
-        self.refresh()
+        if self._install_dialog is None:
+            self._install_dialog = InstallEditorDialog(self._vm, self._queue, self)
+            self._install_dialog.runtime_install_requested.connect(self.runtime_install_requested)
+        self._install_dialog.show()
+        self._install_dialog.raise_()
+        self._install_dialog.activateWindow()
 
     def _on_locate(self):
         path, _ = QFileDialog.getOpenFileName(
-            self,
-            tr("Select Infernux Wheel"),
-            "",
-            "Wheel files (*.whl)",
+            self, tr("Select Infernux Wheel"), "", "Wheel files (*.whl)",
         )
-        if not path:
-            return
-
-        try:
-            version = self._vm.install_local_wheel(path)
-            QMessageBox.information(
-                self, tr("Version Installed"),
-                tr("Infernux {version} has been installed from the selected wheel.", version=version),
+        if path:
+            manager = self._vm
+            self._queue.submit(
+                f"engine-file:{os.path.normcase(os.path.abspath(path))}",
+                os.path.basename(path),
+                lambda report: manager.install_local_wheel(path),
             )
-            self.refresh()
-        except ValueError as exc:
-            QMessageBox.critical(self, tr("Invalid Wheel"), str(exc))
 
-    def _on_remove_version(self, version: str):
-        confirm = QMessageBox.question(
-            self,
-            tr("Remove Version"),
-            f"Remove Infernux {version}?\n\n"
-            + tr("This deletes the cached wheel. Projects using this version will need to reinstall it."),
-        )
-        if confirm != QMessageBox.Yes:
+    def _on_remove_version(self, version):
+        if self._queue.busy:
+            QMessageBox.information(self, tr("Installation in progress"),
+                                    tr("Wait for installations to finish before removing an engine."))
             return
-        self._vm.remove_version(version)
+        if QMessageBox.question(
+            self, tr("Remove Version"),
+            f"Infernux {version}\n" + tr("This deletes the cached wheel. Projects using this version will need to reinstall it."),
+        ) == QMessageBox.Yes:
+            self._vm.remove_version(version)
+            self.refresh()
+
+
+class PythonRuntimesView(QWidget):
+    def __init__(self, manager, queue: InstallQueue, parent=None):
+        super().__init__(parent)
+        self._manager = manager
+        self._queue = queue
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        title = QLabel(tr("Runtime environment"))
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        description = QLabel(tr("Required to run the editor. Hub installs and manages Python for you; no programming or environment setup is needed."))
+        description.setWordWrap(True)
+        description.setObjectName("pageSubtitle")
+        layout.addWidget(description)
+        self._cards = QVBoxLayout()
+        layout.addLayout(self._cards)
+        layout.addStretch()
+        queue.job_finished.connect(self._on_job_finished)
+        queue.changed.connect(self._update_actions)
         self.refresh()
+
+    def _update_actions(self):
+        _update_install_buttons(self, self._queue)
+
+    def _on_job_finished(self, _job):
+        self.refresh()
+
+    def refresh(self):
+        while self._cards.count():
+            self._cards.takeAt(0).widget().deleteLater()
+        for version in self._manager.supported_versions():
+            card = _RuntimeCard(
+                version, self._manager.get_runtime_path(version) or "",
+                default=version == self._manager.default_version,
+            )
+            card.install_clicked.connect(self.install)
+            self._cards.addWidget(card)
+        self._update_actions()
+
+    def install(self, version):
+        manager = self._manager
+        reinstall = manager.has_runtime(version)
+        def prepare(report):
+            report(tr("Preparing runtime"), 0, 0)
+            status = lambda text: report(text, 0, 0)
+            if reinstall:
+                return manager.reinstall_runtime(version, on_status=status)
+            return manager.ensure_runtime(version=version, on_status=status)
+        return self._queue.submit(f"python:{version}", f"Python {version}", prepare)
+
+
+class AndroidSupportView(QWidget):
+    def __init__(self, manager, queue: InstallQueue, parent=None):
+        super().__init__(parent)
+        self._manager = manager
+        self._queue = queue
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        title = QLabel(tr("Android support"))
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        description = QLabel(tr("Only needed to build Android games. Install from the official channel; Hub manages the shared build tools for all projects."))
+        description.setWordWrap(True)
+        description.setObjectName("pageSubtitle")
+        layout.addWidget(description)
+        self._cards = QVBoxLayout()
+        layout.addLayout(self._cards)
+        layout.addStretch()
+        queue.job_finished.connect(self._on_job_finished)
+        queue.changed.connect(self._update_actions)
+        self.refresh()
+
+    def _update_actions(self):
+        _update_install_buttons(self, self._queue)
+
+    def _on_job_finished(self, _job):
+        self.refresh()
+
+    def refresh(self):
+        while self._cards.count():
+            self._cards.takeAt(0).widget().deleteLater()
+        card = _AndroidSupportCard(self._manager)
+        card.install_clicked.connect(self.install)
+        self._cards.addWidget(card)
+        self._update_actions()
+
+    def install(self):
+        manager = self._manager
+        return self._queue.submit(
+            "android", tr("Android support"),
+            lambda report: manager.install(
+                on_progress=lambda done, total: report(tr("Downloading"), done, total),
+            ),
+        )

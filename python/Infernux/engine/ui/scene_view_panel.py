@@ -16,8 +16,6 @@ from . import imgui_keys as _keys
 import Infernux.resources as _resources
 
 # Gizmo handle IDs — must match C++ EditorTools constants
-from Infernux.debug import Debug
-
 _SCENE_VIEWPORT_SEMANTIC_ID = "scene_view.viewport"
 from Infernux.lib._Infernux import (
     GIZMO_X_AXIS_ID,
@@ -54,81 +52,21 @@ ROTATE_SNAP_DEGREES = 15.0
 SCALE_SNAP_FACTOR = 0.1
 
 
-# ======================================================================
-# Quaternion math helpers  (matches GLM convention: ZYX intrinsic order,
-# euler = (pitch/X, yaw/Y, roll/Z) in degrees)
-# ======================================================================
-
-def _euler_deg_to_quat(ex, ey, ez):
-    """Euler angles (degrees, YXZ intrinsic) → quaternion (w,x,y,z).
-
-    Matches C++ ``EulerYXZToQuat``:  q = qY * qX * qZ.
-    """
-    rx = math.radians(ex) * 0.5
-    ry = math.radians(ey) * 0.5
-    rz = math.radians(ez) * 0.5
-    cx, sx = math.cos(rx), math.sin(rx)
-    cy, sy = math.cos(ry), math.sin(ry)
-    cz, sz = math.cos(rz), math.sin(rz)
-    return (
-        cy * cx * cz + sy * sx * sz,   # w
-        cy * sx * cz + sy * cx * sz,   # x
-        sy * cx * cz - cy * sx * sz,   # y
-        cy * cx * sz - sy * sx * cz,   # z
-    )
-
-
-def _quat_to_euler_deg(q):
-    """Quaternion (w,x,y,z) → Euler angles (degrees, YXZ intrinsic).
-
-    Matches C++ ``QuatToEulerYXZ``.
-    """
-    w, x, y, z = q
-    # sinX = 2(w*x - y*z)
-    sin_x = 2.0 * (w * x - y * z)
-    if abs(sin_x) < 0.9999:
-        ex = math.asin(max(-1.0, min(1.0, sin_x)))
-        ey = math.atan2(2.0 * (x * z + w * y),
-                        1.0 - 2.0 * (x * x + y * y))
-        ez = math.atan2(2.0 * (x * y + w * z),
-                        1.0 - 2.0 * (x * x + z * z))
-    else:
-        # Gimbal lock at pitch = ±90°
-        ex = math.copysign(math.pi / 2.0, sin_x)
-        ey = math.atan2(-(2.0 * (x * z - w * y)),
-                        1.0 - 2.0 * (y * y + z * z))
-        ez = 0.0
-    return (math.degrees(ex), math.degrees(ey), math.degrees(ez))
-
-
-def _quat_mul(a, b):
-    """Hamilton product of two quaternions (w,x,y,z)."""
-    aw, ax, ay, az = a
-    bw, bx, by, bz = b
-    return (
-        aw * bw - ax * bx - ay * by - az * bz,
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-    )
-
-
-def _axis_angle_to_quat(ax, ay, az, angle_deg):
-    """Axis-angle → quaternion (w,x,y,z).  Axis must be unit-length."""
-    half = math.radians(angle_deg) * 0.5
-    s = math.sin(half)
-    return (math.cos(half), ax * s, ay * s, az * s)
-
-
 from ._scene_view_gizmo import SceneViewGizmoMixin
 from ._scene_view_camera import SceneViewCameraMixin
 from ._scene_view_overlays import SceneViewOverlaysMixin
 from ._scene_view_picking import SceneViewPickingMixin
 from ._scene_view_math import SceneViewMathMixin
-from ._scene_view_line_tools import SceneViewLineToolsMixin
 
 @editor_panel("Scene", type_id="scene_view", title_key="panel.scene")
-class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlaysMixin, SceneViewPickingMixin, SceneViewMathMixin, SceneViewLineToolsMixin, EditorPanel):
+class SceneViewPanel(
+    SceneViewGizmoMixin,
+    SceneViewCameraMixin,
+    SceneViewOverlaysMixin,
+    SceneViewPickingMixin,
+    SceneViewMathMixin,
+    EditorPanel,
+):
     """
     Unity-style Scene View panel with 3D viewport and camera controls.
     
@@ -266,26 +204,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         self._particle_preview_last_tick = 0.0
         self._particle_preview_selection_service = None
 
-        # LineRenderer scene authoring state.
-        self._line_edit_mode = 0  # 0=None, 1=Edit Points, 2=Create Points
-        self._line_active_component_id = 0
-        self._line_show_wireframe = True
-        self._line_simplify_preview = False
-        self._line_simplify_tolerance = 1.0
-        self._line_create_input = 0  # 0=mouse plane, 1=physics raycast
-        self._line_create_layer_mask = 0x7FFFFFFF
-        self._line_create_min_distance = 0.1
-        self._line_create_offset = 0.0
-        self._line_selected_points = set()
-        self._line_point_dragging = False
-        self._line_drag_plane_point = (0.0, 0.0, 0.0)
-        self._line_drag_plane_normal = (0.0, 0.0, 1.0)
-        self._line_drag_start_world = (0.0, 0.0, 0.0)
-        self._line_drag_start_positions = []
-        self._line_drag_before_document = None
-        self._line_create_dragging = False
-        self._line_create_before_document = None
-    
+
     def set_engine(self, engine):
         """Set the engine reference for camera control."""
         if engine is None:
@@ -568,8 +487,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         """Compute bounding-sphere center and radius for *game_object*.
 
         Merges world-space AABBs of all MeshRenderers on the object and its
-        children.  Falls back to the transform position with a default radius
-        if no renderers exist.
+        children. Objects without renderers use their transform position.
         """
         bmin = [float('inf')] * 3
         bmax = [float('-inf')] * 3
@@ -579,18 +497,15 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             nonlocal found
             mr = obj.get_cpp_component("MeshRenderer")
             if mr is not None:
-                try:
-                    bounds = mr.get_world_bounds()
-                    if bounds and len(bounds) == 6:
-                        for i in range(3):
-                            if bounds[i] < bmin[i]:
-                                bmin[i] = bounds[i]
-                            if bounds[i + 3] > bmax[i]:
-                                bmax[i] = bounds[i + 3]
-                        found = True
-                except Exception as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                    pass
+                bounds = mr.get_world_bounds()
+                if len(bounds) != 6:
+                    raise ValueError("MeshRenderer world bounds must contain 6 values")
+                for i in range(3):
+                    if bounds[i] < bmin[i]:
+                        bmin[i] = bounds[i]
+                    if bounds[i + 3] > bmax[i]:
+                        bmax[i] = bounds[i + 3]
+                found = True
             for child in obj.get_children():
                 _collect(child)
 
@@ -606,7 +521,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             radius = math.sqrt(dx * dx + dy * dy + dz * dz) * 0.5
             return (cx, cy, cz), max(radius, 0.1)
 
-        # Fallback: use transform position with a default radius
+        # Transform-only objects still have a concrete point to frame.
         pos = game_object.transform.position
         return (pos.x, pos.y, pos.z), 1.0
 
@@ -625,12 +540,8 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
     @classmethod
     def _planar_visible_side(cls, obj, mr):
         """Return a preferred world-space viewing side for flat one-sided meshes."""
-        try:
-            positions = mr.get_positions()
-            indices = mr.get_indices()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            return None
+        positions = mr.get_positions()
+        indices = mr.get_indices()
 
         if not positions or len(indices) < 3:
             return None
@@ -677,11 +588,8 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         if coherence < 0.98:
             return None
 
-        try:
-            material = mr.get_effective_material(0)
-            render_state = material.get_render_state() if material is not None else None
-        except Exception:
-            render_state = None
+        material = mr.get_effective_material(0)
+        render_state = material.get_render_state() if material is not None else None
 
         if render_state is None:
             return None
@@ -690,10 +598,7 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
         if cull_mode == 0:
             return None
 
-        try:
-            front_face = int(getattr(render_state, 'front_face', 1))
-        except (TypeError, ValueError):
-            front_face = 1
+        front_face = int(render_state.front_face)
         front_sign = -1.0 if front_face == 1 else 1.0
         visible_sign = front_sign if cull_mode == 2 else -front_sign
         local_side = (
@@ -702,13 +607,9 @@ class SceneViewPanel(SceneViewGizmoMixin, SceneViewCameraMixin, SceneViewOverlay
             normal[2] * visible_sign,
         )
 
-        try:
-            from Infernux.math import Vector3
-            world_side_vec = obj.transform.transform_direction(Vector3(*local_side))
-            world_side = cls._vector3_to_tuple(world_side_vec)
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            return None
+        from Infernux.math import Vector3
+        world_side_vec = obj.transform.transform_direction(Vector3(*local_side))
+        world_side = cls._vector3_to_tuple(world_side_vec)
 
         return cls._normalize3(world_side)
 

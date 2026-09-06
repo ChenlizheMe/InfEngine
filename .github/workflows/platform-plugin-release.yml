@@ -1,0 +1,207 @@
+name: Hub Android Platform Kit Release
+
+on:
+  push:
+    paths:
+      - .github/workflows/platform-plugin-release.yml
+      - packaging/android_support.py
+      - scripts/setup/package_android_support.py
+      - scripts/setup/build_android_python_runtime.sh
+      - scripts/setup/android_python_runtime.py
+      - scripts/setup/android_numpy_cross.ini
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to publish to; leave empty to verify the selected ref
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  resolve-release:
+    runs-on: windows-latest
+    outputs:
+      release-tag: ${{ steps.release.outputs.tag }}
+      source-ref: ${{ steps.release.outputs.source-ref }}
+    steps:
+      - name: Resolve release tag
+        id: release
+        shell: pwsh
+        env:
+          RELEASE_EVENT_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_INPUT_TAG: ${{ inputs.release_tag }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:RELEASE_EVENT_TAG
+          if (-not $tag) {
+            $tag = $env:RELEASE_INPUT_TAG
+          }
+          if ($tag -and $tag -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+            throw "Invalid release tag: $tag"
+          }
+          $sourceRef = $env:SOURCE_COMMIT
+          if ($tag) {
+            gh release view $tag --repo $env:GITHUB_REPOSITORY --json tagName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $sourceRef = $tag
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "source-ref=$sourceRef" >> $env:GITHUB_OUTPUT
+
+  build-android-python-support:
+    needs: resolve-release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.source-ref }}
+
+      - name: Checkout the pinned Android runtime manifest contract
+        run: git submodule update --init --depth 1 external/plugins/infernux_android
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install the CPython build NDK
+        run: sdkmanager "ndk;27.3.13750724"
+
+      - name: Cache Android CPython support
+        uses: actions/cache@v4
+        with:
+          path: |
+            out/android-python
+            out/android-python-work
+          key: android-python-support-${{ runner.os }}-${{ hashFiles('scripts/setup/build_android_python_runtime.sh', 'scripts/setup/android_python_runtime.py', 'scripts/setup/android_numpy_cross.ini') }}
+
+      - name: Build both pinned Android CPython runtimes
+        run: |
+          for abi in arm64-v8a x86_64; do
+            prefix="$GITHUB_WORKSPACE/out/android-python/$abi"
+            if [[ -d "$prefix" ]]; then
+              python scripts/setup/android_python_runtime.py verify \
+                "$prefix" \
+                --abi "$abi" \
+                --application-minimum-api 26
+            else
+              scripts/setup/build_android_python_runtime.sh \
+                "$abi" \
+                "$prefix" \
+                "$GITHUB_WORKSPACE/out/android-python-work"
+            fi
+          done
+          tar -C out/android-python -czf out/android-python-support.tar.gz \
+            arm64-v8a x86_64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-python-support-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/android-python-support.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-android-support:
+    needs: [resolve-release, build-android-python-support]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            host: windows-x64
+          - runner: ubuntu-22.04
+            host: linux-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.source-ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.12"
+          # Hub kits contain the pinned distribution, not an upstream example wrapper.
+          validate-wrappers: false
+
+      - name: Install the pinned Android build SDK
+        shell: pwsh
+        run: |
+          sdkmanager `
+            "platform-tools" `
+            "platforms;android-36" `
+            "build-tools;36.0.0" `
+            "cmake;3.30.5" `
+            "ndk;29.0.14206865"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-python-support-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/android-python-download
+
+      - name: Restore Android CPython runtimes
+        shell: bash
+        run: |
+          mkdir -p out/android-python
+          tar -C out/android-python -xzf \
+            out/android-python-download/android-python-support.tar.gz
+
+      - name: Assemble the Hub Android Platform Kit
+        id: android-kit
+        shell: bash
+        run: |
+          gradle_home="$(python -c 'import shutil; from pathlib import Path; print(Path(shutil.which("gradle")).resolve().parent.parent)')"
+          test -n "$gradle_home"
+          sdk_root="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          test -n "$sdk_root"
+          asset_name="$(PYTHONPATH=packaging python -c 'from android_support import archive_name; print(archive_name())')"
+          python scripts/setup/package_android_support.py \
+            --sdk "$sdk_root" \
+            --jdk "$JAVA_HOME" \
+            --gradle "$gradle_home" \
+            --python-arm64 out/android-python/arm64-v8a \
+            --python-x86-64 out/android-python/x86_64 \
+            --output "out/$asset_name"
+          echo "asset=out/$asset_name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-support-${{ matrix.host }}
+          path: ${{ steps.android-kit.outputs.asset }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload the Android Platform Kit
+        if: needs.resolve-release.outputs.release-tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload '${{ needs.resolve-release.outputs.release-tag }}' \
+            --repo '${{ github.repository }}' \
+            '${{ steps.android-kit.outputs.asset }}'

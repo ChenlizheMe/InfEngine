@@ -5,7 +5,6 @@ from os import PathLike
 from typing import Any, Mapping, Optional
 
 PLAYER_MANIFEST_SCHEMA: str
-PLAYER_MANIFEST_VERSION: int
 
 class RuntimeFlavor(str, Enum):
     EDITOR_DEVELOPMENT: RuntimeFlavor

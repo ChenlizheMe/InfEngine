@@ -13,7 +13,12 @@ def test_crt_preload_uses_ctypes_and_preserves_dependency_order(tmp_path, monkey
     loaded = []
     monkeypatch.setattr(lib, "native_dir", str(tmp_path))
     monkeypatch.setattr(lib.sys, "platform", "win32")
-    monkeypatch.setattr(lib.ctypes, "WinDLL", lambda path: loaded.append(path))
+    monkeypatch.setattr(
+        lib.ctypes,
+        "WinDLL",
+        lambda path: loaded.append(path),
+        raising=False,
+    )
 
     lib._preload_bundled_crt_dlls()
 
@@ -89,3 +94,21 @@ def test_native_loader_without_override_preserves_package_import(monkeypatch):
 
     assert lib._load_native_module(None) is expected
     assert imported == ["Infernux.lib._Infernux"]
+
+
+def test_explicit_native_override_excludes_package_library_directory(monkeypatch):
+    registered = []
+    monkeypatch.setattr(lib, "_register_native_search_dir", registered.append)
+
+    lib._register_default_native_search_dir("/current/native-closure")
+
+    assert registered == []
+
+
+def test_default_native_resolution_registers_package_library_directory(monkeypatch):
+    registered = []
+    monkeypatch.setattr(lib, "_register_native_search_dir", registered.append)
+
+    lib._register_default_native_search_dir(None)
+
+    assert registered == [lib.lib_dir]

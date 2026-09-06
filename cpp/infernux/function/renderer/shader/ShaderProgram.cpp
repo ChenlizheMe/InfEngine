@@ -330,11 +330,6 @@ void ShaderProgram::MergeReflectionData()
                       return a.set < b.set;
                   return a.binding < b.binding;
               });
-
-    INXLOG_DEBUG("Merged ", m_descriptorBindings.size(), " descriptor bindings for shader: ", m_shaderId);
-    for (const auto &b : m_descriptorBindings) {
-        INXLOG_DEBUG("  binding=", b.binding, " set=", b.set, " type=", static_cast<int>(b.type), " name=", b.name);
-    }
 }
 
 // Helper: human-readable name for VkFormat
@@ -405,10 +400,9 @@ void ShaderProgram::ExtractMaterialUBOLayout()
     m_hasVertexMaterialUBO = false;
     m_hasBindlessTextureIndexLayout = false;
 
-    // Look for the bindless texture-index block and material properties in the
-    // fragment shader. The index block belongs to the material set of the
-    // active domain, so its set/binding cannot be hard-coded here.
-    // Convention: Material UBO can be at binding 2 or 3 depending on shader type (unlit vs lit)
+    // Look for the bindless texture-index block and the canonical material
+    // properties block in the fragment shader. The index block belongs to the
+    // material set of the active domain, so its set/binding cannot be hard-coded here.
     for (const auto &ubo : m_fragReflection.GetUniformBuffers()) {
         if (ubo.name == "InxMaterialTextureIndices") {
             m_bindlessTextureIndexLayout.binding = ubo.binding;
@@ -417,18 +411,12 @@ void ShaderProgram::ExtractMaterialUBOLayout()
             m_hasBindlessTextureIndexLayout = true;
             continue;
         }
-        bool isMaterialUBO =
-            (ubo.name == "MaterialProperties" || ubo.name == "Material" || ubo.name == "MaterialUBO" ||
-             ((ubo.binding == 2 || ubo.binding == 3) && ubo.set == 0)); // Fallback: binding 2 or 3, set 0
-
-        if (isMaterialUBO) {
+        if (ubo.name == "MaterialProperties") {
             m_materialUBOLayout.binding = ubo.binding;
             m_materialUBOLayout.size = ubo.size;
             m_materialUBOLayout.members = ubo.members;
             m_hasMaterialUBO = true;
 
-            INXLOG_DEBUG("Found material UBO '", ubo.name, "' at binding ", ubo.binding, " with ", ubo.members.size(),
-                         " members, size=", ubo.size);
             break;
         }
     }
@@ -436,15 +424,12 @@ void ShaderProgram::ExtractMaterialUBOLayout()
     // Also look for a vertex-stage MaterialProperties UBO at binding 14
     // (used when the vertex ShaderInfo declares Properties)
     for (const auto &ubo : m_vertReflection.GetUniformBuffers()) {
-        if ((ubo.name == "MaterialProperties" || ubo.name == "Material" || ubo.name == "MaterialUBO") &&
-            ubo.binding == 14 && ubo.set == 0) {
+        if (ubo.name == "MaterialProperties" && ubo.binding == 14 && ubo.set == 0) {
             m_vertexMaterialUBOLayout.binding = ubo.binding;
             m_vertexMaterialUBOLayout.size = ubo.size;
             m_vertexMaterialUBOLayout.members = ubo.members;
             m_hasVertexMaterialUBO = true;
 
-            INXLOG_DEBUG("Found vertex material UBO '", ubo.name, "' at binding 14 with ", ubo.members.size(),
-                         " members, size=", ubo.size);
             break;
         }
     }
@@ -546,8 +531,6 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
         }
 
         m_descriptorSetLayouts[setIndex] = layout;
-        INXLOG_DEBUG("Created descriptor set layout for set ", setIndex, " with ", bindings.size(), " bindings",
-                     (enableUpdateAfterBind && setIndex == 0) ? " (UPDATE_AFTER_BIND)" : "");
     }
 
     // If no bindings, create an empty layout for set 0

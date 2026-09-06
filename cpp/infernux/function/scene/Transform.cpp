@@ -4,10 +4,10 @@
 #include "GameObject.h"
 #include "Scene.h"
 #include "TransformECSStore.h"
-#include <InxLog.h>
 #include <algorithm>
 #include <climits>
 #include <cmath>
+#include <core/log/InxLog.h>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;

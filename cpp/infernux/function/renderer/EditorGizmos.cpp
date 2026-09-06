@@ -1,6 +1,6 @@
 #include "EditorGizmos.h"
-#include "InxLog.h"
 #include <core/config/MathConstants.h>
+#include <core/log/InxLog.h>
 #include <function/scene/Scene.h>
 
 namespace infernux
@@ -128,12 +128,8 @@ void EditorGizmos::CreateOutlineMesh()
     m_outlineIndices.clear();
 
     if (!m_hasSelectionOutline || m_selectionPositions.empty() || m_selectionIndices.empty()) {
-        INXLOG_DEBUG("CreateOutlineMesh: no selection data, hasOutline=", m_hasSelectionOutline,
-                     ", positions=", m_selectionPositions.size(), ", indices=", m_selectionIndices.size());
         return;
     }
-
-    INXLOG_DEBUG("CreateOutlineMesh: creating outline with ", m_selectionPositions.size(), " positions");
 
     // Build smooth normals by averaging face normals at each vertex
     std::vector<glm::vec3> smoothNormals(m_selectionPositions.size(), glm::vec3(0.0f));

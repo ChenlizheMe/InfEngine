@@ -9,6 +9,7 @@ from .operations import (
     OperationKind,
     OperationRegistry,
     OperationSchema,
+    capability_granted,
 )
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "OperationKind",
     "OperationRegistry",
     "OperationSchema",
+    "capability_granted",
 ]

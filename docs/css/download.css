@@ -70,6 +70,30 @@
     font-size: 0.78rem;
 }
 
+.hub-platform-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, max-content));
+    gap: 14px;
+    margin-top: 18px;
+}
+
+.hub-platform-actions > div {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 7px;
+}
+
+.hub-platform-actions .download-meta {
+    margin-top: 0;
+}
+
+.hub-platform-actions .btn.is-disabled {
+    opacity: 0.48;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
 .advanced-download {
     margin-top: 28px;
     border-top: 1px solid var(--border);
@@ -196,6 +220,10 @@
     .hub-download .btn,
     .download-meta {
         grid-column: 1 / -1;
+    }
+
+    .hub-platform-actions {
+        grid-template-columns: 1fr;
     }
 
     .version-picker {

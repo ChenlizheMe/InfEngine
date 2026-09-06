@@ -35,10 +35,17 @@ def _mutation(operation, path, guid=""):
 
 
 class _AssetDatabaseProbe:
+    refresh_pending = False
+
     def __init__(self):
         self.guid_by_path = {}
         self.queries = []
         self.mutations = []
+
+    def complete_pending_refresh(self):
+        if not self.refresh_pending:
+            raise AssertionError("completion requires pending refresh work")
+        self.refresh_pending = False
 
     def get_guid_from_path(self, path):
         self.queries.append((path, threading.get_ident()))
@@ -92,6 +99,12 @@ def _event(path, *, destination=""):
     if destination:
         values["dest_path"] = str(destination)
     return SimpleNamespace(**values)
+
+
+def _run_script_publication_owner(handler: ResourceChangeHandler) -> int:
+    if not handler._frontend_worker_running:
+        handler.process_script_worker()
+    return handler._drain_script_results()
 
 
 def _patch_asset_manager(monkeypatch, calls):
@@ -718,7 +731,7 @@ def test_worker_code_is_forwarded_to_owner_script_publish(monkeypatch, tmp_path)
     handler._publish_valid_script = lambda *args, **kwargs: published.append(kwargs) or True
 
     handler._check_script(str(path), origin="editor")
-    assert handler._publish_script_revisions() == 0
+    assert _run_script_publication_owner(handler) == 0
 
     assert len(published) == 1
     assert published[0]["source"] == path.read_bytes()
@@ -793,9 +806,7 @@ def test_prepare_startup_finishes_refresh_before_the_watcher_loop(monkeypatch, t
     manager.cleanup()
 
 
-def test_stale_background_asset_refresh_restarts_from_current_generation(
-    monkeypatch, tmp_path
-):
+def test_background_asset_refresh_uses_native_transaction_result(tmp_path):
     class Database(_AssetDatabaseProbe):
         refresh_pending = True
 
@@ -807,35 +818,132 @@ def test_stale_background_asset_refresh_restarts_from_current_generation(
         def try_commit_refresh(self):
             self.commit_attempts += 1
             if self.commit_attempts == 1:
-                self.refresh_pending = False
-                raise RuntimeError(
-                    "AssetDatabase scan artifact is stale after a newer owner-thread mutation"
-                )
+                self.refresh_restarts += 1
+                return False
             self.refresh_pending = False
             return True
-
-        def begin_refresh(self):
-            assert self.refresh_pending is False
-            self.refresh_restarts += 1
-            self.refresh_pending = True
 
     database = Database()
     manager = ResourcesManager(str(tmp_path), _EngineProbe(database))
     manager._startup_prepared = True
-    errors = []
-    internal = []
-    monkeypatch.setattr(Debug, "log_error", errors.append)
-    monkeypatch.setattr(Debug, "log_internal", internal.append)
 
     assert manager.process_pending_reloads() == 0
     assert database.refresh_restarts == 1
     assert database.refresh_pending is True
-    assert errors == []
-    assert internal == ["Restarted stale background AssetDatabase refresh"]
 
     assert manager.process_pending_reloads() == 0
     assert database.refresh_pending is False
-    assert errors == []
+    manager.cleanup()
+
+
+def test_initial_script_scan_includes_assets_and_installed_packages(monkeypatch, tmp_path):
+    assets = tmp_path / "Assets"
+    package_root = tmp_path / "Packages" / "vendor" / "gameplay"
+    runtime = package_root / "runtime"
+    assets.mkdir()
+    runtime.mkdir(parents=True)
+    asset_script = assets / "asset_component.py"
+    package_script = runtime / "package_component.py"
+    asset_script.write_text("value = 1\n", encoding="utf-8")
+    package_script.write_text("value = 2\n", encoding="utf-8")
+    (package_root / "inx_package.json").write_text("{}", encoding="utf-8")
+
+    manager = ResourcesManager(str(tmp_path), _EngineProbe(_AssetDatabaseProbe()))
+    handler = manager._ensure_event_handler()
+    submitted = []
+    monkeypatch.setattr(
+        handler,
+        "_check_script",
+        lambda path, **kwargs: submitted.append((path, kwargs)) or object(),
+    )
+
+    manager._initial_script_scan()
+
+    assert {Path(path) for path, _kwargs in submitted} == {
+        asset_script,
+        package_script,
+    }
+    transaction_ids = {kwargs["transaction_id"] for _path, kwargs in submitted}
+    assert len(transaction_ids) == 1
+    manager.cleanup()
+
+
+def test_resources_manager_materializes_both_script_watch_roots(tmp_path):
+    database = _AssetDatabaseProbe()
+
+    manager = ResourcesManager(str(tmp_path), _EngineProbe(database))
+
+    assert (tmp_path / "Assets").is_dir()
+    assert (tmp_path / "Packages").is_dir()
+    assert manager._script_roots == (
+        str((tmp_path / "Assets").resolve()),
+        str((tmp_path / "Packages").resolve()),
+    )
+    manager.cleanup()
+
+
+def test_new_manifestless_package_component_publishes_without_editor_restart(
+    monkeypatch,
+    tmp_path,
+):
+    database = _AssetDatabaseProbe()
+    engine = _EngineProbe(database)
+    manager = ResourcesManager(str(tmp_path), engine)
+    handler = manager._ensure_event_handler()
+    asset_calls = []
+    _patch_asset_manager(monkeypatch, asset_calls)
+    published = []
+    monkeypatch.setattr(
+        handler,
+        "_publish_valid_script",
+        lambda path, **kwargs: published.append((Path(path), kwargs)) or True,
+    )
+
+    script = tmp_path / "Packages" / "abc" / "runtime" / "component.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("from Infernux import InxComponent\nclass Live(InxComponent):\n    pass\n")
+
+    handler.on_created(_event(script))
+    assert manager.process_pending_reloads(force=True) > 0
+
+    assert [entry[0] for entry in database.mutations] == ["import"]
+    assert published and published[0][0] == script
+    assert published[0][1]["catalog_event"] == "created"
+    record = handler.dependency_graph.module_for_path(script)
+    assert record is not None
+    assert record.id.module_name == "_infernux_packages.abc.runtime.component"
+    manager.cleanup()
+
+
+def test_package_runtime_script_publishes_with_isolated_graph_identity(
+    monkeypatch,
+    tmp_path,
+):
+    (tmp_path / "Assets").mkdir()
+    package_root = tmp_path / "Packages" / "vendor" / "gameplay"
+    runtime = package_root / "runtime"
+    runtime.mkdir(parents=True)
+    (package_root / "inx_package.json").write_text("{}", encoding="utf-8")
+    script = runtime / "package_component.py"
+    script.write_text("value = 1\n", encoding="utf-8")
+
+    manager = ResourcesManager(str(tmp_path), _EngineProbe(_AssetDatabaseProbe()))
+    handler = manager._ensure_event_handler()
+    published = []
+    monkeypatch.setattr(
+        handler,
+        "_publish_valid_script",
+        lambda path, **kwargs: published.append((path, kwargs)) or True,
+    )
+
+    assert manager.submit_script_change(str(script), origin="editor") is not None
+    assert manager.process_pending_reloads(force=True) == 0
+    assert [Path(path) for path, _kwargs in published] == [script]
+    record = handler.dependency_graph.module_for_path(script)
+    assert record is not None
+    assert record.id.module_name == (
+        "_infernux_packages.vendor.gameplay.runtime.package_component"
+    )
     manager.cleanup()
 
 
@@ -1060,11 +1168,6 @@ def test_script_revision_is_published_only_by_resources_safe_point(monkeypatch, 
 
     path = tmp_path / "controller.py"
     path.write_text("value = 1\n", encoding="utf-8")
-    monkeypatch.setattr(
-        handler._script_compiler,
-        "check_source",
-        lambda _path, _source: [],
-    )
 
     registry_calls = []
     monkeypatch.setattr(
@@ -1081,7 +1184,7 @@ def test_script_revision_is_published_only_by_resources_safe_point(monkeypatch, 
     assert registry_calls == []
     assert manager.process_pending_reloads(force=True) == 1
     assert registry_calls == [str(path)]
-    assert handler._script_revision_journal.last_known_good(str(path)) is not None
+    assert handler._script_change_collector.journal.last_known_good(str(path)) is not None
 
 
 def test_frontend_worker_does_not_publish_or_update_graph(monkeypatch, tmp_path):
@@ -1185,7 +1288,7 @@ def test_internal_script_ingress_and_watcher_echo_publish_once(monkeypatch, tmp_
         lambda *_args, **_kwargs: True,
     )
     assert manager.process_pending_reloads(force=True) == 1
-    latest = handler._script_revision_journal.last_known_good(path)
+    latest = handler._script_change_collector.journal.last_known_good(path)
     assert latest is not None
     assert latest.generation == 1
 
@@ -1304,7 +1407,7 @@ def test_failed_source_does_not_advance_published_dependency_graph(
 
     after = handler.dependency_graph.module_for_path(str(helper)).source_hash
     assert after == before
-    assert handler._script_revision_journal.last_known_good(str(helper)) is None
+    assert handler._script_change_collector.journal.last_known_good(str(helper)) is None
 
 
 def test_resource_script_validation_failure_does_not_publish_candidate(
@@ -1340,8 +1443,8 @@ def test_resource_script_validation_failure_does_not_publish_candidate(
     handler.on_modified(_event(path))
 
     assert manager.process_pending_reloads(force=True) == 1
-    assert handler._script_revision_journal.last_known_good(str(path)) is None
-    assert handler._script_revision_journal.diagnostic(str(path)).messages == (
+    assert handler._script_change_collector.journal.last_known_good(str(path)) is None
+    assert handler._script_change_collector.journal.diagnostic(str(path)).messages == (
         "invalid syntax",
     )
 
@@ -1355,12 +1458,6 @@ def test_script_failure_keeps_already_published_registry_entry(monkeypatch, tmp_
     path = tmp_path / "controller.py"
     path.write_text("value = 1\n", encoding="utf-8")
 
-    compiler_errors = []
-    monkeypatch.setattr(
-        handler._script_compiler,
-        "check_source",
-        lambda _path, _source: list(compiler_errors),
-    )
     registered = []
     unregistered = []
     monkeypatch.setattr(
@@ -1386,25 +1483,13 @@ def test_script_failure_keeps_already_published_registry_entry(monkeypatch, tmp_
     assert registered == [str(path)]
     assert unregistered == []
 
-    compiler_errors.append(
-        type(
-            "CompilerError",
-            (),
-            {
-                "file_path": str(path),
-                "line_number": 1,
-                "message": "invalid syntax",
-                "__str__": lambda self: "controller.py:1:0: invalid syntax",
-            },
-        )()
-    )
     path.write_text("def broken(:\n", encoding="utf-8")
     handler.on_modified(_event(path))
     manager.process_pending_reloads(force=True)
 
     assert registered == [str(path)]
     assert unregistered == []
-    assert handler._script_revision_journal.last_known_good(str(path)).generation == 1
+    assert handler._script_change_collector.journal.last_known_good(str(path)).generation == 1
 
 
 def test_disk_change_after_check_drops_candidate_before_publish(monkeypatch, tmp_path):
@@ -1415,11 +1500,6 @@ def test_disk_change_after_check_drops_candidate_before_publish(monkeypatch, tmp
     manager._event_handler = handler
     path = tmp_path / "controller.py"
     path.write_text("value = 'A'\n", encoding="utf-8")
-    monkeypatch.setattr(
-        handler._script_compiler,
-        "check_source",
-        lambda _path, _source: [],
-    )
     published = []
     handler._publish_valid_script = lambda *args, **kwargs: published.append(
         kwargs["source"]
@@ -1427,10 +1507,10 @@ def test_disk_change_after_check_drops_candidate_before_publish(monkeypatch, tmp
 
     handler._check_script(str(path))
     path.write_text("value = 'B'\n", encoding="utf-8")
-    handler._publish_script_revisions()
+    _run_script_publication_owner(handler)
 
     assert published == []
-    assert handler._script_revision_journal.last_known_good(str(path)) is None
+    assert handler._script_change_collector.journal.last_known_good(str(path)) is None
 
 
 def test_publish_exception_does_not_advance_lkg(monkeypatch, tmp_path):
@@ -1441,20 +1521,15 @@ def test_publish_exception_does_not_advance_lkg(monkeypatch, tmp_path):
     manager._event_handler = handler
     path = tmp_path / "controller.py"
     path.write_text("value = 1\n", encoding="utf-8")
-    monkeypatch.setattr(
-        handler._script_compiler,
-        "check_source",
-        lambda _path, _source: [],
-    )
 
     def fail_publish(*_args, **_kwargs):
         raise RuntimeError("publish callback failed")
 
     handler._publish_valid_script = fail_publish
     handler._check_script(str(path))
-    handler._publish_script_revisions()
+    _run_script_publication_owner(handler)
 
-    assert handler._script_revision_journal.last_known_good(str(path)) is None
+    assert handler._script_change_collector.journal.last_known_good(str(path)) is None
 
 
 def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(
@@ -1469,11 +1544,6 @@ def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(
     manager._event_handler = handler
     path = tmp_path / "controller.py"
     path.write_text("value = 'A'\n", encoding="utf-8")
-    monkeypatch.setattr(
-        handler._script_compiler,
-        "check_source",
-        lambda _path, _source: [],
-    )
     monkeypatch.setattr(
         "Infernux.components.registry.register_component_script",
         lambda _path, **_kwargs: None,
@@ -1492,11 +1562,22 @@ def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(
     )
 
     class _PlayModeProbe:
-        def reload_components_from_script_result(self, _path, *, source, code=None):
+        def prepare_script_reload_batch(self, revisions):
+            return SimpleNamespace(revisions=tuple(revisions))
+
+        def commit_script_reload_batch(self, batch):
             outcome = next(publish_results)
             if outcome.success:
-                live_body["value"] = source.decode("utf-8").split("'")[1]
+                live_body["value"] = (
+                    batch.revisions[0].source.decode("utf-8").split("'")[1]
+                )
             return outcome
+
+        def rollback_script_reload_batch(self, _batch):
+            return None
+
+        def finalize_script_reload_batch(self, _batch):
+            return None
 
     monkeypatch.setattr(
         PlayModeManager,
@@ -1505,17 +1586,17 @@ def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(
     )
 
     handler._check_script(str(path))
-    handler._publish_script_revisions()
-    first_lkg = handler._script_revision_journal.last_known_good(str(path))
+    _run_script_publication_owner(handler)
+    first_lkg = handler._script_change_collector.journal.last_known_good(str(path))
     assert first_lkg is not None
     assert first_lkg.generation == 1
     assert live_body["value"] == "A"
 
     path.write_text("value = 'B'\n", encoding="utf-8")
     handler._check_script(str(path))
-    handler._publish_script_revisions()
+    _run_script_publication_owner(handler)
 
-    current_lkg = handler._script_revision_journal.last_known_good(str(path))
+    current_lkg = handler._script_change_collector.journal.last_known_good(str(path))
     assert current_lkg == first_lkg
     assert live_body["value"] == "A"
 
@@ -1559,8 +1640,11 @@ def test_engine_exit_drains_resources_before_native_cleanup():
     order = []
     engine = Engine.__new__(Engine)
     engine._mode = RuntimeMode.Headless
+    engine._process_owned_exit = False
     engine._before_exit_callback = None
     engine._play_mode_manager = None
+    engine._runtime_scene_manager = None
+    engine._runtime_scheduler = SimpleNamespace(clear=lambda: None)
     engine._resources_manager = SimpleNamespace(cleanup=lambda: order.append("resources"))
     engine._engine = SimpleNamespace(cleanup=lambda: order.append("native"))
     engine._gui_objects = {}
@@ -1715,7 +1799,6 @@ def test_edit_dependency_closure_uses_shared_stable_owner_batch(monkeypatch, tmp
             self.prepared = []
             self.rolled_back = []
             self.finalized = []
-            self.legacy_prepare_count = 0
 
         def prepare_script_reload_batch(self, revisions):
             self.prepared.append(tuple(revisions))
@@ -1730,10 +1813,6 @@ def test_edit_dependency_closure_uses_shared_stable_owner_batch(monkeypatch, tmp
 
         def finalize_script_reload_batch(self, batch):
             self.finalized.append(batch)
-
-        def prepare_edit_script_reload_batch(self, _revisions):
-            self.legacy_prepare_count += 1
-            raise AssertionError("legacy Edit replacement path must not be selected")
 
     owner = _EditOwner()
     monkeypatch.setattr(
@@ -1754,7 +1833,6 @@ def test_edit_dependency_closure_uses_shared_stable_owner_batch(monkeypatch, tmp
     )
     assert owner.rolled_back == []
     assert len(owner.finalized) == 1
-    assert owner.legacy_prepare_count == 0
     assert handler._script_change_collector.last_known_good(str(first)) is not None
     assert handler._script_change_collector.last_known_good(str(second)) is not None
 
@@ -1786,13 +1864,13 @@ def test_edit_dependency_batch_failure_rolls_back_once_and_keeps_lkg_empty(
             self.batch = _Batch()
             self.rollback_count = 0
 
-        def prepare_edit_script_reload_batch(self, _revisions):
+        def prepare_script_reload_batch(self, _revisions):
             return self.batch
 
-        def commit_edit_script_reload_batch(self, _batch):
-            raise RuntimeError("second Edit member rejected")
+        def commit_script_reload_batch(self, _batch):
+            return SimpleNamespace(success=False, error="second Edit member rejected")
 
-        def rollback_edit_script_reload_batch(self, batch):
+        def rollback_script_reload_batch(self, batch):
             assert batch is self.batch
             self.rollback_count += 1
 

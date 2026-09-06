@@ -12,6 +12,10 @@ from pathlib import Path
 
 from hub_utils import is_frozen
 from project_paths import inspect_existing_project
+from project_python_runtime import (
+    project_runtime_settings_path,
+    write_project_python_version,
+)
 
 
 @dataclass(frozen=True)
@@ -25,7 +29,7 @@ class MigrationResult:
 class ProjectMigrationService:
     """Upgrade a project's pinned engine and runtime with rollback support."""
 
-    _SKIP_DIRS = {".git", ".infernux-backups", ".runtime", ".venv", "Library", "Logs"}
+    _SKIP_DIRS = {".git", ".infernux-backups", ".runtime", ".venv", "Cache", "Library", "Logs"}
 
     def __init__(self, project_model, version_manager) -> None:
         self.project_model = project_model
@@ -41,6 +45,18 @@ class ProjectMigrationService:
             raise RuntimeError(f"The project already uses Infernux {target_version}.")
         if self.version_manager is None or not self.version_manager.is_installed(target_version):
             raise RuntimeError(f"Infernux {target_version} is not installed in Hub.")
+        target_python = self.version_manager.python_version_for_engine(target_version)
+        if not target_python:
+            raise RuntimeError(
+                f"Infernux {target_version} has no valid Python ABI binding."
+            )
+        if is_frozen() and not self.project_model.runtime_manager.has_runtime(
+            target_python
+        ):
+            raise RuntimeError(
+                f"Infernux {target_version} requires Python {target_python}, which "
+                "is not installed in Hub. Install that Python runtime first."
+            )
 
         self._emit(on_status, "Creating project backup...")
         backup_path = self._create_backup(info.path, source_version, target_version)
@@ -50,9 +66,23 @@ class ProjectMigrationService:
         saved_runtime = os.path.join(info.path, f".infernux-runtime-rollback-{uuid.uuid4().hex}")
         had_runtime = os.path.exists(runtime_path)
         pin_path = os.path.join(info.path, ".infernux-version")
-        pin_bytes = Path(pin_path).read_bytes() if os.path.isfile(pin_path) else None
         requirements_path = os.path.join(info.path, "ProjectSettings", "requirements.txt")
-        requirements_bytes = Path(requirements_path).read_bytes() if os.path.isfile(requirements_path) else None
+        python_settings_path = str(project_runtime_settings_path(info.path))
+        vscode_dir = os.path.join(info.path, ".vscode")
+        had_vscode_dir = os.path.isdir(vscode_dir)
+        # Workspace interpreter settings are part of the same ABI transaction
+        # as the engine pin and runtime, including a partially written last file.
+        original_files = {
+            path: Path(path).read_bytes() if os.path.isfile(path) else None
+            for path in (
+                pin_path,
+                requirements_path,
+                python_settings_path,
+                os.path.join(vscode_dir, "settings.json"),
+                os.path.join(vscode_dir, "extensions.json"),
+                os.path.join(info.path, "pyrightconfig.json"),
+            )
+        }
 
         if had_runtime:
             os.replace(runtime_path, saved_runtime)
@@ -60,6 +90,7 @@ class ProjectMigrationService:
         temp_requirements = requirements_path + f".migrate-{uuid.uuid4().hex}"
         try:
             self._emit(on_status, "Preparing target engine runtime...")
+            write_project_python_version(info.path, target_python)
             self.project_model._create_project_runtime(info.path, on_status=on_status)
             self.project_model._install_infernux_in_runtime(
                 info.path, target_version, on_status=on_status,
@@ -79,8 +110,10 @@ class ProjectMigrationService:
             self._remove_tree(runtime_path)
             if had_runtime and os.path.exists(saved_runtime):
                 os.replace(saved_runtime, runtime_path)
-            self._restore_file(pin_path, pin_bytes)
-            self._restore_file(requirements_path, requirements_bytes)
+            for path, content in original_files.items():
+                self._restore_file(path, content)
+            if not had_vscode_dir and os.path.isdir(vscode_dir) and not os.listdir(vscode_dir):
+                os.rmdir(vscode_dir)
             raise
 
         return MigrationResult(info.path, source_version, target_version, backup_path)
@@ -91,10 +124,15 @@ class ProjectMigrationService:
         os.makedirs(backup_dir, exist_ok=True)
         stamp = _datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         safe_source = source or "unversioned"
-        archive_path = os.path.join(backup_dir, f"{stamp}-{safe_source}-to-{target}.zip")
-        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive_path = os.path.join(
+            backup_dir, f"{stamp}-{safe_source}-to-{target}-{uuid.uuid4().hex}.zip"
+        )
+        with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED) as archive:
             for root, dirs, files in os.walk(project_path, followlinks=False):
-                dirs[:] = [name for name in dirs if name not in cls._SKIP_DIRS]
+                # Only the project root owns these generated directories.
+                # Identically named folders inside Assets/Packages are author data.
+                if os.path.normpath(root) == os.path.normpath(project_path):
+                    dirs[:] = [name for name in dirs if name not in cls._SKIP_DIRS]
                 for filename in files:
                     full_path = os.path.join(root, filename)
                     if os.path.islink(full_path):

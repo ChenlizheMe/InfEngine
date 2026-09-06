@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import resolved_path
+from Infernux.engine.player_log import write_player_log
 from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
 
 if TYPE_CHECKING:
@@ -16,9 +17,7 @@ if TYPE_CHECKING:
 def _player_log(message: str) -> None:
     """Append packaged scene diagnostics without enabling release console spam."""
     try:
-        from Infernux.engine.player_bootstrap import _plog
-
-        _plog(message)
+        write_player_log(message)
     except Exception as exc:
         Debug.log_suppressed("player_scene.write_player_log", exc)
 
@@ -101,9 +100,6 @@ class PlayerSceneService:
             return False
         self._last_error = ""
         self._pending_scene_path = target
-        Debug.log_internal(
-            f"Player scene load queued: {os.path.basename(target)}"
-        )
         return True
 
     def request_prepared_load(
@@ -130,9 +126,6 @@ class PlayerSceneService:
         self._transaction_generation = generation
         self._wait_for_ready = True
         self._hold_for_activation = bool(hold_for_activation)
-        Debug.log_internal(
-            f"Player scene background preparation started: {os.path.basename(target)}"
-        )
         return True
 
     def activate_prepared_load(self) -> bool:
@@ -209,7 +202,6 @@ class PlayerSceneService:
             f"scene={os.path.basename(target)!r}, {details}"
         )
         _player_log(message)
-        Debug.log_internal(message)
 
     def cancel_pending_load(self) -> None:
         self._request_generation += 1
@@ -284,7 +276,6 @@ class PlayerSceneService:
             f"camera={scene is not None and scene.main_camera is not None})"
         )
         _player_log(f"[SceneLoad] {message}")
-        Debug.log_internal(message)
 
 
 __all__ = ["PlayerSceneService"]

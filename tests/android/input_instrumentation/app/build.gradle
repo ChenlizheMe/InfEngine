@@ -1,0 +1,17 @@
+plugins {
+    id "com.android.application"
+}
+android {
+    namespace "com.infernux.acceptance.input"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.infernux.acceptance.input"
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName "1.0"
+        manifestPlaceholders.infernuxTargetPackage =
+            providers.gradleProperty("infernuxTargetPackage").getOrElse("org.infernux.player")
+    }
+}

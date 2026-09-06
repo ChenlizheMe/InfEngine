@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from Infernux.components._component_lifecycle import (
     ComponentLifecycleMixin,
     RuntimeExecutionScheduler,
-    refresh_runtime_dispatch_cache,
 )
+from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
 from Infernux.components.component import InxComponent
 from Infernux.engine.runtime_dispatch import build_type_dispatch_descriptor
 
@@ -87,9 +89,20 @@ def test_runtime_scheduler_builds_once_and_reuses_stable_plan():
     assert counters["plan_prepare_calls"] == 2
 
 
-def test_native_bridge_publishes_phase_plan_summary_on_structural_rebuild(monkeypatch):
-    import Infernux.lib as native_lib
+def test_phase_plan_snapshot_is_safe_while_native_frame_is_active():
+    scheduler = RuntimeExecutionScheduler()
+    component = _ScheduledProbe(1)
+    scheduler.register_component(component)
+    scheduler.begin_native_frame()
+    try:
+        snapshot = scheduler.phase_plan_snapshot()
+    finally:
+        scheduler.end_native_frame()
 
+    assert snapshot["update"] == (component,)
+
+
+def test_native_bridge_publishes_phase_plan_summary_on_structural_rebuild():
     class _NativeManager:
         def __init__(self) -> None:
             self.available = False
@@ -105,13 +118,8 @@ def test_native_bridge_publishes_phase_plan_summary_on_structural_rebuild(monkey
 
     manager = _NativeManager()
 
-    class _SceneManager:
-        @staticmethod
-        def instance():
-            return manager
-
-    monkeypatch.setattr(native_lib, "SceneManager", _SceneManager)
     scheduler = RuntimeExecutionScheduler(name="native-plan", native_bridge=True)
+    scheduler.bind_native_bridge(manager)
     scheduler.register_component(_ScheduledProbe(1))
 
     scheduler.prepare_frame()
@@ -142,7 +150,25 @@ def test_scene_replacement_retirement_cannot_remove_same_id_new_component():
 
 
 def test_scene_membership_refresh_recovers_missed_incremental_notification(monkeypatch):
-    scheduler = RuntimeExecutionScheduler(name="scene-publication")
+    class _NativeManager:
+        def __init__(self) -> None:
+            self.available = False
+            self.plans = []
+
+        def set_runtime_lifecycle_work_available(self, available):
+            self.available = bool(available)
+
+        def set_runtime_lifecycle_plan(self, revision, fixed_count, update_count, late_count):
+            self.plans.append(
+                (int(revision), int(fixed_count), int(update_count), int(late_count))
+            )
+
+    manager = _NativeManager()
+    scheduler = RuntimeExecutionScheduler(
+        name="scene-publication",
+        native_bridge=True,
+    )
+    scheduler.bind_native_bridge(manager)
     component = _ScheduledProbe(31)
 
     from Infernux.components.component import InxComponent
@@ -155,6 +181,8 @@ def test_scene_membership_refresh_recovers_missed_incremental_notification(monke
     scheduler.refresh_scene_membership()
 
     assert scheduler.phase_plan("update") == (component,)
+    assert manager.available is True
+    assert manager.plans[-1][1:] == (1, 1, 1)
 
 
 def test_scene_registry_rebuild_keeps_persistent_components_in_runtime_plan(monkeypatch):
@@ -271,6 +299,35 @@ def test_scene_registry_reconcile_only_restores_persistent_components(monkeypatc
     }
 
 
+def test_scene_registry_rebuild_propagates_persistent_scene_failure(monkeypatch):
+    from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+    import Infernux.lib as native_lib
+
+    class _Scene:
+        @staticmethod
+        def get_all_objects():
+            return ()
+
+    class _SceneManager:
+        @staticmethod
+        def instance():
+            return type(
+                "_Manager",
+                (),
+                {
+                    "get_runtime_persistent_scene": lambda self: (_ for _ in ()).throw(
+                        RuntimeError("persistent scene unavailable")
+                    )
+                },
+            )()
+
+    monkeypatch.setattr(native_lib, "SceneManager", _SceneManager)
+
+    transaction = SceneDocumentTransaction(_Scene(), document={})
+    with pytest.raises(RuntimeError, match="persistent scene unavailable"):
+        transaction._rebuild_python_registries()
+
+
 def test_runtime_scheduler_reuses_immutable_execution_snapshot_between_frames():
     scheduler = RuntimeExecutionScheduler(name="snapshot-cache")
     probe = _ScheduledProbe(1)
@@ -279,14 +336,12 @@ def test_runtime_scheduler_reuses_immutable_execution_snapshot_between_frames():
     first = scheduler.begin_frame()
     first_plan = first.phase_plan
     first_components = first.component_snapshots
-    first_types = first.type_revisions
     first.close()
 
     second = scheduler.begin_frame()
     try:
         assert second.phase_plan is first_plan
         assert second.component_snapshots is first_components
-        assert second.type_revisions is first_types
     finally:
         second.close()
 
@@ -473,16 +528,20 @@ def test_runtime_frame_keeps_one_dispatch_revision_across_all_phases():
     BodyProbe.fixed_update = new_fixed_update
     BodyProbe.update = new_update
     BodyProbe.late_update = new_late_update
-    refresh_runtime_dispatch_cache(BodyProbe, (probe,))
+    publication = publish_runtime_dispatch_epoch((BodyProbe,))
+    publication.commit()
 
     assert probe.calls == ["fixed-old", "update-old", "late-old"]
-    next_frame = scheduler.begin_frame()
     try:
-        next_frame.execute_phase("fixed_update", 0.02)
-        next_frame.execute_phase("update", 0.016)
-        next_frame.execute_phase("late_update", 0.016)
+        next_frame = scheduler.begin_frame()
+        try:
+            next_frame.execute_phase("fixed_update", 0.02)
+            next_frame.execute_phase("update", 0.016)
+            next_frame.execute_phase("late_update", 0.016)
+        finally:
+            next_frame.close()
     finally:
-        next_frame.close()
+        publication.rollback()
     assert probe.calls == [
         "fixed-old",
         "update-old",

@@ -22,8 +22,11 @@ import types
 from dataclasses import dataclass
 from typing import Iterable
 
-from .path_utils import path_key, relative_path, resolved_path
-from .project_context import get_assets_root, get_project_root, get_script_import_paths
+from .path_utils import is_path_within, resolved_path
+from .project_context import (
+    get_project_script_roots,
+    get_script_module_name,
+)
 
 
 class CandidateImportError(ImportError):
@@ -33,6 +36,7 @@ class CandidateImportError(ImportError):
 _TRUSTED_MODULE_PREFIXES = frozenset(
     {
         "Infernux",
+        "infernux",
         "__future__",
         "dataclasses",
         "typing",
@@ -54,7 +58,7 @@ _TRUSTED_MODULE_PREFIXES = frozenset(
 # These public engine modules are safe to materialize on first candidate use.
 # Keep this list deliberately narrow: general ``Infernux.*`` imports must not
 # turn candidate loading into an uncontrolled engine-module import mechanism.
-_LAZY_TRUSTED_MODULES = frozenset({"Infernux.jit", "__future__"})
+_LAZY_TRUSTED_MODULES = frozenset({"Infernux.jit", "infernux", "__future__"})
 
 
 def _is_trusted_module(name: str) -> bool:
@@ -62,27 +66,6 @@ def _is_trusted_module(name: str) -> bool:
         name == prefix or name.startswith(prefix + ".")
         for prefix in _TRUSTED_MODULE_PREFIXES
     )
-
-
-def _module_names_from_path(path: str, roots: Iterable[str]) -> tuple[str, ...]:
-    normalized = resolved_path(path)
-    names: list[str] = []
-    for root in roots:
-        try:
-            relative = relative_path(normalized, root)
-        except ValueError:
-            continue
-        stem, extension = os.path.splitext(relative)
-        if extension not in {".py", ".pyc"}:
-            continue
-        parts = stem.replace("\\", "/").split("/")
-        if parts and parts[-1] == "__init__":
-            parts.pop()
-        if parts and all(part.isidentifier() for part in parts):
-            name = ".".join(parts)
-            if name not in names:
-                names.append(name)
-    return tuple(names)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +89,7 @@ class CandidateImportTransaction:
         self._specs: dict[str, CandidateModuleSpec] = {}
         self._modules: dict[str, types.ModuleType] = {}
         self._reused_lkg: dict[str, types.ModuleType] = {}
-        self._roots: list[str] = []
+        self._roots = get_project_script_roots()
         self._trusted_modules = frozenset(trusted_modules)
         self._trusted_proxies: dict[str, types.ModuleType] = {}
         self._overlay_names: set[str] = set()
@@ -150,10 +133,6 @@ class CandidateImportTransaction:
         if not path or not os.path.isfile(path):
             raise CandidateImportError(f"candidate module file not found: {file_path}")
         self._specs[name] = CandidateModuleSpec(name, path, source, code)
-        for root in get_script_import_paths(path):
-            root = resolved_path(root)
-            if root and root not in self._roots:
-                self._roots.append(root)
 
     def module_for(self, name: str) -> types.ModuleType | None:
         return self._modules.get(name)
@@ -258,19 +237,41 @@ class CandidateImportTransaction:
         if module is None:
             return None
         module_path = resolved_path(getattr(module, "__file__", "") or "")
-        if not module_path:
+        project_roots = self._roots
+        if not module_path or not os.path.isfile(module_path):
+            # InxPreload creates path-bound namespace parents for isolated
+            # package names. Their synthetic ``__file__`` names an absent
+            # __init__.py, so validating that path as a gameplay module would
+            # incorrectly reject reversible reference encodings such as
+            # ``multiplatform_probe`` -> ``multiplatform_5fprobe``. Prove the
+            # namespace against a registered descendant and its real path.
+            search_paths = tuple(
+                resolved_path(path)
+                for path in (getattr(module, "__path__", ()) or ())
+                if path
+            )
+            for candidate_name, spec in self._specs.items():
+                if not candidate_name.startswith(name + "."):
+                    continue
+                if not any(
+                    is_path_within(spec.file_path, search_path, allow_root=False)
+                    and any(is_path_within(search_path, root) for root in project_roots)
+                    for search_path in search_paths
+                ):
+                    continue
+                expected = get_script_module_name(spec.file_path)
+                if candidate_name != expected:
+                    raise CandidateImportError(
+                        f"registered project module '{candidate_name}' has a path/name mismatch"
+                    )
+                self._reused_lkg[name] = module
+                return module
             return None
-        module_key = path_key(module_path)
-        project_roots = tuple(path_key(root) for root in self._roots if root)
-        if not any(
-            module_key == root
-            or module_key.startswith(root.rstrip("\\/") + "\\")
-            for root in project_roots
-        ):
+        if not any(is_path_within(module_path, root) for root in project_roots):
             # Trusted interpreter/engine modules are not project LKG entries.
             return None
-        expected = _module_names_from_path(module_path, self._roots)
-        if name not in expected:
+        expected = get_script_module_name(module_path)
+        if name != expected:
             raise CandidateImportError(
                 f"preloaded project module '{name}' has a path/name mismatch"
             )

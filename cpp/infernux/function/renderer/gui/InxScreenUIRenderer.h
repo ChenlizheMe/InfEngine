@@ -63,8 +63,7 @@ class InxScreenUIRenderer
      * @param msaaSamples Scene MSAA sample count (e.g. 4x)
      * @return true if successful
      */
-    bool Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat, VkSampleCountFlagBits msaaSamples,
-                    bool useDynamicRendering);
+    bool Initialize(VkDevice device, VmaAllocator allocator, VkFormat colorFormat, VkSampleCountFlagBits msaaSamples);
 
     void SetRetirementQueue(GpuRetirementQueue *queue)
     {
@@ -133,6 +132,22 @@ class InxScreenUIRenderer
     bool HasCommands(ScreenUIList list) const;
 
     /**
+     * @brief Number of draw calls submitted by the most recent Render() for a list
+     */
+    uint32_t GetLastSubmittedDrawCount(ScreenUIList list) const
+    {
+        return m_lastSubmittedDrawCounts[list == ScreenUIList::Camera ? 0 : 1];
+    }
+
+    /**
+     * @brief Number of indices submitted by the most recent Render() for a list
+     */
+    uint64_t GetLastSubmittedIndexCount(ScreenUIList list) const
+    {
+        return m_lastSubmittedIndexCounts[list == ScreenUIList::Camera ? 0 : 1];
+    }
+
+    /**
      * @brief Enable or disable rendering (commands still accumulate)
      *
      * When disabled, Render() becomes a no-op. Useful for suppressing
@@ -146,11 +161,6 @@ class InxScreenUIRenderer
     bool IsEnabled() const
     {
         return m_enabled;
-    }
-
-    [[nodiscard]] bool UsesDynamicRendering() const noexcept
-    {
-        return m_useDynamicRendering;
     }
 
     // ========================================================================
@@ -170,24 +180,11 @@ class InxScreenUIRenderer
      */
     void Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint32_t width, uint32_t height);
 
-    /**
-     * @brief Get the compatible render pass (for pipeline creation verification)
-     */
-    VkRenderPass GetCompatibleRenderPass() const
-    {
-        return m_renderPass;
-    }
-
   private:
     /**
      * @brief Create Vulkan pipeline objects (shader modules, layouts, pipeline)
      */
     bool CreatePipeline();
-
-    /**
-     * @brief Create a compatible render pass for pipeline creation
-     */
-    bool CreateCompatibleRenderPass();
 
     // Per-list vertex / index buffers (Camera and Overlay each need their
     // own GPU buffers because both Render() calls are recorded into the same
@@ -240,7 +237,6 @@ class InxScreenUIRenderer
     // Formats
     VkFormat m_colorFormat = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits m_msaaSamples = VK_SAMPLE_COUNT_1_BIT;
-    bool m_useDynamicRendering = false;
 
     // Pipeline objects
     VkShaderModule m_vertShader = VK_NULL_HANDLE;
@@ -248,7 +244,6 @@ class InxScreenUIRenderer
     VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_pipeline = VK_NULL_HANDLE;
-    VkRenderPass m_renderPass = VK_NULL_HANDLE;
 
     // Font atlas descriptor (points to ImGui's font atlas)
     VkDescriptorSet m_fontDescriptorSet = VK_NULL_HANDLE;
@@ -264,6 +259,9 @@ class InxScreenUIRenderer
     bool m_initialized = false;
     bool m_enabled = true;
     bool m_commandCacheValid = false;
+    bool m_reportedFirstDraw = false;
+    uint32_t m_lastSubmittedDrawCounts[2]{};
+    uint64_t m_lastSubmittedIndexCounts[2]{};
     uint32_t m_cachedWidth = 0;
     uint32_t m_cachedHeight = 0;
     uint64_t m_cachedContentRevision = 0;

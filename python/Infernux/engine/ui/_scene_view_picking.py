@@ -43,40 +43,32 @@ _GIZMO_IDS = {
 
 def _owns_particle_system(object_id: int) -> bool:
     """True when the GameObject *object_id* carries a ParticleSystem."""
-    try:
-        from Infernux.lib import SceneManager
-        from Infernux.components.particle_system import ParticleSystem
+    from Infernux.lib import SceneManager
+    from Infernux.components.particle_system import ParticleSystem
 
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(int(object_id)) if scene else None
-        if obj is None:
-            return False
-        return any(isinstance(comp, ParticleSystem) for comp in obj.get_py_components())
-    except Exception as exc:
-        Debug.log_internal(f"Particle pick check failed: {exc}")
+    scene = SceneManager.instance().get_active_scene()
+    obj = scene.find_by_id(int(object_id)) if scene else None
+    if obj is None:
         return False
+    return any(isinstance(comp, ParticleSystem) for comp in obj.get_py_components())
 
 
 def _has_mesh_pick_geometry(object_id: int) -> bool:
     """True when the object has mesh bounds that participate in CPU ray picks."""
-    try:
-        from Infernux.lib import SceneManager
-        from Infernux.components.builtin import MeshRenderer, SkinnedMeshRenderer
+    from Infernux.lib import SceneManager
+    from Infernux.components.builtin import MeshRenderer, SkinnedMeshRenderer
 
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(int(object_id)) if scene else None
-        if obj is None:
-            return False
-        # Native component lookup is exact by C++ type name.  The Python
-        # SkinnedMeshRenderer wrapper inherits MeshRenderer, but asking for the
-        # latter does not find a native SkinnedMeshRenderer.
-        return (
-            obj.get_component(MeshRenderer) is not None
-            or obj.get_component(SkinnedMeshRenderer) is not None
-        )
-    except Exception as exc:
-        Debug.log_internal(f"Mesh pick geometry check failed: {exc}")
+    scene = SceneManager.instance().get_active_scene()
+    obj = scene.find_by_id(int(object_id)) if scene else None
+    if obj is None:
         return False
+    # Native component lookup is exact by C++ type name.  The Python
+    # SkinnedMeshRenderer wrapper inherits MeshRenderer, but asking for the
+    # latter does not find a native SkinnedMeshRenderer.
+    return (
+        obj.get_component(MeshRenderer) is not None
+        or obj.get_component(SkinnedMeshRenderer) is not None
+    )
 
 
 def _is_icon_only_pick_target(object_id: int) -> bool:
@@ -92,21 +84,17 @@ def _is_icon_only_pick_target(object_id: int) -> bool:
 
 def _object_ray_depth(object_id: int, ray_origin, ray_direction) -> float:
     """Approximate pick depth as projection of the object origin onto the ray."""
-    try:
-        from Infernux.lib import SceneManager
+    from Infernux.lib import SceneManager
 
-        scene = SceneManager.instance().get_active_scene()
-        obj = scene.find_by_id(int(object_id)) if scene else None
-        transform = obj.get_transform() if obj is not None else None
-        if transform is None:
-            return float("inf")
-        pos = transform.position
-        ox, oy, oz = ray_origin
-        dx, dy, dz = ray_direction
-        return (float(pos.x) - ox) * dx + (float(pos.y) - oy) * dy + (float(pos.z) - oz) * dz
-    except Exception as exc:
-        Debug.log_internal(f"Pick depth estimate failed: {exc}")
+    scene = SceneManager.instance().get_active_scene()
+    obj = scene.find_by_id(int(object_id)) if scene else None
+    transform = obj.get_transform() if obj is not None else None
+    if transform is None:
         return float("inf")
+    pos = transform.position
+    ox, oy, oz = ray_origin
+    dx, dy, dz = ray_direction
+    return (float(pos.x) - ox) * dx + (float(pos.y) - oy) * dy + (float(pos.z) - oz) * dz
 
 
 class SceneViewPickingMixin:
@@ -223,13 +211,11 @@ class SceneViewPickingMixin:
         if not extra_ids:
             return list(base_ids)
 
-        ray = None
-        if self._engine is not None:
-            try:
-                ray = self._engine.screen_to_world_ray(local_x, local_y, width, height)
-            except Exception as exc:
-                Debug.log_internal(f"Pick ray rebuild failed: {exc}")
-                ray = None
+        ray = (
+            self._engine.screen_to_world_ray(local_x, local_y, width, height)
+            if self._engine is not None
+            else None
+        )
 
         merged = list(base_ids)
         for object_id in extra_ids:
@@ -304,7 +290,7 @@ class SceneViewPickingMixin:
             return
 
         if status != "completed":
-            Debug.log_internal(f"Scene GPU picking failed: {result.get('error', status)}")
+            Debug.log_warning(f"Scene GPU picking failed: {result.get('error', status)}")
             # GPU picking is authoritative for mesh pixels, but a device or
             # readback failure must not make meshes impossible to select.
             if selection_deferred and cpu_id > 0 and self._on_object_picked:
@@ -446,17 +432,12 @@ class SceneViewPickingMixin:
             if t is None:
                 continue
             # Skip screen-space UI elements (canvas children with _hide_transform_)
-            try:
-                _skip = False
-                for _pc in obj.get_py_components():
-                    if getattr(type(_pc), '_hide_transform_', False):
-                        _skip = True
-                        break
-                if _skip:
-                    continue
-            except RuntimeError as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
+            _skip = any(
+                getattr(type(_pc), '_hide_transform_', False)
+                for _pc in obj.get_py_components()
+            )
+            if _skip:
+                continue
             pos = t.position
             sp = native.editor_camera.world_to_screen_point(pos.x, pos.y, pos.z)
             if min_x <= sp.x <= max_x and min_y <= sp.y <= max_y:

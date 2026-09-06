@@ -20,7 +20,8 @@ class _ProjectCard(AnimatedSurfaceFrame):
     """A compact project row with identity, path, version and state."""
 
     def __init__(self, project_id: str, name: str, created_at: str, path: str,
-                 version_manager=None, on_remove_requested=None, parent=None):
+                 version_manager=None, on_remove_requested=None, parent=None,
+                 *, on_migrate_requested=None):
         super().__init__("projectCard", parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
@@ -42,11 +43,14 @@ class _ProjectCard(AnimatedSurfaceFrame):
 
         name_label = QLabel(name)
         name_label.setObjectName("cardName")
+        name_label.setToolTip(name)
+        name_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         text_col.addWidget(name_label)
 
         path_label = QLabel(path)
         path_label.setObjectName("cardPath")
         path_label.setToolTip(path)
+        path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         text_col.addWidget(path_label)
 
         version = VersionManager.read_project_version(path) if os.path.isdir(path) else ""
@@ -82,6 +86,11 @@ class _ProjectCard(AnimatedSurfaceFrame):
         self._actions_button = open_btn
         self._actions_menu = QMenu(open_btn)
         show_action = self._actions_menu.addAction(tr("Show in Explorer"))
+        if on_migrate_requested is not None:
+            migrate_action = self._actions_menu.addAction(tr("Migrate Project"))
+            migrate_action.triggered.connect(
+                lambda _checked=False: on_migrate_requested(project_id)
+            )
         remove_action = self._actions_menu.addAction(tr("Remove from Hub"))
         show_action.triggered.connect(
             lambda _checked=False: QDesktopServices.openUrl(QUrl.fromLocalFile(path))
@@ -109,6 +118,7 @@ class ProjectListPane(QWidget):
     """Scrollable list of project cards with a search bar."""
 
     remove_requested = Signal(str)
+    migrate_requested = Signal(str)
 
     def __init__(self, db: ProjectDatabase, version_manager=None, parent=None):
         super().__init__(parent)
@@ -163,6 +173,7 @@ class ProjectListPane(QWidget):
             item = self.card_layout.takeAt(0)
             w = item.widget()
             if w:
+                w.hide()
                 w.deleteLater()
 
         self._all_projects = self.db.all_projects()
@@ -170,6 +181,7 @@ class ProjectListPane(QWidget):
             card = _ProjectCard(
                 record.project_id, record.name, record.created_at, record.path,
                 self.version_manager, self.remove_requested.emit,
+                on_migrate_requested=self.migrate_requested.emit,
             )
             card.mousePressEvent = lambda _ev, pid=record.project_id: self._on_select(pid)
             card.mouseDoubleClickEvent = lambda _ev, pid=record.project_id: self._on_double_click(pid)

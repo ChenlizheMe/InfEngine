@@ -1,4 +1,5 @@
 #include "InxGUIContext.h"
+#include "EditorWindowBounds.h"
 #include "InxGUISemantics.h"
 #include "InxTextLayout.h"
 #include <SDL3/SDL.h>
@@ -54,39 +55,34 @@ InxGUIContext::RenderMaterialTop(const std::string &shaderSectionLabel, const st
     MaterialTopInteraction result;
     if (!CanRenderWidgets())
         return result;
+    const float dpi = GetDpiScale();
 
-    auto themeVec2 = [](const char *name, const ImVec2 &fallback) {
-        const auto &values = EditorThemeRegistry::Vec2s();
-        const auto it = values.find(name);
-        return it != values.end() ? it->second : fallback;
-    };
-    auto themeColor = [](const char *name, const ImVec4 &fallback) {
-        const ImVec4 color = EditorThemeRegistry::Color(name, fallback);
+    auto themeColor = [](const char *name) {
+        const ImVec4 color = EditorThemeRegistry::Color(name);
         return std::array<float, 4>{color.x, color.y, color.z, color.w};
     };
     auto renderSectionHeader = [&](const std::string &label) {
-        const ImVec2 framePad =
-            themeVec2("INSPECTOR_HEADER_SECONDARY_FRAME_PAD", EditorTheme::INSPECTOR_HEADER_SECONDARY_FRAME_PAD);
-        const ImVec2 itemSpacing = themeVec2("INSPECTOR_HEADER_ITEM_SPC", EditorTheme::INSPECTOR_HEADER_ITEM_SPC);
+        const ImVec2 framePad = EditorThemeRegistry::Vec2("INSPECTOR_HEADER_SECONDARY_FRAME_PAD");
+        const ImVec2 itemSpacing = EditorThemeRegistry::Vec2("INSPECTOR_HEADER_ITEM_SPC");
         return RenderCompactSectionHeader(
-            label, 0, defaultOpen, ImGuiCond_FirstUseEver, false, framePad.x, framePad.y, itemSpacing.x, itemSpacing.y,
-            EditorThemeRegistry::Float("INSPECTOR_HEADER_BORDER_SIZE", EditorTheme::INSPECTOR_HEADER_BORDER_SIZE), true,
-            EditorThemeRegistry::Float("INSPECTOR_HEADER_SECONDARY_FONT_SCALE",
-                                       EditorTheme::INSPECTOR_HEADER_SECONDARY_FONT_SCALE),
-            EditorThemeRegistry::Float("INSPECTOR_HEADER_RIGHT_MARGIN", EditorTheme::INSPECTOR_HEADER_RIGHT_MARGIN),
-            EditorThemeRegistry::Float("COMPONENT_ICON_SIZE", EditorTheme::COMPONENT_ICON_SIZE),
-            themeColor("INSPECTOR_HEADER_SECONDARY", EditorTheme::INSPECTOR_HEADER_SECONDARY),
-            themeColor("INSPECTOR_HEADER_SECONDARY_HOVERED", EditorTheme::INSPECTOR_HEADER_SECONDARY_HOVERED),
-            themeColor("INSPECTOR_HEADER_SECONDARY_ACTIVE", EditorTheme::INSPECTOR_HEADER_SECONDARY_ACTIVE), false,
-            themeColor("TEXT", ImVec4(1, 1, 1, 1)));
+            label, 0, defaultOpen, ImGuiCond_FirstUseEver, false, framePad.x * dpi, framePad.y * dpi,
+            itemSpacing.x * dpi, itemSpacing.y * dpi, EditorThemeRegistry::Float("INSPECTOR_HEADER_BORDER_SIZE") * dpi,
+            true, EditorThemeRegistry::Float("INSPECTOR_HEADER_SECONDARY_FONT_SCALE"),
+            EditorThemeRegistry::Float("INSPECTOR_HEADER_RIGHT_MARGIN") * dpi,
+            EditorThemeRegistry::Float("COMPONENT_ICON_SIZE") * dpi, themeColor("INSPECTOR_HEADER_SECONDARY"),
+            themeColor("INSPECTOR_HEADER_SECONDARY_HOVERED"), themeColor("INSPECTOR_HEADER_SECONDARY_ACTIVE"), false,
+            themeColor("TEXT"));
     };
 
-    const float totalWidth = (std::max)(1.0f, GetContentRegionAvailWidth());
+    const float scaledShaderLabelWidth = shaderLabelWidth * dpi;
+    const float scaledSurfaceLabelWidth = surfaceLabelWidth * dpi;
+    const float totalWidth = (std::max)(1.0f * dpi, GetContentRegionAvailWidth());
     const float columnPadding = ImGui::GetStyle().CellPadding.x * 4.0f;
-    const float usableWidth = (std::max)(2.0f, totalWidth - columnPadding);
-    const float controlsMinWidth = (std::max)(260.0f, (std::max)(shaderLabelWidth, surfaceLabelWidth) + 170.0f);
-    const float previewColumnWidth = std::clamp(usableWidth - controlsMinWidth, 10.0f, 200.0f);
-    const float controlsColumnWidth = (std::max)(1.0f, usableWidth - previewColumnWidth);
+    const float usableWidth = (std::max)(2.0f * dpi, totalWidth - columnPadding);
+    const float controlsMinWidth =
+        (std::max)(260.0f * dpi, (std::max)(scaledShaderLabelWidth, scaledSurfaceLabelWidth) + 170.0f * dpi);
+    const float previewColumnWidth = std::clamp(usableWidth - controlsMinWidth, 10.0f * dpi, 200.0f * dpi);
+    const float controlsColumnWidth = (std::max)(1.0f * dpi, usableWidth - previewColumnWidth);
     const int tableFlags = ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings;
     const bool split = BeginTable("##material_top_split", 2, tableFlags, totalWidth);
     if (split) {
@@ -102,7 +98,7 @@ InxGUIContext::RenderMaterialTop(const std::string &shaderSectionLabel, const st
                                  std::string &payload) {
         AlignTextToFramePadding();
         Label(label);
-        SameLine(shaderLabelWidth);
+        SameLine(scaledShaderLabelWidth);
         SetNextItemWidth(-1.0f);
         flags = RenderObjectFieldChrome(fieldId, display, typeHint, false, true, true, pickerTextureId, semanticId);
         PushStyleColor(ImGuiCol_DragDropTarget, 0, 0, 0, 0);
@@ -125,7 +121,7 @@ InxGUIContext::RenderMaterialTop(const std::string &shaderSectionLabel, const st
 
     Separator();
     if (renderSectionHeader(surfaceSectionLabel) && surfacePlan)
-        result.surfaceChanges = RenderPropertyBatch(surfacePlan->descriptors, surfaceLabelWidth,
+        result.surfaceChanges = RenderPropertyBatch(surfacePlan->descriptors, scaledSurfaceLabelWidth,
                                                     &result.activeSurfaceIndex, &result.deactivatedSurfaceIndex);
 
     if (readOnly)
@@ -148,7 +144,7 @@ InxGUIContext::RenderMaterialTop(const std::string &shaderSectionLabel, const st
             if (remainingY > 0.0f)
                 Dummy(1.0f, remainingY);
         } else {
-            const ImVec4 metaText = EditorThemeRegistry::Color("META_TEXT", ImVec4(0.65f, 0.65f, 0.65f, 1.0f));
+            const ImVec4 metaText = EditorThemeRegistry::Color("META_TEXT");
             PushStyleColor(ImGuiCol_Text, metaText.x, metaText.y, metaText.z, metaText.w);
             Label(previewUnavailableLabel);
             PopStyleColor();
@@ -199,51 +195,8 @@ std::string WindowSemanticId(const std::string &name)
     return name.substr(separator + 3);
 }
 
-void ConstrainNextFloatingWindowToMainViewport(const std::string &name, int flags)
-{
-    ImGuiViewport *viewport = ImGui::GetMainViewport();
-    if (!viewport || (flags & ImGuiWindowFlags_ChildWindow) != 0)
-        return;
-
-    ImGuiWindow *window = ImGui::FindWindowByName(name.c_str());
-    if (!window)
-        return;
-
-#ifdef IMGUI_HAS_DOCK
-    if (window->DockNode != nullptr)
-        return;
-#endif
-
-    const ImVec2 workMin = viewport->WorkPos;
-    const ImVec2 workSize = viewport->WorkSize;
-    if (workSize.x <= 0.0f || workSize.y <= 0.0f)
-        return;
-
-    ImVec2 size = window->SizeFull;
-    const ImVec2 constrainedSize(std::min(size.x, workSize.x), std::min(size.y, workSize.y));
-    const bool sizeChanged = std::abs(constrainedSize.x - size.x) > 0.5f || std::abs(constrainedSize.y - size.y) > 0.5f;
-    if (sizeChanged)
-        size = constrainedSize;
-
-    const ImVec2 maxPos(workMin.x + workSize.x - size.x, workMin.y + workSize.y - size.y);
-    const ImVec2 constrainedPos(std::clamp(window->Pos.x, workMin.x, maxPos.x),
-                                std::clamp(window->Pos.y, workMin.y, maxPos.y));
-    const bool positionChanged =
-        std::abs(constrainedPos.x - window->Pos.x) > 0.5f || std::abs(constrainedPos.y - window->Pos.y) > 0.5f;
-    if (sizeChanged)
-        ImGui::SetNextWindowSize(constrainedSize, ImGuiCond_Always);
-    if (positionChanged || sizeChanged) {
-        ImGui::SetNextWindowPos(constrainedPos, ImGuiCond_Always);
-        // A recovered floating window may still sit behind the dock host that
-        // previously covered its off-screen position. Bring it forward at the
-        // same one-shot recovery boundary so its title bar and close control
-        // are immediately reachable again.
-        ImGui::SetNextWindowFocus();
-    }
-}
-
 bool DrawInspectorSliderScalar(const char *id, ImGuiDataType dataType, void *data, const void *minimum,
-                               const void *maximum)
+                               const void *maximum, float dpi)
 {
     ImGuiWindow *window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
@@ -285,10 +238,10 @@ bool DrawInspectorSliderScalar(const char *id, ImGuiDataType dataType, void *dat
     ImDrawList *drawList = window->DrawList;
     const ImGuiStyle &style = g.Style;
     const float centerY = (frame.Min.y + frame.Max.y) * 0.5f;
-    const float trackY = centerY + EditorTheme::INSPECTOR_SLIDER_TRACK_Y_OFFSET;
-    const float linePad = EditorTheme::INSPECTOR_SLIDER_LINE_PAD;
+    const float trackY = centerY + EditorTheme::INSPECTOR_SLIDER_TRACK_Y_OFFSET * dpi;
+    const float linePad = EditorTheme::INSPECTOR_SLIDER_LINE_PAD * dpi;
     const ImU32 trackColor = ImGui::GetColorU32(ImGuiCol_TextDisabled);
-    const float halfTrack = EditorTheme::INSPECTOR_SLIDER_TRACK_HEIGHT * 0.5f;
+    const float halfTrack = EditorTheme::INSPECTOR_SLIDER_TRACK_HEIGHT * dpi * 0.5f;
     drawList->AddRectFilled(ImVec2(frame.Min.x + linePad, trackY - halfTrack),
                             ImVec2(frame.Max.x - linePad, trackY + halfTrack), trackColor, halfTrack);
 
@@ -304,17 +257,17 @@ bool DrawInspectorSliderScalar(const char *id, ImGuiDataType dataType, void *dat
     return changed;
 }
 
-bool DrawUnityRangedFloat(const char *baseId, float *value, float min, float max, const char *format)
+bool DrawUnityRangedFloat(const char *baseId, float *value, float min, float max, const char *format, float dpi)
 {
     const ImGuiStyle &style = ImGui::GetStyle();
     const float spacing = style.ItemInnerSpacing.x;
     const float totalW = ImGui::CalcItemWidth();
-    const float inputW = EditorTheme::INSPECTOR_RANGED_INPUT_WIDTH;
-    const float sliderW = std::max(24.0f, totalW - inputW - spacing);
+    const float inputW = EditorTheme::INSPECTOR_RANGED_INPUT_WIDTH * dpi;
+    const float sliderW = std::max(24.0f * dpi, totalW - inputW - spacing);
 
     ImGui::PushID(baseId);
     ImGui::SetNextItemWidth(sliderW);
-    bool changed = DrawInspectorSliderScalar("##slider", ImGuiDataType_Float, value, &min, &max);
+    bool changed = DrawInspectorSliderScalar("##slider", ImGuiDataType_Float, value, &min, &max, dpi);
     ImGui::SameLine(0.0f, spacing);
     ImGui::SetNextItemWidth(inputW);
     if (ImGui::InputFloat("##input", value, 0.0f, 0.0f, format ? format : "%.3f", ImGuiInputTextFlags_CharsDecimal))
@@ -324,17 +277,17 @@ bool DrawUnityRangedFloat(const char *baseId, float *value, float min, float max
     return changed;
 }
 
-bool DrawUnityRangedInt(const char *baseId, int *value, int min, int max)
+bool DrawUnityRangedInt(const char *baseId, int *value, int min, int max, float dpi)
 {
     const ImGuiStyle &style = ImGui::GetStyle();
     const float spacing = style.ItemInnerSpacing.x;
     const float totalW = ImGui::CalcItemWidth();
-    const float inputW = EditorTheme::INSPECTOR_RANGED_INPUT_WIDTH;
-    const float sliderW = std::max(24.0f, totalW - inputW - spacing);
+    const float inputW = EditorTheme::INSPECTOR_RANGED_INPUT_WIDTH * dpi;
+    const float sliderW = std::max(24.0f * dpi, totalW - inputW - spacing);
 
     ImGui::PushID(baseId);
     ImGui::SetNextItemWidth(sliderW);
-    bool changed = DrawInspectorSliderScalar("##slider", ImGuiDataType_S32, value, &min, &max);
+    bool changed = DrawInspectorSliderScalar("##slider", ImGuiDataType_S32, value, &min, &max, dpi);
     ImGui::SameLine(0.0f, spacing);
     ImGui::SetNextItemWidth(inputW);
     if (ImGui::InputInt("##input", value, 0, 0))
@@ -424,7 +377,7 @@ bool InxGUIContext::Checkbox(const std::string &label, bool *value)
 namespace
 {
 
-bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::string *outVisible)
+bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::string *outVisible, float dpi)
 {
     // Split "Visible##id" so only the square is drawn — label text stays at
     // the ambient font size.
@@ -447,7 +400,7 @@ bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::str
 
     // One fixed square size everywhere. The square and its optional label are
     // submitted as one item so ImGui advances the row exactly once.
-    const float boxSize = EditorTheme::INSPECTOR_CHECKBOX_BOX_PX;
+    const float boxSize = EditorTheme::INSPECTOR_CHECKBOX_BOX_PX * dpi;
     const float textHeight = ImGui::GetTextLineHeight();
     const float rowHeight = (std::max)(boxSize, textHeight);
     const float labelWidth = visible.empty() ? 0.0f : ImGui::CalcTextSize(visible.c_str()).x;
@@ -462,11 +415,11 @@ bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::str
     const ImVec2 boxMin(itemMin.x, itemMin.y + boxOffsetY);
     const ImVec2 boxMax(itemMin.x + boxSize, itemMin.y + boxOffsetY + boxSize);
     ImDrawList *drawList = ImGui::GetWindowDrawList();
-    const float rounding = 3.0f;
+    const float rounding = 3.0f * dpi;
     const ImU32 bgColor = ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
     const ImU32 borderColor = ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgActive : ImGuiCol_Border);
     drawList->AddRectFilled(boxMin, boxMax, bgColor, rounding);
-    drawList->AddRect(boxMin, boxMax, borderColor, rounding, 0, 1.0f);
+    drawList->AddRect(boxMin, boxMax, borderColor, rounding, 0, 1.0f * dpi);
 
     if (*value) {
         const ImU32 checkColor = ImGui::GetColorU32(ImGuiCol_CheckMark);
@@ -476,7 +429,7 @@ bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::str
             {boxMin.x + s * 0.42f, boxMin.y + s * 0.76f},
             {boxMin.x + s * 0.84f, boxMin.y + s * 0.26f},
         };
-        drawList->AddPolyline(check, 3, checkColor, ImDrawFlags_None, 2.0f);
+        drawList->AddPolyline(check, 3, checkColor, ImDrawFlags_None, 2.0f * dpi);
     }
 
     if (clicked)
@@ -497,19 +450,19 @@ bool DrawInspectorCheckboxSquare(const std::string &label, bool *value, std::str
 bool InxGUIContext::CheckboxInspector(const std::string &label, bool *value)
 {
     // Semantics are recorded by callers (they own the semantic id).
-    return DrawInspectorCheckboxSquare(label, value, nullptr);
+    return DrawInspectorCheckboxSquare(label, value, nullptr, GetDpiScale());
 }
 
 void InxGUIContext::IntSlider(const std::string &label, int *value, int min, int max)
 {
-    DrawUnityRangedInt(label.c_str(), value, min, max);
+    DrawUnityRangedInt(label.c_str(), value, min, max, GetDpiScale());
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("int_slider", label, true, "", std::nullopt, static_cast<double>(*value));
 }
 
 void InxGUIContext::FloatSlider(const std::string &label, float *value, float min, float max, const char *format)
 {
-    DrawUnityRangedFloat(label.c_str(), value, min, max, format);
+    DrawUnityRangedFloat(label.c_str(), value, min, max, format, GetDpiScale());
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("float_slider", label, true, "", std::nullopt, static_cast<double>(*value));
 }
@@ -547,7 +500,7 @@ void InxGUIContext::TextInput(const std::string &label, char *buffer, size_t buf
 
 void InxGUIContext::TextArea(const std::string &label, char *buffer, size_t bufferSize)
 {
-    ImGui::InputTextMultiline(label.c_str(), buffer, bufferSize, ImVec2(-FLT_MIN, 100));
+    ImGui::InputTextMultiline(label.c_str(), buffer, bufferSize, ImVec2(-FLT_MIN, 100.0f * GetDpiScale()));
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("text_area", label, true, "", std::nullopt, std::nullopt, std::string(buffer));
 }
@@ -956,9 +909,9 @@ void InxGUIContext::EndTabBar()
     ImGui::EndTabBar();
 }
 
-bool InxGUIContext::BeginTabItem(const std::string &label, bool *open)
+bool InxGUIContext::BeginTabItem(const std::string &label, bool *open, bool selected)
 {
-    const bool visible = ImGui::BeginTabItem(label.c_str(), open);
+    const bool visible = ImGui::BeginTabItem(label.c_str(), open, selected ? ImGuiTabItemFlags_SetSelected : 0);
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("tab", label, open == nullptr || *open);
     return visible;
@@ -1326,7 +1279,7 @@ void InxGUIContext::SetWindowFocus()
 
 bool InxGUIContext::BeginWindow(const std::string &name, bool *open, int flags)
 {
-    ConstrainNextFloatingWindowToMainViewport(name, flags);
+    ConstrainNextFloatingWindowToMainViewport(name.c_str(), flags);
     const bool visible = ImGui::Begin(name.c_str(), open, flags);
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     if (captureSemantics)
@@ -2477,7 +2430,7 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
             float orig = val;
             CompensateWarp();
             if (d.slider && d.rangeMin > -1e5f)
-                DrawUnityRangedFloat(d.widgetId.c_str(), &val, d.rangeMin, d.rangeMax, "%.3f");
+                DrawUnityRangedFloat(d.widgetId.c_str(), &val, d.rangeMin, d.rangeMax, "%.3f", GetDpiScale());
             else {
                 const ImGuiSliderFlags flags =
                     d.rangeMin < d.rangeMax ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
@@ -2503,7 +2456,7 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
             int orig = val;
             CompensateWarp();
             if (d.slider && d.hasRange) {
-                DrawUnityRangedInt(d.widgetId.c_str(), &val, d.intRangeMin, d.intRangeMax);
+                DrawUnityRangedInt(d.widgetId.c_str(), &val, d.intRangeMin, d.intRangeMax, GetDpiScale());
             } else {
                 const ImGuiSliderFlags flags = d.hasRange ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
                 ImGui::DragInt(d.widgetId.c_str(), &val, d.speed, d.intRangeMin, d.intRangeMax, "%d", flags);
@@ -2561,7 +2514,7 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
             std::memcpy(buf, shown.c_str(), len);
             buf[len] = '\0';
             if (d.multiline)
-                ImGui::InputTextMultiline(d.widgetId.c_str(), buf, sizeof(buf), ImVec2(-1, 80));
+                ImGui::InputTextMultiline(d.widgetId.c_str(), buf, sizeof(buf), ImVec2(-1, 80.0f * GetDpiScale()));
             else
                 ImGui::InputText(d.widgetId.c_str(), buf, 256);
             if (captureSemantics)
@@ -2689,6 +2642,7 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
                                                 bool hasPicker, uint64_t pickerTextureId, const std::string &semanticId,
                                                 float fixedWidth)
 {
+    const float dpi = GetDpiScale();
     // Unity ObjectField: one shared frame height, left text inset, picker flush
     // to the right. Hover/active fill covers the whole control (body + picker).
     constexpr ImVec4 bodyIdleColor{0.10f, 0.10f, 0.10f, 0.82f};
@@ -2700,7 +2654,7 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
     const ImVec4 buttonIdleColor = EditorTheme::INSPECTOR_INLINE_BTN_IDLE;
     const ImVec4 buttonHoverColor = EditorTheme::INSPECTOR_INLINE_BTN_HOVER;
     const ImVec4 buttonActiveColor = EditorTheme::INSPECTOR_INLINE_BTN_ACTIVE;
-    const float textInsetX = EditorThemeRegistry::Float("OBJECT_FIELD_TEXT_INSET_X", 12.0f);
+    const float textInsetX = EditorThemeRegistry::Float("OBJECT_FIELD_TEXT_INSET_X") * dpi;
 
     if (fieldId.empty())
         throw std::invalid_argument("ObjectField fieldId must not be empty.");
@@ -2717,9 +2671,9 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
     const float buttonWidth = hasPicker ? fieldHeight : 0.0f;
     // fixedWidth > 0 caps the field (node-graph pin slots); otherwise fill the
     // available region like a normal Inspector row.
-    const float totalWidth = fixedWidth > 0.0f ? (std::max)(fixedWidth, buttonWidth + 10.0f)
-                                               : (std::max)(availableWidth, buttonWidth + 10.0f);
-    const float bodyWidth = (std::max)(totalWidth - buttonWidth, 10.0f);
+    const float totalWidth = fixedWidth > 0.0f ? (std::max)(fixedWidth, buttonWidth + 10.0f * dpi)
+                                               : (std::max)(availableWidth, buttonWidth + 10.0f * dpi);
+    const float bodyWidth = (std::max)(totalWidth - buttonWidth, 10.0f * dpi);
 
     const ImVec2 start = ImGui::GetCursorScreenPos();
     ImGui::BeginGroup();
@@ -2796,10 +2750,10 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
 
     ImDrawList *drawList = ImGui::GetWindowDrawList();
     drawList->AddRectFilled(start, end, ImGui::ColorConvertFloat4ToU32(fill), 0.0f);
-    drawList->AddRect(start, end, ImGui::ColorConvertFloat4ToU32(drawBorder), 0.0f, 0, 1.0f);
+    drawList->AddRect(start, end, ImGui::ColorConvertFloat4ToU32(drawBorder), 0.0f, 0, 1.0f * dpi);
 
     const ImVec2 textSize = ImGui::CalcTextSize(fullText.c_str());
-    const float textMaxWidth = (std::max)(0.0f, bodyWidth - textInsetX - 4.0f);
+    const float textMaxWidth = (std::max)(0.0f, bodyWidth - textInsetX - 4.0f * dpi);
     std::string clipped = fullText;
     if (textSize.x > textMaxWidth && textMaxWidth > 0.0f) {
         while (!clipped.empty() && ImGui::CalcTextSize((clipped + "...").c_str()).x > textMaxWidth)
@@ -2813,8 +2767,9 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
         const ImVec4 &pickerFill =
             pickerPressed ? buttonActiveColor : (pickerHovered ? buttonHoverColor : buttonIdleColor);
         drawList->AddRectFilled(pickerMin, pickerMax, ImGui::ColorConvertFloat4ToU32(pickerFill), 0.0f);
-        const float drawSize = (std::max)(0.0f, (std::min)(10.0f, (std::min)(pickerMax.x - pickerMin.x - 6.0f,
-                                                                             pickerMax.y - pickerMin.y - 4.0f)));
+        const float drawSize =
+            (std::max)(0.0f, (std::min)(10.0f * dpi, (std::min)(pickerMax.x - pickerMin.x - 6.0f * dpi,
+                                                                pickerMax.y - pickerMin.y - 4.0f * dpi)));
         const ImVec2 drawMin{pickerMin.x + ((pickerMax.x - pickerMin.x) - drawSize) * 0.5f,
                              pickerMin.y + ((pickerMax.y - pickerMin.y) - drawSize) * 0.5f};
         if (pickerTextureId != 0 && drawSize > 0.0f) {

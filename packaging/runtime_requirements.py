@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-RUNTIME_PROFILE_VERSION = 4
-
 # Keep the managed runtime limited to the packages needed to launch Infernux
 # projects and build standalone players from a project's private Python copy.
 # Hub UI dependencies like PySide6 belong in the frozen launcher, not here.
@@ -35,7 +33,6 @@ def runtime_modules() -> tuple[str, ...]:
 
 
 __all__ = [
-    "RUNTIME_PROFILE_VERSION",
     "runtime_modules",
     "runtime_package_specs",
     "runtime_packages",

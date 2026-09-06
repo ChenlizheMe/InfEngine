@@ -45,9 +45,6 @@ from Infernux.engine.ui import (
     editor_panel,
 )
 from Infernux.engine.ui import panel_state as _panel_state
-from Infernux.engine._bootstrap_trace import bootstrap_checkpoint
-
-
 @dataclass(frozen=True, slots=True)
 class NativeBuiltinWindowType:
     """One native singleton governed by the formal editor window manifest."""
@@ -258,13 +255,12 @@ class BootstrapPanelsMixin:
         }
         PanelRegistry.apply_all(
             wm,
-            self.interaction_core.panels,
             factory_overrides=_factories,
         )
         panel_interactions.require_types(
             BUILTIN_EDITOR_WINDOW_TYPE_IDS | PERMANENT_EDITOR_SURFACE_TYPE_IDS
         )
-        PanelRegistry.bind_live(wm, self.interaction_core.panels)
+        PanelRegistry.bind_live(wm)
 
     def _create_tag_layer_panel(self):
         panel = TagLayerSettingsPanel()
@@ -486,16 +482,6 @@ class BootstrapPanelsMixin:
         if ts:
             cam_settings = ts.get("camera_settings")
             if cam_settings:
-                # Migrate legacy rotation sensitivity stored against the old
-                # 0.05 default. The current UI maps 0.15 (deg/px) to 100%, so
-                # legacy values < 0.1 get normalized relative to the new base.
-                try:
-                    legacy = float(cam_settings.get("rotation_speed", 0.15))
-                    if legacy < 0.1:
-                        cam_settings = dict(cam_settings)
-                        cam_settings["rotation_speed"] = legacy / 0.05 * 0.15
-                except (TypeError, ValueError):
-                    pass
                 self.toolbar.set_camera_settings(cam_settings)
 
         # Hierarchy (native C++ panel)
@@ -671,20 +657,14 @@ class BootstrapPanelsMixin:
             elif hasattr(inst, "load_state") and callable(inst.load_state):
                 data = _panel_state.get(f"panel:{wid}")
                 if data:
-                    try:
-                        inst.load_state(data)
-                    except Exception:
-                        pass
+                    inst.load_state(data)
 
         self._suspend_persist_state = False
         self.project_panel.on_state_changed = self._persist_editor_state
         wm.set_on_state_changed(self._persist_editor_state)
-        try:
-            self.engine.set_before_exit_callback(
-                lambda: self._persist_editor_state(include_scene_draft=True)
-            )
-        except Exception:
-            pass
+        self.engine.set_before_exit_callback(
+            lambda: self._persist_editor_state(include_scene_draft=True)
+        )
 
         self._persist_editor_state()
 

@@ -22,6 +22,8 @@ class DemoCpp:
     """Minimal stand-in for a C++ component (needed for CppProperty __set_name__)."""
     def __init__(self):
         self.component_id = 42
+        self.execution_order = 0
+        self.enabled = True
         self.mode = 2
         self.raw = 11
         self.locked = 5
@@ -404,6 +406,18 @@ class TestBuiltinComponent:
 
         assert material.values["uvRect"] == (0.0, 0.0, 0.0, 0.0)
         assert material.values["displayScale"] == (0.0, 0.0, 0.0, 0.0)
+
+    def test_sprite_renderer_asset_database_failure_is_not_suppressed(
+        self,
+        monkeypatch,
+    ):
+        from Infernux.components.builtin import sprite_renderer as sprite_module
+        from Infernux.core.assets import AssetManager
+
+        monkeypatch.setattr(AssetManager, "_asset_database", None)
+
+        with pytest.raises(RuntimeError, match="not initialized with an AssetDatabase"):
+            sprite_module._get_asset_database()
 
     def test_sprite_renderer_uses_published_metadata_without_meta_sidecar(
         self,

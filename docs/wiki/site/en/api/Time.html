@@ -342,7 +342,7 @@ class in <b>Infernux.timing</b>
 <p>Provides access to time information for the current frame.</p>
 <!-- USER CONTENT START -->
 <p>description
-<strong>Status:</strong> Preview · <strong>Verified with:</strong> 0.3.7</p>
+<strong>Status:</strong> Preview · <strong>Verified with:</strong> 0.4.0</p>
 <p>Use scaled time for gameplay and unscaled time for UI or diagnostics that continue while paused. Physics work belongs to fixed updates.</p>
 <!-- USER CONTENT END -->
 
@@ -420,13 +420,13 @@ class in <b>Infernux.timing</b>
 <h2 id="example">Example<a class="headerlink" href="#example" title="Permanent link">&para;</a></h2>
 <!-- USER CONTENT START -->
 <p>example
-<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span><span class="p">,</span> <span class="n">Time</span>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">PauseClock</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">PauseClock</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="n">gameplay_seconds</span> <span class="o">=</span> <span class="n">Time</span><span class="o">.</span><span class="n">time</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        <span class="n">menu_step</span> <span class="o">=</span> <span class="n">Time</span><span class="o">.</span><span class="n">unscaled_delta_time</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        <span class="n">gameplay_seconds</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Time</span><span class="o">.</span><span class="n">time</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        <span class="n">menu_step</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Time</span><span class="o">.</span><span class="n">unscaled_delta_time</span>
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        <span class="nb">print</span><span class="p">(</span><span class="n">gameplay_seconds</span><span class="p">,</span> <span class="n">menu_step</span><span class="p">)</span>
 </code></pre></div></p>
 <!-- USER CONTENT END -->

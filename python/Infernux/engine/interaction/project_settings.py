@@ -23,10 +23,12 @@ from .documents import (
 
 
 BUILD_SETTINGS_DEFAULTS: dict[str, Any] = {
+    "build_target": "",
+    "android_artifact": "apk",
     "game_name": "",
     "scenes": [],
     "output_dir": "",
-    "icon_path": "",
+    "icon_guid": "",
     "display_mode": "fullscreen_borderless",
     "window_width": 1280,
     "window_height": 720,
@@ -52,9 +54,6 @@ def normalize_build_settings(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise TypeError("build settings must be a JSON object")
     value = copy.deepcopy(value)
-    # Assets is the only Player content boundary.  Drop the former authoring
-    # option when an existing project is next loaded and saved.
-    value.pop("additional_cook_roots", None)
     unknown = set(value) - set(BUILD_SETTINGS_DEFAULTS)
     if unknown:
         raise ValueError(
@@ -66,18 +65,54 @@ def normalize_build_settings(value: Any) -> dict[str, Any]:
         isinstance(item, str) and item for item in result["scenes"]
     ):
         raise TypeError("build settings scenes must contain non-empty strings")
-    if not isinstance(result["splash_items"], list) or not all(
-        isinstance(item, dict) for item in result["splash_items"]
+    if not isinstance(result["splash_items"], list):
+        raise TypeError("build settings splash_items must be an array")
+    splash_keys = {"type", "asset_guid", "duration", "fade_in", "fade_out"}
+    for index, item in enumerate(result["splash_items"]):
+        if not isinstance(item, dict) or set(item) != splash_keys:
+            raise TypeError(
+                f"build settings splash_items[{index}] must use the current asset GUID schema"
+            )
+        if item["type"] not in {"image", "video"}:
+            raise ValueError(
+                f"build settings splash_items[{index}].type is invalid"
+            )
+        if not isinstance(item["asset_guid"], str) or not item["asset_guid"]:
+            raise TypeError(
+                f"build settings splash_items[{index}].asset_guid must be a non-empty string"
+            )
+        for field in ("duration", "fade_in", "fade_out"):
+            if isinstance(item[field], bool) or not isinstance(item[field], (int, float)):
+                raise TypeError(
+                    f"build settings splash_items[{index}].{field} must be numeric"
+                )
+            if item[field] < 0:
+                raise ValueError(
+                    f"build settings splash_items[{index}].{field} must not be negative"
+                )
+    for field in (
+        "build_target",
+        "android_artifact",
+        "game_name",
+        "output_dir",
+        "icon_guid",
+        "display_mode",
     ):
-        raise TypeError("build settings splash_items must contain objects")
-    for field in ("game_name", "output_dir", "icon_path", "display_mode"):
         if not isinstance(result[field], str):
             raise TypeError(f"build settings {field} must be a string")
     if result["display_mode"] not in {"fullscreen_borderless", "windowed"}:
         raise ValueError("build settings display_mode is invalid")
+    if result["android_artifact"] not in {"apk", "aab"}:
+        raise ValueError("build settings android_artifact is invalid")
+    if result["build_target"]:
+        from Infernux.engine.build import BuildTargetId
+
+        BuildTargetId(result["build_target"])
     for field in ("window_width", "window_height"):
         if isinstance(result[field], bool) or not isinstance(result[field], int):
             raise TypeError(f"build settings {field} must be an integer")
+        if result[field] <= 0:
+            raise ValueError(f"build settings {field} must be positive")
     for field in ("window_resizable", "debug_mode", "lto", "enable_jit"):
         if not isinstance(result[field], bool):
             raise TypeError(f"build settings {field} must be a boolean")

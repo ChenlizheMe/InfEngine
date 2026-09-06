@@ -9,6 +9,7 @@ import pytest
 
 from infernux_mcp import supervisor as supervisor_module
 from infernux_mcp.supervisor import SupervisorSession
+from Infernux.engine.player_package_native import read_manifest, write_pack
 
 
 class _RunningProcess:
@@ -130,37 +131,6 @@ def test_supervisor_checkpoint_restores_project_ledger_but_preserves_derived_sta
     assert cache.read_bytes() == b"derived-after"
 
 
-def test_checkpoint_payload_verification_honors_paths_recorded_by_older_policy(tmp_path, monkeypatch):
-    project = tmp_path / "Desktop" / "LegacyCheckpointPilot"
-    (project / "Assets").mkdir(parents=True)
-    (project / "ProjectSettings").mkdir()
-    (project / "Assets" / "Race.scene").write_text("clean\n", encoding="utf-8")
-    capabilities = project / "ProjectSettings" / "mcp_capabilities.json"
-    capabilities.write_text('{"legacy": true}\n', encoding="utf-8")
-    supervisor = SupervisorSession(str(project), session_id="legacy-checkpoint")
-    monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
-    checkpoint_store = supervisor_module.checkpoint_store
-    current_ignored = checkpoint_store._IGNORED_FILE_NAMES
-    monkeypatch.setattr(
-        checkpoint_store,
-        "_IGNORED_FILE_NAMES",
-        frozenset(name for name in current_ignored if name != "mcp_capabilities.json"),
-    )
-
-    created = supervisor.create_checkpoint("legacy-policy-001", restart_editor=False)
-    with open(created["checkpoint"]["manifest_path"], "r", encoding="utf-8") as stream:
-        manifest = json.load(stream)
-    assert "ProjectSettings/mcp_capabilities.json" in {
-        entry["path"] for entry in manifest["ledger"]["entries"]
-    }
-
-    monkeypatch.setattr(checkpoint_store, "_IGNORED_FILE_NAMES", current_ignored)
-    status = supervisor.checkpoint_status("legacy-policy-001")
-
-    assert status["payload_valid"] is True
-    assert status["current_match"] is True
-
-
 def test_checkpoint_restore_rolls_back_first_root_when_second_root_replace_fails(tmp_path, monkeypatch):
     project = tmp_path / "Desktop" / "CheckpointRollbackPilot"
     assets = project / "Assets"
@@ -218,7 +188,7 @@ def test_supervisor_handoff_persists_mode_transition_without_running_editor(tmp_
     supervisor = SupervisorSession(str(project), mode="developer_assist")
     monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
 
-    result = supervisor.handoff_mode(
+    result = supervisor.switch_mode(
         "global_validation",
         checkpoint="scripts-reviewed",
         reason="Begin real editor validation.",
@@ -288,7 +258,7 @@ def test_supervisor_handoff_requires_a_current_managed_checkpoint(tmp_path, monk
     monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
 
     with pytest.raises(RuntimeError, match="managed checkpoint"):
-        supervisor.handoff_mode(
+        supervisor.switch_mode(
             "global_validation",
             checkpoint="missing-baseline",
             restart_editor=False,
@@ -311,7 +281,7 @@ def test_supervisor_handoff_rejects_dirty_running_editor(tmp_path, monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="unsaved changes"):
-        supervisor.handoff_mode(
+        supervisor.switch_mode(
             "developer_assist",
             checkpoint="must-not-stop-dirty-editor",
             restart_editor=False,
@@ -474,7 +444,7 @@ def test_reattached_supervisor_handoff_stops_clean_editor_before_reconfiguring(t
 
     monkeypatch.setattr(supervisor, "stop_editor", _normal_stop)
 
-    result = supervisor.handoff_mode(
+    result = supervisor.switch_mode(
         "developer_assist",
         checkpoint="clean-before-script-pass",
         restart_editor=False,
@@ -596,7 +566,7 @@ def test_supervisor_handoff_rejects_active_validation_attempt(tmp_path, monkeypa
     monkeypatch.setattr(supervisor, "_read_host_session_status", lambda **_: {"attempt_active": True})
 
     with pytest.raises(RuntimeError, match="attempt"):
-        supervisor.handoff_mode(
+        supervisor.switch_mode(
             "developer_assist",
             checkpoint="attempt-must-stop-first",
             restart_editor=False,
@@ -643,49 +613,48 @@ def test_supervisor_public_status_excludes_private_lease_but_persists_recovery_s
 def _write_debug_player_output(tmp_path, project_root, *, debug_build=True, scenes=None):
     output = tmp_path / "PlayerBuild"
     data = output / "Pilot_Data"
-    runtime = data / "Runtime"
-    runtime.mkdir(parents=True)
+    data.mkdir(parents=True)
     executable = output / "Pilot.exe"
-    executable.write_bytes(b"launcher")
-    (runtime / "InfernuxPlayer.exe").write_bytes(b"runtime")
-    (data / "PlayerLayout.json").write_text(json.dumps({
-        "layout": "infernux-windows-player",
-        "launcher": "Pilot.exe",
-        "data_directory": "Pilot_Data",
-        "runtime_directory": "Runtime",
-        "runtime_modules_directory": "RuntimeModules",
-    }), encoding="utf-8")
-    (data / ".infernux-build-output").write_text(json.dumps({
-        "tool": "Infernux",
-        "kind": "build-output",
-        "project_name": "Pilot",
-        "project_identity": supervisor_module.path_fingerprint(str(project_root)),
-    }), encoding="utf-8")
-    (data / "BuildManifest.json").write_text(json.dumps({
+    executable.write_bytes(b"direct-native-player")
+    control = "token_authenticated" if debug_build else "disabled"
+    build_manifest = tmp_path / "Pilot-BuildManifest.json"
+    build_manifest.write_text(json.dumps({
         "game_name": "Pilot",
         "debug_build": debug_build,
         "scenes": scenes or [],
-    }), encoding="utf-8")
-    return executable
-
-
-def _write_single_entry_debug_player_output(tmp_path, project_root, *, debug_build=True):
-    output = tmp_path / "SingleEntryPlayerBuild"
-    data = output / "Pilot_Data"
-    data.mkdir(parents=True)
-    executable = output / "Pilot.exe"
-    executable.write_bytes(b"single-entry-player")
-    control = "token_authenticated" if debug_build else "disabled"
-    (data / "BuildManifest.json").write_text(json.dumps({
-        "game_name": "Pilot",
-        "debug_build": debug_build,
-        "scenes": [],
         "build_output": {
             "tool": "Infernux",
             "project_identity": supervisor_module.path_fingerprint(str(project_root)),
         },
         "runtime_contract": {"runtime_policy": {"player_control": control}},
     }), encoding="utf-8")
+    runtime_catalog = tmp_path / "Pilot-RuntimeAssetCatalog.json"
+    runtime_catalog.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.runtime_asset_catalog",
+                "player_host": {},
+                "packages": [],
+                "artifacts": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    catalog = data / "AssetCatalog.inxcat"
+    write_pack(
+        (
+            ("RuntimeAssetCatalog.json", runtime_catalog),
+            ("BuildManifest.json", build_manifest),
+        ),
+        catalog,
+    )
+    catalog_manifest = read_manifest(catalog)
+    (data / "PackageIndex.inxmanifest").write_text(
+        "INFERNUX_PLAYER_PACKAGE_INDEX\n"
+        f"catalog\t{catalog_manifest['archive_sha256']}\t"
+        f"{catalog_manifest['archive_bytes']}\n",
+        encoding="ascii",
+    )
     (data / "Player.inxmanifest").write_text(json.dumps({
         "audit": {"passed": True},
         "product": {
@@ -697,7 +666,7 @@ def _write_single_entry_debug_player_output(tmp_path, project_root, *, debug_bui
     return executable
 
 
-def test_supervisor_launches_only_verified_debug_player_output(tmp_path, monkeypatch):
+def test_supervisor_launches_only_current_debug_player_output(tmp_path, monkeypatch):
     local_state = tmp_path / "LocalAppData"
     monkeypatch.setenv("LOCALAPPDATA", str(local_state))
     project = tmp_path / "Desktop" / "PlayerPilot"
@@ -727,13 +696,13 @@ def test_supervisor_launches_only_verified_debug_player_output(tmp_path, monkeyp
     assert status["player_running"] is True
     assert status["player_ready"] is True
     assert status["player_pid"] == 8448
-    expected_runtime = executable.parent / "Pilot_Data" / "Runtime" / "InfernuxPlayer.exe"
-    assert captured["argv"] == [str(expected_runtime)]
+    expected_data = executable.parent / "Pilot_Data"
+    assert captured["argv"] == [str(executable)]
     assert captured["env"]["_INFERNUX_PLAYER_CONTROL_TOKEN"] == supervisor._player_control_token
-    assert captured["env"]["_INFERNUX_PLAYER_RUNTIME_ROOT"] == str(expected_runtime.parent)
-    assert captured["env"]["_INFERNUX_PLAYER_DATA_ROOT"] == str(expected_runtime.parent.parent)
+    assert captured["env"]["_INFERNUX_PLAYER_RUNTIME_ROOT"] == str(executable.parent)
+    assert captured["env"]["_INFERNUX_PLAYER_DATA_ROOT"] == str(expected_data)
     assert captured["env"]["_INFERNUX_PLAYER_MODULE_ROOT"] == str(
-        expected_runtime.parent.parent / "RuntimeModules"
+        expected_data / "RuntimeModules"
     )
     assert "_INFERNUX_PLAYER_DEBUG_BUILD" not in captured["env"]
     assert supervisor.player_runtime_log_path == str(
@@ -746,7 +715,7 @@ def test_supervisor_launches_current_single_entry_debug_player_output(tmp_path, 
     project = tmp_path / "Desktop" / "SingleEntryPilot"
     supervisor = SupervisorSession(str(project), session_id="single-entry-player-launch")
     supervisor.prepare_project()
-    executable = _write_single_entry_debug_player_output(tmp_path, project)
+    executable = _write_debug_player_output(tmp_path, project)
     captured = {}
 
     class _PlayerProcess:
@@ -777,13 +746,42 @@ def test_supervisor_launches_current_single_entry_debug_player_output(tmp_path, 
     supervisor._close_player_log()
 
 
+def test_supervisor_reports_playerhost_failure_without_waiting_for_timeout(
+    tmp_path, monkeypatch
+):
+    project = tmp_path / "Desktop" / "FailedPlayerHost"
+    supervisor = SupervisorSession(str(project), session_id="failed-player-host")
+    supervisor.prepare_project()
+    executable = _write_debug_player_output(tmp_path, project)
+
+    class _PlayerProcess:
+        pid = 8452
+
+        @staticmethod
+        def poll():
+            return None
+
+    def _popen(_argv, **kwargs):
+        with open(kwargs["env"]["_INFERNUX_READY_FILE"], "w", encoding="utf-8") as stream:
+            stream.write("ERROR:Bootstrap.inxrt is damaged\n")
+        return _PlayerProcess()
+
+    monkeypatch.setattr(supervisor_module.subprocess, "Popen", _popen)
+
+    status = supervisor.launch_player(str(executable), timeout_seconds=30.0)
+
+    assert status["player_ready"] is False
+    assert status["ready_error"] == "Bootstrap.inxrt is damaged"
+    supervisor._close_player_log()
+
+
 def test_supervisor_player_logs_only_report_current_launch(tmp_path, monkeypatch):
     local_state = tmp_path / "LocalAppData"
     monkeypatch.setenv("LOCALAPPDATA", str(local_state))
     project = tmp_path / "Desktop" / "CurrentLogsPilot"
     supervisor = SupervisorSession(str(project), session_id="current-player-logs")
     supervisor.prepare_project()
-    executable = _write_single_entry_debug_player_output(tmp_path, project)
+    executable = _write_debug_player_output(tmp_path, project)
     logs_root = local_state / "Infernux" / "Players" / "Pilot" / "Logs"
     logs_root.mkdir(parents=True)
     runtime_log = logs_root / "player.log"
@@ -853,7 +851,11 @@ def test_supervisor_player_scene_override_is_limited_to_manifest_scene(tmp_path,
         return _PlayerProcess()
 
     monkeypatch.setattr(supervisor_module.subprocess, "Popen", _popen)
-    status = supervisor.launch_player(str(executable), start_scene="Assets/racetrack.scene", timeout_seconds=1.0)
+    status = supervisor.launch_player(
+        str(executable),
+        start_scene="Assets/RaceTrack.scene",
+        timeout_seconds=1.0,
+    )
 
     assert status["player_start_scene"] == "Assets/RaceTrack.scene"
     assert captured["env"]["_INFERNUX_PLAYER_START_SCENE"] == "Assets/RaceTrack.scene"
@@ -882,9 +884,7 @@ def test_supervisor_stops_player_through_authenticated_control_without_force(tmp
     supervisor._attached_player_pid = 9559
     supervisor._player_control_token = "private-player-control-token"
     launcher = _write_debug_player_output(tmp_path, project)
-    supervisor._player_executable = str(
-        launcher.parent / "Pilot_Data" / "Runtime" / "InfernuxPlayer.exe"
-    )
+    supervisor._player_executable = str(launcher)
     supervisor._player_ready = True
     alive = {"value": True}
     original_write_json = supervisor_module._write_json
@@ -913,3 +913,44 @@ def test_supervisor_stops_player_through_authenticated_control_without_force(tmp
     assert result["stopped"] is True
     assert result["player_running"] is False
     assert "forced" not in result
+
+
+def test_supervisor_reaps_the_player_process_it_owns(tmp_path, monkeypatch):
+    project = tmp_path / "Desktop" / "OwnedPlayer"
+    supervisor = SupervisorSession(str(project), session_id="owned-player")
+    supervisor.prepare_project()
+    waited = []
+
+    class OwnedPlayerProcess:
+        pid = 9560
+
+        @staticmethod
+        def poll():
+            return None
+
+        @staticmethod
+        def wait(*, timeout):
+            waited.append(timeout)
+            return 0
+
+    supervisor._player_process = OwnedPlayerProcess()
+    supervisor._player_control_token = "private-player-control-token"
+    supervisor._player_ready = True
+    monkeypatch.setattr(
+        supervisor,
+        "_call_player_control",
+        lambda *_args, **_kwargs: {"close_requested": True},
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "_wait_for_pid_exit",
+        lambda *_args, **_kwargs: pytest.fail(
+            "an owned Player must be reaped through its Popen handle"
+        ),
+    )
+
+    result = supervisor.stop_player(timeout_seconds=1.5)
+
+    assert waited == [1.5]
+    assert result["stopped"] is True
+    assert result["player_running"] is False

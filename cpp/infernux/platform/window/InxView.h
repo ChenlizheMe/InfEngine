@@ -22,11 +22,12 @@ namespace infernux
 /// Power-save / idle configuration for the editor main loop.
 /// When no user input is detected for a short period, the loop sleeps
 /// via ``SDL_WaitEventTimeout`` to reduce CPU/GPU usage.
-/// An optional editor FPS cap can limit edit mode when explicitly requested.
+/// Optional editor and play-mode FPS caps can limit work when explicitly requested.
 struct FpsIdling
 {
     float fpsIdle = 10.0f;     ///< Target FPS when idling (0 = disable idle)
     float editorFpsCap = 0.0f; ///< Max FPS in editor mode (0 = uncapped)
+    float playFpsCap = 0.0f;   ///< Max FPS in play/player mode (0 = uncapped)
     bool enableIdling = true;  ///< Master switch for idle detection
     bool isIdling = false;     ///< Output — true when the last frame went idle
 };
@@ -125,7 +126,25 @@ class InxView
 
     bool IsMinimized() const
     {
-        return m_isMinimized;
+        return m_isMinimized || m_applicationInBackground.load(std::memory_order_acquire) ||
+               m_surfaceRecreationPending.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] bool IsApplicationInBackground() const noexcept
+    {
+        return m_applicationInBackground.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] bool NeedsSurfaceRecreation() const noexcept
+    {
+        return m_surfaceRecreationPending.load(std::memory_order_acquire);
+    }
+    void RequestSurfaceRecreation() noexcept
+    {
+        m_surfaceRecreationPending.store(true, std::memory_order_release);
+        RequestExternalWake();
+    }
+    void AcknowledgeSurfaceRecreation() noexcept
+    {
+        m_surfaceRecreationPending.store(false, std::memory_order_release);
     }
     // ---- Power-save / idle accessors ----
     FpsIdling &GetIdling()
@@ -171,6 +190,7 @@ class InxView
     void RequestExternalWake() noexcept;
 
     void CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface);
+    [[nodiscard]] bool TryCreateSurface(VkInstance vkInstance, VkSurfaceKHR *vkSurface) noexcept;
     void SetAppMetadata(InxAppMetadata appMetaData);
 
   private:
@@ -208,6 +228,10 @@ class InxView
     bool m_keepRunning;
     bool m_closeRequested = false;
     bool m_isMinimized = false;
+    std::atomic_bool m_applicationInBackground{false};
+    std::atomic_bool m_surfaceRecreationPending{false};
+    std::atomic_bool m_hasCreatedSurface{false};
+    bool m_eventWatchInstalled = false;
     bool m_isPlayMode = false;
     bool m_needsImmediateGuiRefresh = false;
     InxAppMetadata m_appMetadata;
@@ -243,6 +267,7 @@ class InxView
     SDL_Keymod m_syntheticKeyModifiers = SDL_KMOD_NONE;
 
     void SDLInit();
+    static bool SDLCALL WatchApplicationEvents(void *userdata, SDL_Event *event);
     uint64_t QueueSyntheticInput(SyntheticInputEvent event);
     [[nodiscard]] bool HasPendingSyntheticInput() const;
     void DrainSyntheticInputEvents(bool &hadInputEvent);

@@ -11,12 +11,6 @@
 namespace infernux
 {
 
-enum class MaterialPassRenderingMode : uint8_t
-{
-    LegacyRenderPass = 0,
-    DynamicRendering,
-};
-
 /// Immutable render-target contract for one material pass. It is deliberately
 /// backend-neutral so RenderGraph can key pipelines without leaking Vulkan
 /// formats into the user-facing pipeline model.
@@ -27,13 +21,6 @@ struct MaterialPassPipelineDescriptor
     rhi::PixelFormat depthFormat = rhi::PixelFormat::Undefined;
     rhi::SampleCount samples = rhi::SampleCount::One;
     bool depthReadOnly = false;
-    MaterialPassRenderingMode renderingMode = MaterialPassRenderingMode::LegacyRenderPass;
-
-    [[nodiscard]] bool UsesDynamicRendering() const noexcept
-    {
-        return renderingMode == MaterialPassRenderingMode::DynamicRendering;
-    }
-
     [[nodiscard]] rhi::GraphicsRenderingSignature RenderingSignature() const noexcept
     {
         rhi::GraphicsRenderingSignature signature;
@@ -51,17 +38,11 @@ struct MaterialPassPipelineDescriptor
         return RenderingSignature() == signature;
     }
 
-    void ApplyRenderingContract(rhi::GraphicsPipelineDesc &descriptor,
-                                rhi::RenderTargetLayoutHandle legacyLayout) const noexcept
+    void ApplyRenderingContract(rhi::GraphicsPipelineDesc &descriptor) const noexcept
     {
-        descriptor.useDynamicRendering = UsesDynamicRendering();
-        if (descriptor.useDynamicRendering) {
-            descriptor.renderTargetLayout = {};
-            descriptor.renderingSignature = RenderingSignature();
-        } else {
-            descriptor.renderTargetLayout = legacyLayout;
-            descriptor.renderingSignature = {};
-        }
+        descriptor.useDynamicRendering = true;
+        descriptor.renderTargetLayout = {};
+        descriptor.renderingSignature = RenderingSignature();
     }
 
     [[nodiscard]] bool IsValid() const noexcept
@@ -77,7 +58,7 @@ struct MaterialPassPipelineDescriptor
             return false;
         if (depthReadOnly && depthFormat == rhi::PixelFormat::Undefined)
             return false;
-        if (UsesDynamicRendering() && !RenderingSignature().IsValid())
+        if (!RenderingSignature().IsValid())
             return false;
 
         switch (target) {
@@ -106,8 +87,7 @@ struct MaterialPassPipelineDescriptor
                            const MaterialPassPipelineDescriptor &rhs) noexcept
     {
         return lhs.target == rhs.target && lhs.colorFormats == rhs.colorFormats && lhs.depthFormat == rhs.depthFormat &&
-               lhs.samples == rhs.samples && lhs.depthReadOnly == rhs.depthReadOnly &&
-               lhs.renderingMode == rhs.renderingMode;
+               lhs.samples == rhs.samples && lhs.depthReadOnly == rhs.depthReadOnly;
     }
 
     friend bool operator!=(const MaterialPassPipelineDescriptor &lhs,
@@ -129,7 +109,6 @@ struct MaterialPassPipelineDescriptorHash
         combine(static_cast<size_t>(descriptor.samples));
         combine(static_cast<size_t>(descriptor.depthFormat));
         combine(static_cast<size_t>(descriptor.depthReadOnly));
-        combine(static_cast<size_t>(descriptor.renderingMode));
         combine(descriptor.colorFormats.size());
         for (const rhi::PixelFormat format : descriptor.colorFormats)
             combine(static_cast<size_t>(format));

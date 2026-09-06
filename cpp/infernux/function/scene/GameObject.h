@@ -34,11 +34,12 @@ class GameObject
     explicit GameObject(const std::string &name = "GameObject");
     ~GameObject();
 
-    // Non-copyable, movable
+    // Scene identity, transform ownership, and component back-references make
+    // GameObject instances address-stable. Scenes move owning pointers instead.
     GameObject(const GameObject &) = delete;
     GameObject &operator=(const GameObject &) = delete;
-    GameObject(GameObject &&) = default;
-    GameObject &operator=(GameObject &&) = default;
+    GameObject(GameObject &&) = delete;
+    GameObject &operator=(GameObject &&) = delete;
 
     // ========================================================================
     // Identity

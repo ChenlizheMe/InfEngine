@@ -22,7 +22,7 @@ def _number(value: Any, label: str) -> float:
 
 
 @dataclass(frozen=True)
-class CurveKey:
+class Keyframe:
     time: float
     value: float
     in_tangent: float = 0.0
@@ -43,7 +43,7 @@ class CurveKey:
         }
 
     @classmethod
-    def from_dict(cls, value: Any) -> "CurveKey":
+    def from_dict(cls, value: Any) -> "Keyframe":
         if type(value) is not dict or set(value) != {
             "time",
             "value",
@@ -59,17 +59,17 @@ class CurveKey:
 
 
 @dataclass(frozen=True)
-class Curve:
-    keys: tuple[CurveKey, ...] = (
-        CurveKey(0.0, 0.0),
-        CurveKey(1.0, 1.0),
+class AnimationCurve:
+    keys: tuple[Keyframe, ...] = (
+        Keyframe(0.0, 0.0),
+        Keyframe(1.0, 1.0),
     )
     pre_wrap: str = "clamp"
     post_wrap: str = "clamp"
 
     def __post_init__(self) -> None:
         keys = tuple(
-            key if isinstance(key, CurveKey) else CurveKey.from_dict(key)
+            key if isinstance(key, Keyframe) else Keyframe.from_dict(key)
             for key in self.keys
         )
         if not 1 <= len(keys) <= MAX_RAMP_KEYS:
@@ -91,13 +91,13 @@ class Curve:
         }
 
     @classmethod
-    def from_dict(cls, value: Any) -> "Curve":
+    def from_dict(cls, value: Any) -> "AnimationCurve":
         if type(value) is not dict or set(value) != {"keys", "pre_wrap", "post_wrap"}:
             raise ValueError("curve requires keys, pre_wrap and post_wrap")
         if type(value["keys"]) is not list:
             raise ValueError("curve keys must be an array")
         return cls(
-            tuple(CurveKey.from_dict(key) for key in value["keys"]),
+            tuple(Keyframe.from_dict(key) for key in value["keys"]),
             value["pre_wrap"],
             value["post_wrap"],
         )
@@ -171,8 +171,8 @@ __all__ = [
     "CURVE_WRAP_MODES",
     "GRADIENT_MODES",
     "MAX_RAMP_KEYS",
-    "Curve",
-    "CurveKey",
+    "AnimationCurve",
+    "Keyframe",
     "Gradient",
     "GradientKey",
 ]

@@ -278,7 +278,7 @@ bool VerifyGpuParticleMigration(TestResources &resources,
         return false;
 
     RenderGraph migrationGraph;
-    migrationGraph.Initialize(&resources.context, &resources.pipelines);
+    migrationGraph.Initialize(&resources.context);
     ResourceHandle sourceState;
     ResourceHandle sourceCounter;
     ResourceHandle destinationState;
@@ -535,7 +535,8 @@ void main() {
                              1};
     layoutDesc.entryCount = 4;
     const auto layout = rhi.CreateBindingLayout(layoutDesc);
-    const auto shader = rhi.CreateShaderModule({shaderWords.data(), shaderWords.size()});
+    const auto shader =
+        rhi.CreateShaderModule(infernux::rhi::ShaderModuleDesc::FromSpirV(shaderWords.data(), shaderWords.size()));
     infernux::rhi::ComputePipelineDesc pipelineDesc;
     pipelineDesc.computeShader = shader;
     pipelineDesc.bindingLayouts[0] = layout;
@@ -724,7 +725,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     const VkDevice device = resources.context.GetDevice();
     resources.pipelines.Initialize(device);
-    resources.graph.Initialize(&resources.context, &resources.pipelines);
+    resources.graph.Initialize(&resources.context);
 
     const auto computeCode = ReadSpirv(computePath);
     const auto vertexCode = ReadSpirv(vertexPath);
@@ -825,6 +826,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         infernux::particle::GpuParticleSpawnShaderSources::Prepare(),
     };
     if (!Require(spawnSources[1].find("uint requested = playing ? pc.cpuSpawnCount : 0u;") != std::string_view::npos &&
+                     spawnSources[1].find("capacityCounters.freeCount") != std::string_view::npos &&
+                     spawnSources[1].find("min(pc.capacity, capacityCounters.freeCount)") != std::string_view::npos &&
                      spawnSources[1].find("metadata[base + 0u] = accepted;") != std::string_view::npos &&
                      spawnSources[1].find("metadata[base + 7u] = accepted;") != std::string_view::npos,
                  "Particle spawn reset discarded the restart frame's fresh CPU burst"))
@@ -946,13 +949,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      residentParticleTelemetry.scheduledSystemCount == 0,
                  "GPU particle resident telemetry is incorrect before scheduling"))
         return false;
-    const auto initialManagedEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    if (!Require(initialManagedEntries.size() == 1 && initialManagedEntries[0].ownerLayerMask == 1u << 4u &&
+    const auto initialManagedEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
+    if (!Require(initialManagedEntries->size() == 1 && (*initialManagedEntries)[0].ownerLayerMask == 1u << 4u &&
                      !particleSystems.ActiveStateWasPreserved(managedProgram.id),
                  "Initial GPU particle publication reported a preserved state"))
         return false;
-    const auto initialManagedInstances = initialManagedEntries[0].instances;
-    const auto initialManagedIndirect = initialManagedEntries[0].indirectArguments;
+    const auto initialManagedInstances = (*initialManagedEntries)[0].instances;
+    const auto initialManagedIndirect = (*initialManagedEntries)[0].indirectArguments;
     const auto primarySemantics = particleSystems.ActiveOutputSemantics(managedProgram.id, primaryOutput.id);
     if (!Require(primarySemantics && !primarySemantics->receiveSceneLighting && !primarySemantics->receiveShadows &&
                      primarySemantics->sortMode == infernux::particle::ParticleSortMode::FrontToBack,
@@ -1063,12 +1066,12 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      particleDeletionQueue.PendingCount() == 1,
                  "Valid GPU particle hot replacement was not published with deferred retirement"))
         return false;
-    const auto preservedManagedEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    if (!Require(preservedManagedEntries.size() == 2 &&
-                     preservedManagedEntries[0].instances == initialManagedInstances &&
-                     preservedManagedEntries[1].instances == initialManagedInstances &&
-                     preservedManagedEntries[0].indirectArguments == initialManagedIndirect &&
-                     preservedManagedEntries[1].indirectArguments == initialManagedIndirect,
+    const auto preservedManagedEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
+    if (!Require(preservedManagedEntries->size() == 2 &&
+                     (*preservedManagedEntries)[0].instances == initialManagedInstances &&
+                     (*preservedManagedEntries)[1].instances == initialManagedInstances &&
+                     (*preservedManagedEntries)[0].indirectArguments == initialManagedIndirect &&
+                     (*preservedManagedEntries)[1].indirectArguments == initialManagedIndirect,
                  "Compatible GPU particle reload replaced resident simulation buffers"))
         return false;
 
@@ -1169,27 +1172,30 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                      particleSystems.BeginFrameBatch(managedProgram.graphInstanceId, {managedBatchItem}),
                  "GPU particle reset did not cancel and replace a pending frame request"))
         return false;
-    const auto managedEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    if (!Require(managedEntries.size() == 2 && managedEntries[0].renderer->RenderQueue() == 3050 &&
-                     managedEntries[1].renderer->RenderQueue() == 3075 &&
-                     managedEntries[0].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
-                     managedEntries[1].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
-                     managedEntries[0].cullProgram && managedEntries[0].cullProgram == managedEntries[1].cullProgram &&
-                     managedEntries[0].sortProgram && managedEntries[0].sortProgram == managedEntries[1].sortProgram &&
-                     managedEntries[0].instances == managedEntries[1].instances &&
-                     managedEntries[0].renderIndices == managedEntries[1].renderIndices &&
-                     managedEntries[0].indirectArguments == managedEntries[1].indirectArguments &&
-                     managedEntries[0].bounds.IsValid() && managedEntries[0].bounds == managedEntries[1].bounds,
+    const auto managedEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
+    if (!Require(managedEntries->size() == 2 && (*managedEntries)[0].renderer->RenderQueue() == 3050 &&
+                     (*managedEntries)[1].renderer->RenderQueue() == 3075 &&
+                     (*managedEntries)[0].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
+                     (*managedEntries)[1].semantics.sortMode == infernux::particle::ParticleSortMode::FrontToBack &&
+                     (*managedEntries)[0].cullProgram &&
+                     (*managedEntries)[0].cullProgram == (*managedEntries)[1].cullProgram &&
+                     (*managedEntries)[0].sortProgram &&
+                     (*managedEntries)[0].sortProgram == (*managedEntries)[1].sortProgram &&
+                     (*managedEntries)[0].instances == (*managedEntries)[1].instances &&
+                     (*managedEntries)[0].renderIndices == (*managedEntries)[1].renderIndices &&
+                     (*managedEntries)[0].indirectArguments == (*managedEntries)[1].indirectArguments &&
+                     (*managedEntries)[0].bounds.IsValid() &&
+                     (*managedEntries)[0].bounds == (*managedEntries)[1].bounds,
                  "GPU particle outputs did not share one simulated stream across ordered draw queues"))
         return false;
     primaryOutput.material->SetRenderQueue(3080);
-    const auto liveMaterialEntries = particleDrawRegistry.Snapshot(3000, 3100);
+    const auto liveMaterialEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
     if (!Require(particleSystems.ActiveOutputRenderQueue(managedProgram.id, primaryOutput.id) == 3080 &&
-                     liveMaterialEntries.size() == 2 && liveMaterialEntries[0].id == secondaryOutput.id &&
-                     liveMaterialEntries[1].id == primaryOutput.id,
+                     liveMaterialEntries->size() == 2 && (*liveMaterialEntries)[0].id == secondaryOutput.id &&
+                     (*liveMaterialEntries)[1].id == primaryOutput.id,
                  "GPU particle queue routing did not observe the shared material's live state"))
         return false;
-    const auto managedEntry = managedEntries.front();
+    const auto managedEntry = managedEntries->front();
 
     ShaderReflection computeReflection;
     if (!Require(computeReflection.Reflect(computeCode, VK_SHADER_STAGE_COMPUTE_BIT),
@@ -1652,7 +1658,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return [](RenderContext &) {};
     });
 
-    const bool dynamicGeometryTest = resources.graph.SupportsDynamicRendering();
     resources.graph.AddPass("IndirectDraw", [&](PassBuilder &builder) {
         builder.Read(particleTexture);
         builder.ReadIndirectBuffer(copiedIndirectArguments);
@@ -1665,19 +1670,17 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         colorTarget = builder.WriteColor(colorTarget);
         builder.SetRenderArea(16, 16);
         builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        builder.UseDynamicRendering(dynamicGeometryTest);
         auto managedRenderer = managedEntry.renderer;
         return [&, managedRenderer](RenderContext &context) {
             vkCmdBeginQuery(context.GetCommandBuffer(), resources.queryPool, 0, 0);
             auto &encoder = context.GetGraphicsCommandEncoder();
-            billboardRecorded = billboardRenderer.RecordDraw(encoder, billboardTargetLayout, billboardPass,
+            billboardRecorded = billboardRenderer.RecordDraw(encoder, billboardPass,
                                                              context.GetBufferHandle(particleOutputs.indirectArguments),
                                                              billboardView, {}, {}, true, particlePerView);
-            billboardRecorded =
-                managedRenderer->RecordDraw(encoder, billboardTargetLayout, billboardPass,
-                                            context.GetBufferHandle(managedIndirectArguments), billboardView,
-                                            managedViewSorter.SortedIndices(), {}, true, particlePerView) &&
-                billboardRecorded;
+            billboardRecorded = managedRenderer->RecordDraw(
+                                    encoder, billboardPass, context.GetBufferHandle(managedIndirectArguments),
+                                    billboardView, managedViewSorter.SortedIndices(), {}, true, particlePerView) &&
+                                billboardRecorded;
             encoder.DrawIndirect(context.GetBufferHandle(copiedIndirectArguments));
             vkCmdEndQuery(context.GetCommandBuffer(), resources.queryPool, 0);
         };
@@ -1709,24 +1712,17 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
     if (!Require(resources.graph.Compile(), "RenderGraph compilation failed"))
         return false;
-    if (!Require(resources.graph.GetPassUsesDynamicRendering("IndirectDraw") == dynamicGeometryTest,
-                 "RenderGraph did not honor the Dynamic Rendering capability fallback"))
-        return false;
     const auto indirectContract = resources.graph.GetPassRenderingContract("IndirectDraw");
-    if (!Require(indirectContract.found && !indirectContract.culled &&
-                     indirectContract.usesDynamicRendering == dynamicGeometryTest &&
-                     indirectContract.attachments.IsValid() && indirectContract.attachments.colorFormatCount == 1 &&
+    if (!Require(indirectContract.found && !indirectContract.culled && indirectContract.attachments.IsValid() &&
+                     indirectContract.attachments.colorFormatCount == 1 &&
                      indirectContract.attachments.colorFormats[0] == infernux::rhi::PixelFormat::RGBA8UNorm,
                  "RenderGraph did not publish the compiled graphics attachment contract"))
         return false;
-    if (dynamicGeometryTest) {
-        const auto signature = resources.graph.GetPassRenderingSignature("IndirectDraw");
-        if (!Require(resources.graph.GetPassRenderPass("IndirectDraw") == VK_NULL_HANDLE && signature.IsValid() &&
-                         signature.colorFormatCount == 1 &&
-                         signature.colorFormats[0] == infernux::rhi::PixelFormat::RGBA8UNorm,
-                     "Dynamic geometry pass did not publish its attachment signature"))
-            return false;
-    }
+    const auto signature = resources.graph.GetPassRenderingSignature("IndirectDraw");
+    if (!Require(signature.IsValid() && signature.colorFormatCount == 1 &&
+                     signature.colorFormats[0] == infernux::rhi::PixelFormat::RGBA8UNorm,
+                 "Geometry pass did not publish its attachment signature"))
+        return false;
 
     infernux::rhi::BindingLayoutDesc sampledTextureLayoutDesc;
     sampledTextureLayoutDesc.entries[0] = {0, infernux::rhi::BindingType::CombinedTextureSampler,
@@ -1899,7 +1895,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "RHI Texture2D/Texture3D staging uploads failed"))
         return false;
 
-    resources.computeShader = rhi.CreateShaderModule({computeCode.data(), computeCode.size()});
+    resources.computeShader =
+        rhi.CreateShaderModule(infernux::rhi::ShaderModuleDesc::FromSpirV(computeCode.data(), computeCode.size()));
     infernux::rhi::BindingLayoutDesc layoutDesc;
     layoutDesc.entries[0] = {0, infernux::rhi::BindingType::StorageBuffer, infernux::rhi::ShaderStage::Compute, 1};
     layoutDesc.entryCount = 1;
@@ -1954,7 +1951,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     billboardDesc.instances = particleRuntime.InstanceBuffer();
     billboardDesc.renderIndices = particleRuntime.RenderIndexBuffer();
     billboardDesc.fallbackMaterial.blendEnabled = false;
-    billboardDesc.textureResolver = [&](const std::string &, const std::string &bindingName) {
+    billboardDesc.textureResolver = [&](const std::string &, const std::string &bindingName,
+                                        infernux::particle::GpuParticleTextureRequest request) {
+        assert(request == infernux::particle::GpuParticleTextureRequest::Poll);
         if (bindingName != "texSampler")
             return infernux::particle::GpuBillboardTextureLease{};
         const auto texture = rhi.RegisterTextureView(resources.graph.ResolveTextureView(particleTexture));
@@ -1972,10 +1971,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return infernux::particle::GpuBillboardTextureLease{infernux::particle::GpuBillboardTextureStatus::Ready,
                                                             texture, sampler, std::move(slot), std::move(publication)};
     };
-    billboardTargetLayout = resources.graph.GetPassRenderTargetLayout("IndirectDraw");
     billboardPass.colorFormats = {infernux::rhi::PixelFormat::RGBA8UNorm};
-    billboardPass.renderingMode = dynamicGeometryTest ? infernux::MaterialPassRenderingMode::DynamicRendering
-                                                      : infernux::MaterialPassRenderingMode::LegacyRenderPass;
     billboardView.viewProjection[0] = 1.0f;
     billboardView.viewProjection[5] = 1.0f;
     billboardView.viewProjection[10] = 1.0f;
@@ -2149,8 +2145,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return Require(managerSubmit == VK_SUCCESS && managerWait == VK_SUCCESS, failureMessage);
     };
 
-    const auto preMigrationEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    const auto preMigrationInstances = preMigrationEntries.front().instances;
+    const auto preMigrationEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
+    const auto preMigrationInstances = preMigrationEntries->front().instances;
     managedProgram.artifactRevision = 4;
     managedProgram.capacity = 64;
     infernux::particle::GpuParticleEmitterProgram::StateMigration managerMigration;
@@ -2164,9 +2160,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                 particleSystems.ActiveStateWasPreserved(managedProgram.id) && particleDeletionQueue.PendingCount() == 4,
             "GPU particle manager rejected a layout-migratable revision"))
         return false;
-    const auto migratingEntries = particleDrawRegistry.Snapshot(3000, 3100);
-    if (!Require(migratingEntries.size() == 2 && migratingEntries.front().capacity == 64 &&
-                     migratingEntries.front().instances != preMigrationInstances,
+    const auto migratingEntries = particleDrawRegistry.SnapshotShared(3000, 3100);
+    if (!Require(migratingEntries->size() == 2 && migratingEntries->front().capacity == 64 &&
+                     migratingEntries->front().instances != preMigrationInstances,
                  "GPU particle manager reused incompatible resident buffers during layout migration"))
         return false;
 
@@ -2340,7 +2336,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     rhi.Release(particleCollisionMeshBvhNodes);
 
     RenderGraph rootGraph;
-    rootGraph.Initialize(&resources.context, &resources.pipelines);
+    rootGraph.Initialize(&resources.context);
     auto recordRootGraph = [&] {
         rootGraph.AddComputePass("Unreachable", [](PassBuilder &) { return [](RenderContext &) {}; });
         rootGraph.AddComputePass("ExplicitSideEffect", [](PassBuilder &builder) {
@@ -2380,7 +2376,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     RenderGraph motionCullingGraph;
-    motionCullingGraph.Initialize(&resources.context, &resources.pipelines);
+    motionCullingGraph.Initialize(&resources.context);
     const auto sceneColor = motionCullingGraph.RegisterTransientTexture("SceneColor", 4, 4, VK_FORMAT_R8G8B8A8_UNORM);
     const auto motionTexture = motionCullingGraph.RegisterTransientTexture("Motion", 4, 4, VK_FORMAT_R16G16_SFLOAT);
     ResourceHandle sceneColorVersion;
@@ -2415,7 +2411,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     RenderGraph typedResourceGraph;
-    typedResourceGraph.Initialize(&resources.context, &resources.pipelines);
+    typedResourceGraph.Initialize(&resources.context);
     auto registeredBuffer = typedResourceGraph.RegisterTransientBuffer(
         "RegisteredStorage", 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     ResourceHandle writtenBuffer;
@@ -2433,7 +2429,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     externalAliasDesc.usage = infernux::rhi::BufferUsageFlags::Storage;
     const auto externalAliasBuffer = rhi.CreateBuffer(externalAliasDesc);
     RenderGraph externalAliasGraph;
-    externalAliasGraph.Initialize(&resources.context, &resources.pipelines);
+    externalAliasGraph.Initialize(&resources.context);
     ResourceHandle externalAliasWrite;
     ResourceHandle externalAliasRead;
     externalAliasGraph.AddComputePass("WriteExternalAlias", [&](PassBuilder &builder) {
@@ -2458,7 +2454,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     rhi.Release(externalAliasBuffer);
 
     RenderGraph bufferAliasGraph;
-    bufferAliasGraph.Initialize(&resources.context, &resources.pipelines);
+    bufferAliasGraph.Initialize(&resources.context);
     constexpr VkDeviceSize aliasBufferBytes = 64 * 1024;
     const auto firstAliasBuffer = bufferAliasGraph.RegisterTransientBuffer("FirstAliasBuffer", aliasBufferBytes,
                                                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -2499,7 +2495,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     infernux::GpuRetirementQueue graphDeletionQueue;
     graphDeletionQueue.BindSerialSource([] { return infernux::rhi::SubmissionSerial{1}; });
     RenderGraph deferredReleaseGraph;
-    deferredReleaseGraph.Initialize(&resources.context, &resources.pipelines, &graphDeletionQueue);
+    deferredReleaseGraph.Initialize(&resources.context, &graphDeletionQueue);
     const auto deferredBuffer =
         deferredReleaseGraph.RegisterTransientBuffer("DeferredBuffer", 256, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     ResourceHandle deferredBufferVersion;
@@ -2518,7 +2514,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     graphDeletionQueue.FlushAll();
 
     RenderGraph presentGraph;
-    presentGraph.Initialize(&resources.context, &resources.pipelines);
+    presentGraph.Initialize(&resources.context);
     auto presentTexture = presentGraph.RegisterTransientTexture("PresentTexture", 4, 4, VK_FORMAT_R8G8B8A8_UNORM);
     ResourceHandle presentVersion;
     presentGraph.AddPass("ProducePresentTexture", [&](PassBuilder &builder) {
@@ -2542,7 +2538,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     RenderGraph outlineGraph;
-    outlineGraph.Initialize(&resources.context, &resources.pipelines);
+    outlineGraph.Initialize(&resources.context);
     auto outlineScene = outlineGraph.RegisterTransientTexture("OutlineScene", 32, 32, VK_FORMAT_R16G16B16A16_SFLOAT);
     auto outlineMask = outlineGraph.RegisterTransientTexture("OutlineMask", 32, 32, VK_FORMAT_R8G8B8A8_UNORM);
     ResourceHandle outlinedScene;
@@ -2558,8 +2554,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         builder.SetClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         builder.SetDepthTest(false);
         builder.SetRenderArea(32, 32);
-        if (outlineGraph.SupportsDynamicRendering())
-            builder.UseDynamicRendering();
         return [](RenderContext &) {};
     });
     outlineGraph.AddPass("__EditorOutlineComposite", [&](PassBuilder &builder) {
@@ -2567,8 +2561,6 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         outlinedScene = builder.WriteColor(outlineScene);
         builder.SetDepthTest(false);
         builder.SetRenderArea(32, 32);
-        if (outlineGraph.SupportsDynamicRendering())
-            builder.UseDynamicRendering();
         return [](RenderContext &) {};
     });
     outlineGraph.AddPresentPass("__SceneOutputExport", [&](PassBuilder &builder) {
@@ -2585,26 +2577,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     const auto outlineMaskContract = outlineGraph.GetPassRenderingContract("__EditorOutlineMask");
     const auto outlineCompositeContract = outlineGraph.GetPassRenderingContract("__EditorOutlineComposite");
-    const bool outlineUsesDynamicRendering = outlineGraph.SupportsDynamicRendering();
-    const bool outlineMaskPathMatches = outlineUsesDynamicRendering
-                                            ? outlineGraph.GetPassRenderPass("__EditorOutlineMask") == VK_NULL_HANDLE &&
-                                                  outlineMaskContract.usesDynamicRendering
-                                            : outlineGraph.GetPassRenderPass("__EditorOutlineMask") != VK_NULL_HANDLE &&
-                                                  !outlineMaskContract.usesDynamicRendering;
-    const bool outlineCompositePathMatches =
-        outlineUsesDynamicRendering ? outlineGraph.GetPassRenderPass("__EditorOutlineComposite") == VK_NULL_HANDLE &&
-                                          outlineCompositeContract.usesDynamicRendering
-                                    : outlineGraph.GetPassRenderPass("__EditorOutlineComposite") != VK_NULL_HANDLE &&
-                                          !outlineCompositeContract.usesDynamicRendering;
-    if (!Require(outlineMaskPathMatches && outlineMaskContract.found && !outlineMaskContract.culled &&
-                     outlineMaskContract.attachments.IsValid() && outlineCompositePathMatches &&
-                     outlineCompositeContract.found && !outlineCompositeContract.culled &&
-                     outlineCompositeContract.attachments.IsValid(),
+    if (!Require(outlineMaskContract.found && !outlineMaskContract.culled &&
+                     outlineMaskContract.attachments.IsValid() && outlineCompositeContract.found &&
+                     !outlineCompositeContract.culled && outlineCompositeContract.attachments.IsValid(),
                  "Graph-owned outline passes did not publish the selected rendering contract"))
         return false;
 
     RenderGraph sparseMrtGraph;
-    sparseMrtGraph.Initialize(&resources.context, &resources.pipelines);
+    sparseMrtGraph.Initialize(&resources.context);
     ResourceHandle sparseMrtOutput;
     sparseMrtGraph.AddPass("SparseMrt", [&](PassBuilder &builder) {
         sparseMrtOutput = builder.CreateTexture("SparseMrtColor", 8, 8, VK_FORMAT_R8G8B8A8_UNORM);
@@ -2617,7 +2597,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     RenderGraph sampledDepthGraph;
-    sampledDepthGraph.Initialize(&resources.context, &resources.pipelines);
+    sampledDepthGraph.Initialize(&resources.context);
     ResourceHandle sceneDepth;
     ResourceHandle softParticleColor;
     sampledDepthGraph.AddPass("WriteSceneDepth", [&](PassBuilder &builder) {
@@ -2651,7 +2631,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     RenderGraph resolvedDepthGraph;
-    resolvedDepthGraph.Initialize(&resources.context, &resources.pipelines);
+    resolvedDepthGraph.Initialize(&resources.context);
     ResourceHandle multisampledDepth;
     ResourceHandle resolvedDepth;
     ResourceHandle resolvedDepthOutput;
@@ -2685,38 +2665,34 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Resolved scene-depth dependency did not retain its compute producer"))
         return false;
 
-    if (resources.graph.SupportsDynamicRendering()) {
-        RenderGraph dynamicMsaaGraph;
-        dynamicMsaaGraph.Initialize(&resources.context, &resources.pipelines);
-        ResourceHandle dynamicMsaaColor;
-        ResourceHandle dynamicMsaaDepth;
-        ResourceHandle dynamicResolvedColor;
-        dynamicMsaaGraph.AddPass("DynamicMsaaGeometry", [&](PassBuilder &builder) {
-            dynamicMsaaColor =
-                builder.CreateTexture("DynamicMsaaColor", 8, 8, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_4_BIT);
-            dynamicMsaaDepth =
-                builder.CreateDepthStencil("DynamicMsaaDepth", 8, 8, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_4_BIT);
-            dynamicResolvedColor = builder.CreateTexture("DynamicResolvedColor", 8, 8, VK_FORMAT_R16G16B16A16_SFLOAT);
-            dynamicMsaaColor = builder.WriteColor(dynamicMsaaColor);
-            dynamicMsaaDepth = builder.WriteDepth(dynamicMsaaDepth);
-            dynamicResolvedColor = builder.WriteResolve(dynamicResolvedColor);
-            builder.UseDynamicRendering();
-            builder.SetRenderArea(8, 8);
-            builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-            builder.SetClearDepth(1.0f, 0);
-            return [](RenderContext &) {};
-        });
-        dynamicMsaaGraph.SetOutput(dynamicResolvedColor);
-        if (!Require(dynamicMsaaGraph.Compile(), "Dynamic Rendering MSAA resolve graph failed to compile"))
-            return false;
-        const auto signature = dynamicMsaaGraph.GetPassRenderingSignature("DynamicMsaaGeometry");
-        if (!Require(dynamicMsaaGraph.GetPassUsesDynamicRendering("DynamicMsaaGeometry") && signature.IsValid() &&
-                         signature.samples == infernux::rhi::SampleCount::Four &&
-                         signature.colorFormats[0] == infernux::rhi::PixelFormat::RGBA16SFloat &&
-                         signature.depthFormat == infernux::rhi::PixelFormat::D32SFloat,
-                     "Dynamic Rendering MSAA/depth signature is incomplete"))
-            return false;
-    }
+    RenderGraph dynamicMsaaGraph;
+    dynamicMsaaGraph.Initialize(&resources.context);
+    ResourceHandle dynamicMsaaColor;
+    ResourceHandle dynamicMsaaDepth;
+    ResourceHandle dynamicResolvedColor;
+    dynamicMsaaGraph.AddPass("DynamicMsaaGeometry", [&](PassBuilder &builder) {
+        dynamicMsaaColor =
+            builder.CreateTexture("DynamicMsaaColor", 8, 8, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_4_BIT);
+        dynamicMsaaDepth =
+            builder.CreateDepthStencil("DynamicMsaaDepth", 8, 8, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_4_BIT);
+        dynamicResolvedColor = builder.CreateTexture("DynamicResolvedColor", 8, 8, VK_FORMAT_R16G16B16A16_SFLOAT);
+        dynamicMsaaColor = builder.WriteColor(dynamicMsaaColor);
+        dynamicMsaaDepth = builder.WriteDepth(dynamicMsaaDepth);
+        dynamicResolvedColor = builder.WriteResolve(dynamicResolvedColor);
+        builder.SetRenderArea(8, 8);
+        builder.SetClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        builder.SetClearDepth(1.0f, 0);
+        return [](RenderContext &) {};
+    });
+    dynamicMsaaGraph.SetOutput(dynamicResolvedColor);
+    if (!Require(dynamicMsaaGraph.Compile(), "Dynamic Rendering MSAA resolve graph failed to compile"))
+        return false;
+    const auto dynamicMsaaSignature = dynamicMsaaGraph.GetPassRenderingSignature("DynamicMsaaGeometry");
+    if (!Require(dynamicMsaaSignature.IsValid() && dynamicMsaaSignature.samples == infernux::rhi::SampleCount::Four &&
+                     dynamicMsaaSignature.colorFormats[0] == infernux::rhi::PixelFormat::RGBA16SFloat &&
+                     dynamicMsaaSignature.depthFormat == infernux::rhi::PixelFormat::D32SFloat,
+                 "Dynamic Rendering MSAA/depth signature is incomplete"))
+        return false;
 
     const auto compileQueueOwnershipFixture = [&](const infernux::vk::NativeQueueBinding &computeBinding,
                                                   const infernux::vk::NativeQueueBinding &graphicsBinding,
@@ -2727,7 +2703,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         topology[static_cast<size_t>(infernux::rhi::QueueRole::Transfer)] = {2, 2};
         topology[static_cast<size_t>(infernux::rhi::QueueRole::Present)] = graphicsBinding;
 
-        graph.Initialize(&resources.context, &resources.pipelines);
+        graph.Initialize(&resources.context);
         graph.SetQueueTopology(topology);
         const auto storage = graph.RegisterTransientBuffer(
             "QueueOwnershipStorage", 64,
@@ -2784,7 +2760,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     // both before and after that overwrite. Reject the cycle instead of
     // silently falling back to declaration order.
     RenderGraph invalidVersionGraph;
-    invalidVersionGraph.Initialize(&resources.context, &resources.pipelines);
+    invalidVersionGraph.Initialize(&resources.context);
     ResourceHandle firstVersion;
     ResourceHandle secondVersion;
     ResourceHandle invalidOutput;

@@ -43,6 +43,7 @@ from enum import IntEnum
 from typing import TYPE_CHECKING
 
 from Infernux.renderstack.render_pipeline import RenderPipeline
+from Infernux.renderstack._platform_quality import effective_shadow_resolution
 from Infernux.components.fields import serialized_field
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
@@ -128,7 +129,7 @@ class DefaultDeferredPipeline(RenderPipeline):
         # Deferred pipeline does not support MSAA on GBuffer
         graph.set_msaa_samples(1)
 
-        shadow_res = self.shadow_resolution
+        shadow_res = effective_shadow_resolution(self.shadow_resolution)
 
         # ---- GBuffer textures (MRT) ----
         create_main_scene_targets(

@@ -21,7 +21,7 @@
 <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header" role="banner">
-        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.7</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.0</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
             <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
             <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
@@ -62,23 +62,13 @@
 <li>Drag the <code>.prefab</code> asset from Project onto the component's <strong>Prefab</strong> field in Inspector. A Project asset dropped on this <code>GAME_OBJECT</code> field becomes a <code>PrefabRef</code>.</li>
 <li>Save the scene.</li>
 </ol>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">Debug</span><span class="p">,</span>
-    <span class="n">Destroy</span><span class="p">,</span>
-    <span class="n">FieldType</span><span class="p">,</span>
-    <span class="n">InxComponent</span><span class="p">,</span>
-    <span class="n">Instantiate</span><span class="p">,</span>
-    <span class="n">PrefabRef</span><span class="p">,</span>
-    <span class="n">Vector3</span><span class="p">,</span>
-    <span class="n">serialized_field</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.input</span><span class="w"> </span><span class="kn">import</span> <span class="n">Input</span><span class="p">,</span> <span class="n">KeyCode</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">PrefabSpawner</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
-    <span class="n">prefab</span><span class="p">:</span> <span class="n">PrefabRef</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span>
-        <span class="n">default</span><span class="o">=</span><span class="n">PrefabRef</span><span class="p">(),</span>
-        <span class="n">field_type</span><span class="o">=</span><span class="n">FieldType</span><span class="o">.</span><span class="n">GAME_OBJECT</span><span class="p">,</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">PrefabSpawner</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="n">prefab</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">PrefabRef</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">PrefabRef</span><span class="p">(),</span>
+        <span class="n">field_type</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">FieldType</span><span class="o">.</span><span class="n">GAME_OBJECT</span><span class="p">,</span>
         <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Prefab created when Space is pressed"</span><span class="p">,</span>
     <span class="p">)</span>
 
@@ -86,33 +76,33 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
-        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">SPACE</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">inx</span><span class="o">.</span><span class="n">input</span><span class="o">.</span><span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">input</span><span class="o">.</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">SPACE</span><span class="p">):</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
-        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">DELETE</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">inx</span><span class="o">.</span><span class="n">input</span><span class="o">.</span><span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">input</span><span class="o">.</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">DELETE</span><span class="p">):</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">destroy_last</span><span class="p">()</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">spawn</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">prefab</span><span class="p">:</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"PrefabSpawner needs a Prefab asset"</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"PrefabSpawner needs a Prefab asset"</span><span class="p">)</span>
             <span class="k">return</span>
 
-        <span class="n">instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="p">)</span>
+        <span class="n">instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">instance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Prefab instantiation failed"</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Prefab instantiation failed"</span><span class="p">)</span>
             <span class="k">return</span>
 
-        <span class="n">instance</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">local_position</span> <span class="o">=</span> <span class="n">Vector3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">)</span>
+        <span class="n">instance</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">local_position</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Vector3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="n">instance</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Spawned </span><span class="si">{</span><span class="n">instance</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Spawned </span><span class="si">{</span><span class="n">instance</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">destroy_last</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span>
 
-        <span class="n">Destroy</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Destroy</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Destroyed the last spawned instance"</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Destroyed the last spawned instance"</span><span class="p">)</span>
 </code></pre></div>
 
 <p>Enter Play mode and click the Game panel. Each Space press creates a fresh Prefab instance under <code>SpawnRoot</code>. Delete removes the most recently created instance. Earlier instances remain because the component stores only the latest returned GameObject.</p>
@@ -128,22 +118,22 @@
 <p><code>Instantiate</code> also restores Python components on the copied hierarchy. Each instance receives its own component objects and runtime state; the source hierarchy stays unchanged.</p>
 <h2 id="parent-space-semantics">Choose parent and Transform space</h2>
 <p>The current scalar overloads provide three useful placement patterns:</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Instantiate</span><span class="p">,</span> <span class="n">Vector3</span><span class="p">,</span> <span class="n">quatf</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 <span class="c1"># No parent argument: create at the scene root and preserve source world TRS.</span>
-<span class="n">root_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">)</span>
+<span class="n">root_instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">)</span>
 
 <span class="c1"># A parent argument: preserve source local TRS under this parent.</span>
-<span class="n">local_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="n">spawn_root</span><span class="p">)</span>
+<span class="n">local_instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="n">spawn_root</span><span class="p">)</span>
 
 <span class="c1"># Parent plus True: keep source world TRS while adopting the parent.</span>
-<span class="n">world_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">spawn_root</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span>
+<span class="n">world_instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">spawn_root</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span>
 
 <span class="c1"># Position and rotation are world-space values; the parent is optional.</span>
-<span class="n">placed_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span>
+<span class="n">placed_instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span>
     <span class="n">prefab</span><span class="p">,</span>
-    <span class="n">Vector3</span><span class="p">(</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
-    <span class="n">quatf</span><span class="p">(),</span>
+    <span class="n">inx</span><span class="o">.</span><span class="n">Vector3</span><span class="p">(</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
+    <span class="n">inx</span><span class="o">.</span><span class="n">quatf</span><span class="p">(),</span>
     <span class="n">spawn_root</span><span class="p">,</span>
 <span class="p">)</span>
 </code></pre></div>
@@ -249,23 +239,13 @@
 <li>从 Project 把 <code>.prefab</code> 资产拖到 Inspector 中该组件的 <strong>Prefab</strong> 字段。Project 资产放入这个 <code>GAME_OBJECT</code> 字段后会成为 <code>PrefabRef</code>。</li>
 <li>保存场景。</li>
 </ol>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">Debug</span><span class="p">,</span>
-    <span class="n">Destroy</span><span class="p">,</span>
-    <span class="n">FieldType</span><span class="p">,</span>
-    <span class="n">InxComponent</span><span class="p">,</span>
-    <span class="n">Instantiate</span><span class="p">,</span>
-    <span class="n">PrefabRef</span><span class="p">,</span>
-    <span class="n">Vector3</span><span class="p">,</span>
-    <span class="n">serialized_field</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.input</span><span class="w"> </span><span class="kn">import</span> <span class="n">Input</span><span class="p">,</span> <span class="n">KeyCode</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">PrefabSpawner</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
-    <span class="n">prefab</span><span class="p">:</span> <span class="n">PrefabRef</span> <span class="o">=</span> <span class="n">serialized_field</span><span class="p">(</span>
-        <span class="n">default</span><span class="o">=</span><span class="n">PrefabRef</span><span class="p">(),</span>
-        <span class="n">field_type</span><span class="o">=</span><span class="n">FieldType</span><span class="o">.</span><span class="n">GAME_OBJECT</span><span class="p">,</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">PrefabSpawner</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
+    <span class="n">prefab</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">PrefabRef</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">PrefabRef</span><span class="p">(),</span>
+        <span class="n">field_type</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">FieldType</span><span class="o">.</span><span class="n">GAME_OBJECT</span><span class="p">,</span>
         <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Prefab created when Space is pressed"</span><span class="p">,</span>
     <span class="p">)</span>
 
@@ -273,33 +253,33 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">):</span>
-        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">SPACE</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">inx</span><span class="o">.</span><span class="n">input</span><span class="o">.</span><span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">input</span><span class="o">.</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">SPACE</span><span class="p">):</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
-        <span class="k">if</span> <span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">DELETE</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">inx</span><span class="o">.</span><span class="n">input</span><span class="o">.</span><span class="n">Input</span><span class="o">.</span><span class="n">get_key_down</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">input</span><span class="o">.</span><span class="n">KeyCode</span><span class="o">.</span><span class="n">DELETE</span><span class="p">):</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">destroy_last</span><span class="p">()</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">spawn</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">prefab</span><span class="p">:</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"PrefabSpawner needs a Prefab asset"</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_warning</span><span class="p">(</span><span class="s2">"PrefabSpawner needs a Prefab asset"</span><span class="p">)</span>
             <span class="k">return</span>
 
-        <span class="n">instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="p">)</span>
+        <span class="n">instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">instance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Prefab instantiation failed"</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Prefab instantiation failed"</span><span class="p">)</span>
             <span class="k">return</span>
 
-        <span class="n">instance</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">local_position</span> <span class="o">=</span> <span class="n">Vector3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">)</span>
+        <span class="n">instance</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">local_position</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Vector3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="n">instance</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Spawned </span><span class="si">{</span><span class="n">instance</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Spawned </span><span class="si">{</span><span class="n">instance</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">destroy_last</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span>
 
-        <span class="n">Destroy</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Destroy</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_last_instance</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Destroyed the last spawned instance"</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Destroyed the last spawned instance"</span><span class="p">)</span>
 </code></pre></div>
 
 <p>进入 Play 模式并单击 Game 面板。每次按下空格键，<code>SpawnRoot</code> 下都会出现一个新的 Prefab 实例。Delete 会移除最近创建的实例；更早的实例会保留，因为组件只保存了最后一次返回的 GameObject。</p>
@@ -315,22 +295,22 @@
 <p><code>Instantiate</code> 还会恢复复制层级中的 Python 组件。每个实例都有独立的组件对象与运行时状态，源层级保持原值。</p>
 <h2 id="parent-space-semantics_1">选择父级与 Transform 空间</h2>
 <p>当前标量重载提供三种常用放置方式：</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Instantiate</span><span class="p">,</span> <span class="n">Vector3</span><span class="p">,</span> <span class="n">quatf</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 <span class="c1"># 省略 parent：创建在场景根级，并保留源对象的世界 TRS。</span>
-<span class="n">root_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">)</span>
+<span class="n">root_instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">)</span>
 
 <span class="c1"># 传入 parent：挂到该父级下，并保留源对象的局部 TRS。</span>
-<span class="n">local_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="n">spawn_root</span><span class="p">)</span>
+<span class="n">local_instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="n">spawn_root</span><span class="p">)</span>
 
 <span class="c1"># parent 加 True：挂到父级下，同时保留源对象的世界 TRS。</span>
-<span class="n">world_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">spawn_root</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span>
+<span class="n">world_instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span><span class="n">prefab</span><span class="p">,</span> <span class="n">spawn_root</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span>
 
 <span class="c1"># position 与 rotation 使用世界空间；parent 可省略。</span>
-<span class="n">placed_instance</span> <span class="o">=</span> <span class="n">Instantiate</span><span class="p">(</span>
+<span class="n">placed_instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span>
     <span class="n">prefab</span><span class="p">,</span>
-    <span class="n">Vector3</span><span class="p">(</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
-    <span class="n">quatf</span><span class="p">(),</span>
+    <span class="n">inx</span><span class="o">.</span><span class="n">Vector3</span><span class="p">(</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
+    <span class="n">inx</span><span class="o">.</span><span class="n">quatf</span><span class="p">(),</span>
     <span class="n">spawn_root</span><span class="p">,</span>
 <span class="p">)</span>
 </code></pre></div>

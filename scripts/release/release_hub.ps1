@@ -8,19 +8,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-function Get-Sha256([string]$Path) {
-    $Stream = [IO.File]::OpenRead($Path)
-    try {
-        $Algorithm = [Security.Cryptography.SHA256]::Create()
-        try {
-            return ([BitConverter]::ToString($Algorithm.ComputeHash($Stream))).Replace('-', '').ToLowerInvariant()
-        } finally {
-            $Algorithm.Dispose()
-        }
-    } finally {
-        $Stream.Dispose()
-    }
-}
 
 $Root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $ReleaseRoot = [IO.Path]::GetFullPath((Join-Path $Root "dist\releases"))
@@ -48,7 +35,9 @@ $CurrentReleaseNotes = [regex]::Split($UpdateLogText, '(?m)^\s*---\s*$')[0].Trim
 if (-not $CurrentReleaseNotes.StartsWith("# Infernux v$Version", [StringComparison]::Ordinal)) {
     throw "The first UpdateLog.md release block must describe Infernux v$Version."
 }
-$ReleaseNotesFile = Join-Path ([IO.Path]::GetTempPath()) "infernux-release-notes-$Version.md"
+$ReleaseNotesDir = Join-Path $Root 'out\stage\windows-msvc-release'
+New-Item -ItemType Directory -Path $ReleaseNotesDir -Force | Out-Null
+$ReleaseNotesFile = Join-Path $ReleaseNotesDir "release-notes-$Version.md"
 [IO.File]::WriteAllText($ReleaseNotesFile, "$CurrentReleaseNotes`n", [Text.UTF8Encoding]::new($false))
 
 function Test-TrustedSignature([string]$Path) {
@@ -114,69 +103,42 @@ if ($UploadOnly) {
     }
     Write-Host "Reusing locally built release assets from $ReleaseDir" -ForegroundColor Cyan
 } else {
-    if (Test-Path -LiteralPath $ReleaseDir) {
-        Remove-Item -LiteralPath $ReleaseDir -Recurse -Force
-    }
+    # Each producer replaces only its own platform artifact. Preserve Linux
+    # artifacts already assembled for this version.
     New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 
-Write-Host "[1/6] Configuring the release preset..." -ForegroundColor Cyan
-& cmake --preset release
+Write-Host "[1/5] Configuring the release preset..." -ForegroundColor Cyan
+& cmake --preset windows-msvc-release
 if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
 
-Write-Host "[2/6] Building the native module and Release Player Runtime Pack..." -ForegroundColor Cyan
-& cmake --build --preset release --target _Infernux --parallel
-if ($LASTEXITCODE -ne 0) { throw 'Native engine build failed.' }
-& cmake --build --preset release --target prebuild_player_runtime --parallel
-if ($LASTEXITCODE -ne 0) { throw 'Release Player Runtime Pack build failed.' }
+Write-Host "[2/5] Building the staged Release wheel..." -ForegroundColor Cyan
+& cmake --build --preset windows-msvc-wheel --parallel
+if ($LASTEXITCODE -ne 0) { throw 'Release wheel build failed.' }
+$WheelDir = $ReleaseDir
+$Wheels = @(Get-ChildItem -LiteralPath $WheelDir -Filter '*-win_amd64.whl' -File)
+if ($Wheels.Count -ne 1) { throw "Expected one wheel in $WheelDir, found $($Wheels.Count)." }
 
-Write-Host "       Building the wheel from the verified local Release payload..." -ForegroundColor Cyan
-$env:INFERNUX_SOURCE_DIR = $Root
-& python -m build --wheel --no-isolation --outdir $ReleaseDir
-if ($LASTEXITCODE -ne 0) { throw 'Wheel build failed.' }
-
-Write-Host "[3/6] Building the Hub and installer through the Visual Studio/MSBuild preset..." -ForegroundColor Cyan
-& cmake --build --preset packaging-installer
-if ($LASTEXITCODE -ne 0) { throw 'Hub installer build failed.' }
-$HubDir = Join-Path $Root 'out\package\hub'
-$Installer = Join-Path $Root 'out\package\installer\InfernuxHubInstaller.exe'
+Write-Host "[3/5] Building the Hub, update assets, and installer..." -ForegroundColor Cyan
+& cmake --build --preset windows-hub-installer
+if ($LASTEXITCODE -ne 0) { throw 'Hub release build failed.' }
+$HubDir = Join-Path $Root 'out\stage\windows-msvc-release\hub'
 if (-not (Test-Path -LiteralPath $HubDir -PathType Container)) { throw "Hub output not found: $HubDir" }
+$Installer = Join-Path $ReleaseDir "InfernuxHubInstaller-$Version-windows-x64.exe"
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { throw "Installer output not found: $Installer" }
-Copy-Item -LiteralPath $Installer -Destination (Join-Path $ReleaseDir "InfernuxHubInstaller-$Version.exe")
 
-Write-Host "[4/6] Using standalone full-package Hub updates..." -ForegroundColor Cyan
-Write-Host "       Release assets are independently installable; incremental patches are not published." -ForegroundColor DarkGray
-
-Write-Host "[5/6] Generating standalone Hub assets..." -ForegroundColor Cyan
-$Arguments = @(
-    (Join-Path $Root 'packaging\incremental_update.py'),
-    '--hub-dir', $HubDir,
-    '--version', $Version,
-    '--output-dir', $ReleaseDir
-)
-& python @Arguments
-if ($LASTEXITCODE -ne 0) { throw 'Hub update artifact generation failed.' }
-
-$ChecksumPath = Join-Path $ReleaseDir 'SHA256SUMS.txt'
-$Artifacts = Get-ChildItem -LiteralPath $ReleaseDir -File | Sort-Object Name
-$ChecksumLines = foreach ($Artifact in $Artifacts) {
-    $Hash = Get-Sha256 $Artifact.FullName
-    "$Hash  $($Artifact.Name)"
-}
-[IO.File]::WriteAllLines($ChecksumPath, $ChecksumLines, [Text.UTF8Encoding]::new($false))
-
-Write-Host "[6/6] Release assets are ready:" -ForegroundColor Green
+Write-Host "[4/5] Release assets are ready:" -ForegroundColor Green
 Get-ChildItem -LiteralPath $ReleaseDir -File | Sort-Object Name | ForEach-Object {
     Write-Host ("  {0,-72} {1,10:N1} MB" -f $_.Name, ($_.Length / 1MB))
 }
 }
 
+Write-Host "[5/5] Validating release assets..." -ForegroundColor Cyan
+
 $RequiredAssets = @(
-    "infernux-$Version-cp312-cp312-win_amd64.whl",
-    "InfernuxHubInstaller-$Version.exe",
+    "infernux-$Version-cp313-cp313-win_amd64.whl",
+    "InfernuxHubInstaller-$Version-windows-x64.exe",
     "InfernuxHub-$Version-windows-x64-full.zip",
-    "InfernuxHub-$Version-manifest.json",
-    'InfernuxHub-manifest.json',
-    'SHA256SUMS.txt'
+    'InfernuxHub-windows-x64-manifest.json'
 )
 foreach ($AssetName in $RequiredAssets) {
     $AssetPath = Join-Path $ReleaseDir $AssetName
@@ -185,7 +147,7 @@ foreach ($AssetName in $RequiredAssets) {
     }
 }
 
-$SignatureTargets = @((Join-Path $ReleaseDir "InfernuxHubInstaller-$Version.exe"))
+$SignatureTargets = @((Join-Path $ReleaseDir "InfernuxHubInstaller-$Version-windows-x64.exe"))
 if (-not $UploadOnly) {
     $SignatureTargets += (Join-Path $HubDir 'Infernux Hub.exe')
 }

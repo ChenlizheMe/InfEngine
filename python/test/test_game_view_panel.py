@@ -598,6 +598,7 @@ def test_visible_game_panel_does_not_duplicate_runtime_screen_ui_submission(monk
         enabled=True,
         game_object=SimpleNamespace(active_in_hierarchy=True),
         compute_scale=lambda *_args: (2.0, 2.0, 2.0),
+        compute_logical_size=lambda *_args: (100.0, 50.0),
         _get_elements=lambda: (element,),
     )
     dispatches = []

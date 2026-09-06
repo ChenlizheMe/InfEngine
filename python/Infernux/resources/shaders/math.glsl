@@ -7,13 +7,8 @@ ShaderInfo {
 // math.glsl — Shared math constants and utility functions
 //
 // Constants (PI, INV_PI, HALF_PI, TWO_PI, EPSILON, FLT_MIN) and saturate()
-// are provided by lib/common. This file adds legacy aliases and sky helpers.
+// are provided by lib/common. This file adds sky helpers.
 // ============================================================================
-
-// Legacy alias — existing code uses saturateVec3(x) instead of saturate(vec3)
-vec3 saturateVec3(vec3 x) {
-    return clamp(x, vec3(0.0), vec3(1.0));
-}
 
 // Shared sky gradient — used by both skybox_procedural.frag and
 // sampleAmbientProbe(). Adjust constants here once.

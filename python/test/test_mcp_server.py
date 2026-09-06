@@ -64,7 +64,7 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
     try:
         state = register_gateways(mcp, str(tmp_path), {})
 
-        assert state["operation_count"] == 80
+        assert state["operation_count"] == 82
         assert state["gateway_count"] == 14
         assert 0.0 < state["registration_ms"] < 5000.0
         assert 0 < state["compact_schema_bytes"] < 128 * 1024
@@ -90,7 +90,6 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
         required = {
             "$schema",
             "id",
-            "version",
             "kind",
             "input_schema",
             "output_schema",
@@ -101,7 +100,7 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
             "capabilities",
             "cost",
         }
-        assert len(documents) == 80
+        assert len(documents) == 82
         assert all(required <= set(document) for document in documents)
         operation_ids = {document["id"] for document in documents}
         assert {
@@ -126,6 +125,7 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
             "infernux.ui.semantic.snapshot",
             "infernux.capture.request",
             "infernux.player.validation.launch",
+            "infernux.player.targets",
             "infernux.docs.search",
             "infernux.console.read",
         } <= operation_ids
@@ -146,6 +146,80 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
         shutdown_adapter()
     assert OperationRegistry.instance().list() == ()
     assert adapter_status()["active"] is False
+
+
+def test_capability_grants_are_explicit_and_diff_is_machine_readable(tmp_path):
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    mcp = _FakeMCP()
+    try:
+        register_gateways(mcp, str(tmp_path), {})
+
+        # The default grant is an explicit whitelist, never a wildcard.
+        config = capabilities.current_config()
+        assert "*" not in config["granted_capabilities"]
+        assert config["granted_capabilities"] == list(
+            capabilities.DEFAULT_GRANTED_CAPABILITIES
+        )
+
+        # Drift guard: every capability referenced by a registered operation
+        # must be covered by the default enumeration.
+        documents = OperationRegistry.instance().list()
+        used = {
+            str(name)
+            for document in documents
+            for name in document["capabilities"]
+        }
+        assert used <= set(capabilities.DEFAULT_GRANTED_CAPABILITIES)
+
+        snapshot = mcp.tools["host_capabilities"]()
+        assert snapshot["ok"] is True
+        data = snapshot["data"]
+        assert data["blocked_operation_count"] == 0
+        assert data["blocked_operations"] == []
+        assert data["capabilities"]
+        assert all(row["granted"] for row in data["capabilities"])
+        assert str(data["config_path"]).endswith("mcp_capabilities.json")
+    finally:
+        shutdown_adapter()
+
+
+def test_read_only_grants_block_writes_with_grant_remediation(tmp_path):
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    mcp = _FakeMCP()
+    try:
+        register_gateways(mcp, str(tmp_path), {"granted_capabilities": ["*.read"]})
+
+        snapshot = mcp.tools["host_capabilities"]()
+        assert snapshot["ok"] is True
+        data = snapshot["data"]
+        assert data["blocked_operation_count"] > 0
+        blocked_ids = {entry["operation"] for entry in data["blocked_operations"]}
+        assert "infernux.scene.object.create" in blocked_ids
+        rows = {row["capability"]: row for row in data["capabilities"]}
+        assert rows["scene.read"]["granted"] is True
+        assert rows["scene.write"]["granted"] is False
+
+        # Pattern grants keep read operations available.
+        allowed = mcp.tools["operation_query_execute"](
+            "infernux.mcp.checkpoint.list", {}
+        )
+        assert allowed["ok"] is True
+
+        denied = mcp.tools["operation_command_execute"](
+            "infernux.scene.object.create", {"kind": "empty", "name": "Blocked"}
+        )
+        assert denied["ok"] is False
+        assert denied["error"]["code"] == "operation.permission_denied"
+        details = denied["error"]["details"]
+        assert details["required"] == ["scene.write"]
+        assert "*.read" in details["granted"]
+        remediation = details["grant_remediation"]
+        assert remediation["config_pointer"] == "/granted_capabilities"
+        assert str(remediation["config_path"]).endswith("mcp_capabilities.json")
+    finally:
+        shutdown_adapter()
 
 
 def test_schema_search_and_execution_use_formal_operation_ids(tmp_path):
@@ -193,6 +267,10 @@ def test_schema_search_and_execution_use_formal_operation_ids(tmp_path):
         host_status = mcp.tools["host_session_status"]()
         assert host_status["ok"] is True
         assert host_status["data"]["session"]["project_root"] == str(tmp_path)
+        guidance = host_status["data"]["workflow_guidance"]
+        assert "os_foreground_control" not in guidance
+        assert "render-target capture" in guidance["visual_capture"]
+        assert "Scene, Game, or Player" in guidance["visual_capture"]
     finally:
         shutdown_adapter()
 
@@ -311,14 +389,22 @@ def test_schema_gateway_can_edit_real_material_document(engine):
             0.6,
             1.0,
         ]
+        document = None
         for _ in range(100):
             AssetManager.poll_pending_asset_writes()
-            document = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                document = json.loads(path.read_text(encoding="utf-8"))
+            except PermissionError:
+                # Windows may briefly deny readers while the asynchronous
+                # atomic publication replaces the destination file.
+                time.sleep(0.01)
+                continue
             if document["properties"]["baseColor"]["value"] == pytest.approx(
                 [0.2, 0.4, 0.6, 1.0]
             ):
                 break
             time.sleep(0.01)
+        assert document is not None
         assert document["properties"]["baseColor"]["value"] == pytest.approx(
             [0.2, 0.4, 0.6, 1.0]
         )
@@ -404,6 +490,7 @@ def test_schema_gateway_can_validate_and_edit_real_particle_graph(engine):
 def test_schema_gateway_can_create_move_and_delete_guid_asset(engine):
     from Infernux.core.assets import AssetManager
     from Infernux.engine.interaction import EditorInteractionCore
+    from Infernux.engine.ui import project_file_ops
     from Infernux.engine.undo import UndoManager
     from Infernux.host import MainThreadCommandQueue
     from Infernux.plugins import PluginManager
@@ -421,6 +508,19 @@ def test_schema_gateway_can_create_move_and_delete_guid_asset(engine):
     previous_undo = UndoManager._instance
     core = EditorInteractionCore()
     core.project_assets.configure(str(project_root), database)
+
+    def create_asset(kind, directory, asset_name, _variant):
+        assert kind == "material"
+        return project_file_ops.create_material(directory, asset_name, database)
+
+    core.project_asset_interactions.configure(
+        unique_name=project_file_ops.get_unique_name,
+        create=create_asset,
+        open_asset=lambda *_args: True,
+        reveal=lambda *_args: True,
+        read_external_clipboard=lambda: (),
+        request_delete=lambda paths, callback: callback(list(paths)),
+    )
     undo = UndoManager(core.action_journal)
     manager = PluginManager(str(project_root), engine=engine)
     PluginManager._instance = manager

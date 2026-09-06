@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
-from Infernux.input import Input, KeyCode
+import Infernux.input as input_module
+from Infernux.input import AccelerationEvent, Input, KeyCode, Touch, TouchPhase
 from Infernux.lib import InputManager
+from Infernux.runtime_services import install_runtime_service, remove_runtime_service
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -224,6 +227,124 @@ class TestInputMetaclassProperties:
     def test_touch_count_unfocused(self):
         Input._game_focused = False
         assert Input.touch_count == 0
+        assert Input.touches == ()
+
+    def test_touch_public_types(self):
+        touch = Touch(
+            touch_id=1,
+            finger_id=2,
+            timestamp_ns=3,
+            window_id=4,
+            position=(480.0, 270.0),
+            raw_position=(480.0, 270.0),
+            delta_position=(12.0, -8.0),
+            normalized_position=(0.25, 0.25),
+            normalized_delta_position=(0.01, -0.01),
+            delta_time=1.0 / 60.0,
+            pressure=0.5,
+            contact_size=(0.02, 0.03),
+            is_primary=True,
+            cancel_reason="",
+            phase=TouchPhase.MOVED,
+        )
+        assert touch.phase is TouchPhase.MOVED
+        assert touch.position == (480.0, 270.0)
+        assert touch.normalized_position == (0.25, 0.25)
+        assert touch.contact_size == (0.02, 0.03)
+        assert touch.is_primary
+
+    def test_motion_sensor_properties_publish_native_samples(self, monkeypatch):
+        manager = SimpleNamespace(
+            accelerometer_supported=True,
+            gyroscope_supported=True,
+            acceleration=(0.25, -0.5, 1.0),
+            gyroscope_rotation_rate=(0.1, 0.2, -0.3),
+            acceleration_events=(
+                SimpleNamespace(acceleration=(0.0, 1.0, 0.0), delta_time=0.0),
+                SimpleNamespace(acceleration=(0.1, 0.9, 0.0), delta_time=0.02),
+            ),
+        )
+        monkeypatch.setattr(
+            input_module,
+            "_NativeInputManager",
+            SimpleNamespace(instance=lambda: manager),
+        )
+
+        assert Input.accelerometer_supported
+        assert Input.gyroscope_supported
+        assert Input.acceleration == pytest.approx((0.25, -0.5, 1.0))
+        assert Input.gyroscope_rotation_rate == pytest.approx((0.1, 0.2, -0.3))
+        assert Input.acceleration_event_count == 2
+        assert Input.acceleration_events == (
+            AccelerationEvent((0.0, 1.0, 0.0), 0.0),
+            AccelerationEvent((0.1, 0.9, 0.0), 0.02),
+        )
+
+    def test_native_touch_is_published_in_unity_screen_pixels(self, monkeypatch):
+        native_touch = SimpleNamespace(
+            touch_id=7,
+            finger_id=11,
+            timestamp_ns=2_000_000_000,
+            window_id=3,
+            x=0.25,
+            y=0.75,
+            delta_x=0.1,
+            delta_y=-0.2,
+            delta_time=0.016,
+            pressure=0.6,
+            contact_width=0.02,
+            contact_height=0.03,
+            is_primary=True,
+            cancel_reason="",
+            phase="moved",
+        )
+        manager = SimpleNamespace(
+            screen_state=SimpleNamespace(logical_width=1920, logical_height=1080)
+        )
+        monkeypatch.setattr(
+            input_module,
+            "_NativeInputManager",
+            SimpleNamespace(instance=lambda: manager),
+        )
+
+        touch = Input._from_native_touch(native_touch)
+
+        assert touch.position == pytest.approx((480.0, 270.0))
+        assert touch.raw_position == touch.position
+        assert touch.delta_position == pytest.approx((192.0, 216.0))
+        assert touch.normalized_position == pytest.approx((0.25, 0.25))
+        assert touch.normalized_delta_position == pytest.approx((0.1, 0.2))
+        assert touch.contact_size == pytest.approx((38.4, 32.4))
+        assert touch.delta_time == pytest.approx(0.016)
+        assert touch.phase is TouchPhase.MOVED
+
+    def test_platform_text_input_runtime_service(self):
+        class _TextInputService:
+            def __init__(self):
+                self.active = False
+                self.request = None
+
+            def begin_text_input(self, initial_value, input_type):
+                self.request = (initial_value, input_type)
+                self.active = True
+                return True
+
+            def end_text_input(self):
+                self.active = False
+
+            def is_text_input_active(self):
+                return self.active
+
+        service = _TextInputService()
+        install_runtime_service("text-input", service)
+        try:
+            assert Input.begin_text_input("hello", "email")
+            assert service.request == ("hello", "email")
+            assert Input.is_text_input_active()
+            Input.end_text_input()
+            assert not Input.is_text_input_active()
+        finally:
+            remove_runtime_service("text-input", service)
 
     def test_input_string_idle(self):
         Input._game_focused = True

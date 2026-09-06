@@ -192,6 +192,7 @@ def test_ui_editor_canvas_drag_and_fit_restore_view_state(
     ctx = SimpleNamespace(
         get_content_region_avail_width=lambda: 1000.0,
         get_content_region_avail_height=lambda: 600.0,
+        get_dpi_scale=lambda: 1.0,
     )
     panel._fit_zoom(ctx, canvas)
 

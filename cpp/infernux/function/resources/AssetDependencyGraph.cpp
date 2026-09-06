@@ -313,12 +313,8 @@ void AssetDependencyGraph::NotifyEvent(const std::string &guid, ResourceType typ
             callbacks = registered->second;
     }
 
-    if (dependents.empty() || callbacks.empty()) {
-        INXLOG_DEBUG("AssetDependencyGraph::NotifyEvent: guid=", guid, " type=", static_cast<int>(type),
-                     " event=", static_cast<int>(event), " dependents=", dependents.size(),
-                     " callbacks=", callbacks.size());
+    if (dependents.empty() || callbacks.empty())
         return;
-    }
     for (const auto &dependentGuid : dependents)
         for (const auto &callback : callbacks)
             callback(dependentGuid, guid, event);

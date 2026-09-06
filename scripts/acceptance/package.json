@@ -1,0 +1,16 @@
+{
+  "name": "infernux-acceptance-tools",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Pinned browser automation dependencies for Infernux acceptance tests.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "web-mobile-input": "node web_mobile_input_smoke.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1",
+    "pngjs": "7.0.0"
+  }
+}

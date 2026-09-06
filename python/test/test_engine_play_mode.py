@@ -1,7 +1,6 @@
 """Tests for Infernux.engine.play_mode — PlayModeState, PlayModeEvent, PlayModeManager."""
 
 import sys
-import threading
 import time
 from types import SimpleNamespace
 
@@ -217,51 +216,23 @@ class TestPlayModeManager:
         assert engine.tick_play_mode(1.0 / 60.0) == 1.0 / 60.0
         assert scheduler.prepare_calls == 0
 
-    def test_debug_frame_gate_pauses_after_exact_completed_frame_budget(self):
-        class _SceneManager:
-            def __init__(self):
-                self.pause_calls = 0
+    def test_engine_tick_propagates_resource_transaction_failure(self):
+        from Infernux.engine.engine import Engine
 
-            def pause(self):
-                self.pause_calls += 1
+        class Resources:
+            @staticmethod
+            def process_pending_reloads():
+                raise RuntimeError("resource transaction rejected")
 
-        mgr = PlayModeManager()
-        scene_manager = _SceneManager()
-        mgr._state = PlayModeState.PLAYING
-        mgr._get_scene_manager = lambda: scene_manager
-        completed = threading.Event()
-        mgr._arm_debug_frame_pause_gate(2, completed, pause_on_complete=True)
+        engine = Engine.__new__(Engine)
+        engine._last_frame_time = time.time()
+        engine._editor_frame_sync_callback = None
+        engine._resources_manager = Resources()
+        engine._next_reload_poll_time = 0.0
+        engine._reload_poll_interval = 0.1
 
-        assert mgr._advance_debug_frame_pause_gate() is False
-        assert mgr._advance_debug_frame_pause_gate() is False
-        assert completed.is_set() is False
-        assert mgr._advance_debug_frame_pause_gate() is True
-
-        assert completed.is_set() is True
-        assert mgr.state is PlayModeState.PAUSED
-        assert scene_manager.pause_calls == 1
-
-    def test_debug_frame_gate_notifies_a_hold_boundary_before_completion(self):
-        mgr = PlayModeManager()
-        mgr._state = PlayModeState.PLAYING
-        completed = threading.Event()
-        hold_complete = threading.Event()
-        hold_callbacks = []
-        mgr._arm_debug_frame_pause_gate(
-            5,
-            completed,
-            pause_on_complete=False,
-            hold_frame_count=2,
-            hold_complete_event=hold_complete,
-            hold_complete_callback=lambda: hold_callbacks.append(True),
-        )
-
-        assert mgr._advance_debug_frame_pause_gate() is False
-        assert hold_complete.is_set() is False
-        assert mgr._advance_debug_frame_pause_gate() is False
-        assert hold_complete.is_set() is True
-        assert hold_callbacks == [True]
-        assert completed.is_set() is False
+        with pytest.raises(RuntimeError, match="resource transaction rejected"):
+            engine.tick_play_mode(1.0 / 60.0)
 
     def test_scene_backup_none_initially(self):
         mgr = PlayModeManager()
@@ -332,7 +303,7 @@ class TestPlayModeManager:
         assert scene_changed == [True]
         assert remembered_paths == []
 
-    def test_exit_play_mode_restores_document_state_without_legacy_dirty_backup(
+    def test_exit_play_mode_restores_document_state_from_current_snapshot(
         self, monkeypatch
     ):
         from Infernux.engine.deferred_task import DeferredTaskRunner
@@ -485,6 +456,67 @@ class TestPlayModeManager:
         mgr.set_asset_database("fake_db")
         assert mgr._asset_database == "fake_db"
 
+    def test_scene_snapshot_requires_scene_manager(self):
+        manager = PlayModeManager()
+        manager._get_scene_manager = lambda: None
+
+        with pytest.raises(RuntimeError, match="without SceneManager"):
+            manager._save_scene_state()
+
+    def test_scene_snapshot_requires_native_capture_contract(self):
+        scene = SimpleNamespace(serialize_document=lambda: {"objects": []})
+        manager = PlayModeManager()
+        manager._get_scene_manager = lambda: SimpleNamespace(
+            get_active_scene=lambda: scene
+        )
+
+        with pytest.raises(AttributeError, match="_capture_play_mode_snapshot"):
+            manager._save_scene_state()
+
+    def test_script_reload_requires_asset_database(self, tmp_path):
+        script = tmp_path / "ReloadContract.py"
+        script.write_text("VALUE = 1\n", encoding="utf-8")
+        manager = PlayModeManager()
+
+        with pytest.raises(RuntimeError, match="requires AssetDatabase"):
+            manager.reload_components_from_script_result(str(script))
+
+    def test_script_reload_requires_registered_source(self, tmp_path):
+        script = tmp_path / "ReloadContract.py"
+        script.write_text("VALUE = 1\n", encoding="utf-8")
+        manager = PlayModeManager()
+        manager.set_asset_database(
+            SimpleNamespace(get_guid_from_path=lambda _path: "")
+        )
+
+        with pytest.raises(RuntimeError, match="not registered"):
+            manager.reload_components_from_script_result(str(script))
+
+    def test_script_delete_requires_native_replacement(self):
+        class DeleteContract(InxComponent):
+            _uses_component_data_store = False
+
+        bind_asset_script_guid(DeleteContract, "delete-contract-guid")
+        component = DeleteContract()
+        component._script_guid = "delete-contract-guid"
+        game_object = SimpleNamespace(
+            id=88,
+            get_py_components=lambda: (component,),
+            remove_py_component=lambda _component: None,
+            add_py_component=lambda _component: None,
+        )
+        scene = SimpleNamespace(get_all_objects=lambda: (game_object,))
+        manager = PlayModeManager()
+        manager._get_scene_manager = lambda: SimpleNamespace(
+            get_active_scene=lambda: scene
+        )
+
+        with pytest.raises(RuntimeError, match="transactionally replace"):
+            manager.prepare_script_delete_batch(
+                "delete-contract-guid",
+                "Assets/DeleteContract.py",
+            )
+
     def test_deleted_script_becomes_missing_and_recovers_with_identity(self, tmp_path, monkeypatch):
         script_guid = "1" * 32
 
@@ -548,7 +580,7 @@ class TestPlayModeManager:
                 return script_guid
 
         manager.set_asset_database(_AssetDatabase())
-        manager.reload_components_from_script(str(script))
+        manager.reload_components_from_script_result(str(script))
 
         restored = game_object.components[0]
         assert not isinstance(restored, MissingScript)
@@ -673,6 +705,53 @@ class TestPlayModeManager:
         mgr.register_runtime_hidden_object(obj)
         assert calls == [{404}, set()]
 
+    def test_prepare_play_scene_propagates_primary_transaction_failure(self, monkeypatch):
+        class _Scene:
+            pass
+
+        class _SceneManager:
+            @staticmethod
+            def get_active_scene():
+                return _Scene()
+
+        mgr = PlayModeManager()
+        mgr._get_scene_manager = lambda: _SceneManager()
+        rebuilds = []
+        mgr._rebuild_active_scene = lambda *args, **kwargs: rebuilds.append(
+            (args, kwargs)
+        )
+
+        from Infernux.engine import component_restore
+
+        def reject(*_args, **_kwargs):
+            raise RuntimeError("component transaction rejected")
+
+        monkeypatch.setattr(
+            component_restore,
+            "replace_scene_python_components_for_play",
+            reject,
+        )
+
+        with pytest.raises(RuntimeError, match="component transaction rejected"):
+            mgr._prepare_active_scene_for_play({"objects": []})
+
+        assert rebuilds == []
+
+    def test_play_tick_propagates_time_contract_failure(self):
+        class _Time:
+            time_scale = 1.0
+
+            @staticmethod
+            def _tick(_delta_time):
+                raise RuntimeError("time contract rejected")
+
+        mgr = PlayModeManager()
+        mgr._state = PlayModeState.PLAYING
+        mgr._time_api = _Time
+
+        with pytest.raises(RuntimeError, match="time contract rejected"):
+            mgr.tick(1.0 / 60.0)
+
     def test_rebuild_scene_failure_preserves_runtime_hidden_ids(self):
         mgr = PlayModeManager()
         mgr._runtime_hidden_object_ids = {1, 2, 3}
@@ -696,7 +775,7 @@ class TestPlayModeManager:
         assert not mgr._rebuild_active_scene({"invalid": True}, for_play=False)
         assert mgr._runtime_hidden_object_ids == {77}
 
-    def test_rebuild_scene_does_not_materialize_prefab_refs_for_play(self, monkeypatch):
+    def test_rebuild_scene_enters_play_after_transaction(self, monkeypatch):
         class _FakeCommitToken:
             def __init__(self, scene, previous_document):
                 self._scene = scene
@@ -743,8 +822,6 @@ class TestPlayModeManager:
         mgr = PlayModeManager()
         scene = _FakeScene()
         scene_manager = _FakeSceneManager(scene)
-        materialized = False
-
         monkeypatch.setattr(mgr, "_get_scene_manager", lambda: scene_manager)
         from Infernux.engine import component_restore
         monkeypatch.setattr(
@@ -758,12 +835,6 @@ class TestPlayModeManager:
             lambda scene, prepared, clear_registries=True: prepared.consume(),
         )
 
-        def _unexpected_materialize():
-            nonlocal materialized
-            materialized = True
-
-        monkeypatch.setattr(mgr, "_materialize_prefab_references_for_play", _unexpected_materialize)
-
         snapshot = {
             "name": "PlayModeRebuild",
             "isPlaying": False,
@@ -771,4 +842,3 @@ class TestPlayModeManager:
         }
         assert mgr._rebuild_active_scene(snapshot, for_play=True)
         assert scene.playing is True
-        assert not materialized

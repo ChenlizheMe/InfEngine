@@ -435,12 +435,8 @@ class Debug:
     def log_suppressed(where: str, exc: BaseException, context: Any = None):
         """Log an exception that was deliberately swallowed by the caller.
 
-        Standardises the legacy
-        ``Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")`` pattern
-        and routes it through ``log_warning`` so suppressed-but-bug-shaped
-        events are visible in the editor console by default. The previous
-        ``Debug.log`` (info-level) variant made these invisible behind log
-        filters and effectively hid recurring state corruption.
+        Routes swallowed exceptions through ``log_warning`` so bug-shaped
+        events remain visible in the editor console by default.
 
         Args:
             where: Short human-readable label of the suppression site

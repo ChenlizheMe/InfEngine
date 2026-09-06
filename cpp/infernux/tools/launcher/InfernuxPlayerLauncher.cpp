@@ -33,4 +33,33 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR arguments, int)
     return host.Run(layout, gameArguments);
 }
 
+#else
+
+#include "PlayerHost.h"
+
+#include <codecvt>
+#include <locale>
+
+int main(int argc, char **argv)
+{
+    std::error_code error;
+    const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (error || executable.empty())
+        return 2;
+
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+    std::vector<std::wstring> gameArguments;
+    gameArguments.reserve(argc > 1 ? static_cast<size_t>(argc - 1) : 0);
+    try {
+        for (int index = 1; index < argc; ++index)
+            gameArguments.push_back(converter.from_bytes(argv[index]));
+    } catch (const std::range_error &) {
+        return 2;
+    }
+
+    const auto layout = infernux::playerhost::ResolveLayout(executable);
+    infernux::playerhost::PlayerHost host;
+    return host.Run(layout, gameArguments);
+}
+
 #endif

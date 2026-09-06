@@ -61,6 +61,12 @@ from .fields import (
     HDR as HDR,
     Color as Color,
 )
+from Infernux.graph.ramp import (
+    AnimationCurve as AnimationCurve,
+    Gradient as Gradient,
+    GradientKey as GradientKey,
+    Keyframe as Keyframe,
+)
 
 
 def serialized_field(
@@ -87,6 +93,7 @@ def serialized_field(
     required_component: Optional[str] = ...,
     visible_when: Optional[Callable] = ...,
     hdr: bool = ...,
+    curve_non_negative: bool = ...,
     hidden: bool = ...,
 ) -> _SerializedValue: ...
 InspectorSpace = Space
@@ -170,6 +177,10 @@ __all__ = [
     "NonSerialized",
     "HDR",
     "Color",
+    "AnimationCurve",
+    "Keyframe",
+    "Gradient",
+    "GradientKey",
     "GameObjectRef",
     "MaterialRef",
     "ComponentRef",

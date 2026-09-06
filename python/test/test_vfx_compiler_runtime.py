@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import struct
+import sys
 import time
 from types import SimpleNamespace
 
@@ -31,7 +33,7 @@ from Infernux.graph import (
     TypeRef,
     ValueType,
 )
-from Infernux.graph.ramp import Curve, CurveKey, Gradient, GradientKey
+from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
 from Infernux.particle import (
     EmitterSettings,
     ParticleBurst,
@@ -54,6 +56,25 @@ from Infernux.lib import AssetRegistry, GameObject
 particle_system_module = importlib.import_module("Infernux.components.particle_system")
 
 
+# SwiftShader's pinned Windows ICD heap-corrupts its own process while compiling
+# these particle pipelines. Hardware Vulkan and Linux lavapipe still execute the
+# real integration tests; this is an explicit software-device boundary, not a
+# runtime fallback.
+_WINDOWS_SWIFTSHADER_PARTICLE_PIPELINE = (
+    sys.platform == "win32"
+    and "vk_swiftshader_icd.json"
+    in (
+        os.environ.get("VK_DRIVER_FILES", "")
+        + ";"
+        + os.environ.get("VK_ICD_FILENAMES", "")
+    ).casefold()
+)
+_WINDOWS_SWIFTSHADER_PARTICLE_REASON = (
+    "the pinned Windows SwiftShader ICD cannot compile Infernux particle "
+    "pipelines; hardware Vulkan and Linux lavapipe remain required"
+)
+
+
 def _particle_artifact_load_probe(monkeypatch, tmp_path, *, editor: bool):
     source = tmp_path / "Recovery.particlegraph"
     source.write_text("{}", encoding="utf-8")
@@ -66,6 +87,7 @@ def _particle_artifact_load_probe(monkeypatch, tmp_path, *, editor: bool):
         source_key=str(source),
     )
     calls = []
+    runtime_load_calls = []
     monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: editor))
     monkeypatch.setattr(
         particle_system_module.ParticleArtifactRegistry,
@@ -75,7 +97,10 @@ def _particle_artifact_load_probe(monkeypatch, tmp_path, *, editor: bool):
     monkeypatch.setattr(
         particle_system_module.ParticleArtifactRegistry,
         "load_runtime_reference",
-        staticmethod(lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("stale artifact"))),
+        staticmethod(
+            lambda *args, **kwargs: runtime_load_calls.append((args, kwargs))
+            or (_ for _ in ()).throw(ValueError("stale artifact"))
+        ),
     )
     monkeypatch.setattr(
         particle_system_module.ParticleArtifactRegistry,
@@ -102,19 +127,23 @@ def _particle_artifact_load_probe(monkeypatch, tmp_path, *, editor: bool):
     assert component._load_particle_graph_artifact(
         ParticleGraphRef(path_hint=str(source))
     ) is editor
-    return calls
+    return calls, runtime_load_calls
 
 
-def test_editor_recovers_invalid_particle_artifact_from_authoring_source(
+def test_editor_compiles_authoring_source_without_player_artifact_lookup(
     monkeypatch, tmp_path
 ):
-    calls = _particle_artifact_load_probe(monkeypatch, tmp_path, editor=True)
+    calls, runtime_load_calls = _particle_artifact_load_probe(
+        monkeypatch, tmp_path, editor=True
+    )
 
     assert len(calls) == 1
     assert calls[0][0] == str(tmp_path / "Recovery.particlegraph")
+    assert calls[0][1] == {"guid": ""}
+    assert runtime_load_calls == []
 
 
-def test_editor_recompiles_after_loaded_artifact_fails_current_publish(
+def test_editor_does_not_recompile_after_gpu_publication_failure(
     monkeypatch, tmp_path
 ):
     source = tmp_path / "PublishRecovery.particlegraph"
@@ -125,14 +154,6 @@ def test_editor_recompiles_after_loaded_artifact_fails_current_publish(
         gpu_glsl={"emitters": []},
         gpu_spirv={},
         revision=1,
-        source_key=str(source),
-    )
-    rebuilt_artifact = SimpleNamespace(
-        hir={},
-        kernel_ir={},
-        gpu_glsl={"emitters": []},
-        gpu_spirv={},
-        revision=2,
         source_key=str(source),
     )
     compile_calls = []
@@ -146,14 +167,18 @@ def test_editor_recompiles_after_loaded_artifact_fails_current_publish(
     monkeypatch.setattr(
         particle_system_module.ParticleArtifactRegistry,
         "load_runtime_reference",
-        staticmethod(lambda *_args, **_kwargs: stale_artifact),
+        staticmethod(
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("Editor must not load a shipped Player artifact")
+            )
+        ),
     )
     monkeypatch.setattr(
         particle_system_module.ParticleArtifactRegistry,
         "compile_path",
         staticmethod(
             lambda path, **kwargs: compile_calls.append((path, kwargs))
-            or rebuilt_artifact
+            or stale_artifact
         ),
     )
     monkeypatch.setattr(
@@ -171,24 +196,27 @@ def test_editor_recompiles_after_loaded_artifact_fails_current_publish(
 
     def publish(*_args, **_kwargs):
         publish_calls.append(True)
-        if len(publish_calls) == 1:
-            raise RuntimeError("missing update_render_fusion")
+        raise RuntimeError("missing update_render_fusion")
 
     monkeypatch.setattr(component, "_publish_gpu_particle_graph", publish)
 
-    assert component._load_particle_graph_artifact(
+    assert not component._load_particle_graph_artifact(
         ParticleGraphRef(path_hint=str(source))
-    ) is True
+    )
     assert len(compile_calls) == 1
-    assert len(publish_calls) == 2
+    assert len(publish_calls) == 1
+    assert component._last_compile_error == "missing update_render_fusion"
 
 
 def test_player_rejects_invalid_particle_artifact_without_source_compilation(
     monkeypatch, tmp_path
 ):
-    calls = _particle_artifact_load_probe(monkeypatch, tmp_path, editor=False)
+    calls, runtime_load_calls = _particle_artifact_load_probe(
+        monkeypatch, tmp_path, editor=False
+    )
 
     assert calls == []
+    assert len(runtime_load_calls) == 1
 
 
 def test_particle_runtime_batch_ids_do_not_alias_reused_scene_ids(monkeypatch):
@@ -992,7 +1020,7 @@ def test_particle_system_inspector_document_edits_undo_fields_parameters_and_emi
 def test_particle_system_curve_and_gradient_parameters_hot_update_fixed_gpu_block(
     scene, monkeypatch, tmp_path
 ):
-    default_curve = Curve()
+    default_curve = AnimationCurve()
     default_gradient = Gradient()
     source = tmp_path / "GpuRampParameters.particlegraph"
     ParticleGraphAsset(
@@ -1025,7 +1053,7 @@ def test_particle_system_curve_and_gradient_parameters_hot_update_fixed_gpu_bloc
     component.awake()
     component.start()
 
-    curve = Curve((CurveKey(0.0, 1.0), CurveKey(1.0, 3.0)))
+    curve = AnimationCurve((Keyframe(0.0, 1.0), Keyframe(1.0, 3.0)))
     gradient = Gradient(
         (
             GradientKey(0.0, (1.0, 0.0, 0.0, 1.0)),
@@ -1078,6 +1106,53 @@ def test_particle_system_manual_bounds_are_local_and_transform_to_world_aabb():
         [0.0, 0.0, 0.0],
         [0.0, 0.0, 0.0],
     )
+
+
+def test_particle_system_transform_payload_does_not_require_numpy(monkeypatch):
+    import Infernux.components.particle_system as particle_system_module
+    from Infernux.lib import Vector3
+
+    local_to_world = (
+        -2.0, 0.0, 0.0, 0.0,
+        0.0, 3.0, 0.0, 0.0,
+        0.0, 0.0, 4.0, 0.0,
+        10.0, -5.0, 2.0, 1.0,
+    )
+    world_to_local = (
+        -0.5, 0.0, 0.0, 0.0,
+        0.0, 1.0 / 3.0, 0.0, 0.0,
+        0.0, 0.0, 0.25, 0.0,
+        5.0, 5.0 / 3.0, -0.5, 1.0,
+    )
+
+    class _Transform:
+        def local_to_world_matrix(self):
+            return local_to_world
+
+        def world_to_local_matrix(self):
+            return world_to_local
+
+    class _ParticleSystem(ParticleSystem):
+        @property
+        def transform(self):
+            return _Transform()
+
+    component = _ParticleSystem()
+    component.bounds_mode = ParticleBoundsMode.MANUAL
+    component.manual_bounds_center = Vector3(1.0, 2.0, 3.0)
+    component.manual_bounds_size = Vector3(-4.0, 2.0, 6.0)
+    monkeypatch.setattr(particle_system_module, "np", None)
+
+    matrix = component._emitter_matrix()
+    mode, lower, upper = component._gpu_bounds_request(matrix)
+    component._emitter_to_world_cache = matrix
+    component._gpu_transform_buffers = {}
+    transforms = component._gpu_transform_buffer(local_simulation=True)
+
+    assert mode == "manual"
+    assert lower == pytest.approx([4.0, -2.0, 2.0])
+    assert upper == pytest.approx([12.0, 4.0, 26.0])
+    assert transforms == local_to_world + world_to_local + local_to_world + world_to_local
 
 
 def test_particle_emitter_lifecycle_is_serialized_on_the_component_instance(
@@ -1514,6 +1589,10 @@ def test_particle_system_runs_gpu_emitters_by_active_index(
     assert diagnostics["play_requested"] is True
     assert diagnostics["resident"] is True
     assert diagnostics["playing"] is True
+    assert component.is_resident is True
+    assert component.is_playing is True
+    assert component.time == pytest.approx(0.625)
+    assert component.last_compile_error == ""
     assert "runtime_target" not in diagnostics
     assert all("target" not in emitter for emitter in diagnostics["emitters"])
     assert all(emitter["play_requested"] is True for emitter in diagnostics["emitters"])
@@ -1528,6 +1607,8 @@ def test_particle_system_runs_gpu_emitters_by_active_index(
     assert inactive["play_requested"] is True
     assert inactive["resident"] is False
     assert inactive["playing"] is False
+    assert component.is_resident is False
+    assert component.is_playing is False
     assert all(emitter["play_requested"] is True for emitter in inactive["emitters"])
     assert all(emitter["resident"] is False for emitter in inactive["emitters"])
     assert all(emitter["playing"] is False for emitter in inactive["emitters"])
@@ -1751,6 +1832,10 @@ def test_particle_system_keeps_event_queues_inside_each_gpu_emitter(
     component._remove_native_batch()
 
 
+@pytest.mark.skipif(
+    _WINDOWS_SWIFTSHADER_PARTICLE_PIPELINE,
+    reason=_WINDOWS_SWIFTSHADER_PARTICLE_REASON,
+)
 def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
     scene, engine, monkeypatch, tmp_path
 ):
@@ -1924,6 +2009,10 @@ def test_saved_particle_graph_uses_real_gpu_runtime_control_path(
 
 
 
+@pytest.mark.skipif(
+    _WINDOWS_SWIFTSHADER_PARTICLE_PIPELINE,
+    reason=_WINDOWS_SWIFTSHADER_PARTICLE_REASON,
+)
 def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
     scene, engine, monkeypatch, tmp_path
 ):
@@ -2058,15 +2147,20 @@ def test_saved_gpu_particle_graph_binds_vector_field_texture3d_through_rhi(
     assert engine._gpu_particle_artifact_revision(emitter_id) == 0
 
 
+@pytest.mark.skipif(
+    _WINDOWS_SWIFTSHADER_PARTICLE_PIPELINE,
+    reason=_WINDOWS_SWIFTSHADER_PARTICLE_REASON,
+)
+@pytest.mark.parametrize("side", (2, 64))
 def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
-    scene, engine, monkeypatch, tmp_path
+    scene, engine, monkeypatch, tmp_path, side
 ):
     sdf_source = tmp_path / "Collision.inxsdf"
 
     def document(distances):
         return {
             "$schema": "infernux.sdf",
-            "dimensions": [2, 2, 2],
+            "dimensions": [side, side, side],
             "storage_order": "x_fastest",
             "distance_unit": "field",
             "bake_basis": [
@@ -2079,7 +2173,7 @@ def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
         }
 
     sdf_source.write_text(
-        json.dumps(document([-0.2, 0.2, -0.2, 0.2, -0.2, 0.2, -0.2, 0.2])),
+        json.dumps(document([-0.2, 0.2] * (side ** 3 // 2))),
         encoding="utf-8",
     )
     imported = AssetManager.import_asset(
@@ -2144,6 +2238,7 @@ def test_saved_gpu_particle_graph_binds_sdf_texture3d_through_rhi(
     component.start()
     component.update(0.0)
 
+    assert not component._last_compile_error
     emitter_id = component._gpu_emitter_ids[0]
     generation = engine._gpu_particle_vector_field_generation(emitter_id, 0)
     assert generation > 0

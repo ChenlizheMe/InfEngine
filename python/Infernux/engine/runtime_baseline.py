@@ -27,12 +27,11 @@ from time import perf_counter_ns
 from typing import Any
 
 
-RUNTIME_BASELINE_SCHEMA_VERSION = 1
 RUNTIME_BASELINE_SCHEMA_ID = (
-    "https://infernux-engine.com/schemas/runtime-baseline-v1.schema.json"
+    "https://infernux-engine.com/schemas/runtime-baseline.schema.json"
 )
 RUNTIME_BASELINE_REPORT_SCHEMA_ID = (
-    "https://infernux-engine.com/schemas/runtime-baseline-comparison-v1.schema.json"
+    "https://infernux-engine.com/schemas/runtime-baseline-comparison.schema.json"
 )
 
 RUNTIME_BASELINE_COMPONENT_COUNTS = (0, 1, 100, 1_000, 10_000)
@@ -575,7 +574,6 @@ class RuntimeBaselineRecorder:
             ]
             document = {
                 "$schema": RUNTIME_BASELINE_SCHEMA_ID,
-                "schema_version": RUNTIME_BASELINE_SCHEMA_VERSION,
                 "capture": copy.deepcopy(self._capture),
                 "contract": {
                     "component_counts": list(RUNTIME_BASELINE_COMPONENT_COUNTS),
@@ -629,7 +627,6 @@ class RuntimeBaselineRecorder:
         document = self.snapshot()
         return {
             "$schema": document["$schema"],
-            "schema_version": document["schema_version"],
             "capture": document["capture"],
             "lifecycle_event_count": len(document["semantics"]["lifecycle_events"]),
             "mutation_observation_count": len(
@@ -997,7 +994,6 @@ def runtime_baseline_diagnostics(
     )
     return {
         "$schema": RUNTIME_BASELINE_SCHEMA_ID,
-        "schema_version": RUNTIME_BASELINE_SCHEMA_VERSION,
         "identity": identity.to_dict(),
         "capture": recorder.summary(),
         "capabilities": {
@@ -1096,7 +1092,6 @@ def compare_runtime_baselines(
     return _stable_value(
         {
             "$schema": RUNTIME_BASELINE_REPORT_SCHEMA_ID,
-            "schema_version": RUNTIME_BASELINE_SCHEMA_VERSION,
             "generated_utc": _utc_now(),
             "threshold_percent": threshold,
             "comparable": not mismatches,
@@ -1322,10 +1317,12 @@ def _collect_live_counter_slots(*sources: Mapping[str, Any]) -> dict[str, float 
 
 
 def _validate_document_header(document: Mapping[str, Any]) -> None:
-    if document.get("$schema") != RUNTIME_BASELINE_SCHEMA_ID:
+    expected = {
+        "$schema", "capture", "contract", "coverage", "semantics", "workloads",
+        "runtime_inventory", "performance_windows", "diagnostics",
+    }
+    if document.get("$schema") != RUNTIME_BASELINE_SCHEMA_ID or set(document) != expected:
         raise ValueError("runtime baseline document uses an unsupported schema")
-    if int(document.get("schema_version", 0) or 0) != RUNTIME_BASELINE_SCHEMA_VERSION:
-        raise ValueError("runtime baseline document uses an unsupported version")
     if not isinstance(document.get("capture"), Mapping):
         raise ValueError("runtime baseline document is missing capture identity")
 
@@ -1405,7 +1402,6 @@ __all__ = [
     "RUNTIME_BASELINE_SCENARIOS",
     "RUNTIME_BASELINE_SCENARIO_GROUPS",
     "RUNTIME_BASELINE_SCHEMA_ID",
-    "RUNTIME_BASELINE_SCHEMA_VERSION",
     "RUNTIME_BASELINE_TIMING_FIELDS",
     "RUNTIME_BASELINE_WORKLOADS",
     "RuntimeBaselineIdentity",

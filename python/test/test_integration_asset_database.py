@@ -22,16 +22,16 @@ from Infernux.particle import (
 )
 
 
-def test_audio_import_rejects_noncurrent_metadata(engine, tmp_path: Path):
+def test_audio_import_requires_complete_metadata(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
-    source = tmp_path / "legacy_audio.wav"
+    source = tmp_path / "incomplete_audio.wav"
     source.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
     meta_path = Path(f"{source}.meta")
-    legacy_guid = "a" * 32
+    asset_guid = "a" * 32
     meta_path.write_text(
         json.dumps({
             "metadata": {
-                "guid": {"type": "string", "value": legacy_guid},
+                "guid": {"type": "string", "value": asset_guid},
                 "resource_type": {
                     "type": "enum infernux::ResourceType",
                     "value": "DefaultText",
@@ -42,7 +42,7 @@ def test_audio_import_rejects_noncurrent_metadata(engine, tmp_path: Path):
     )
 
     try:
-        with pytest.raises(RuntimeError, match="current importer schema|resource_type"):
+        with pytest.raises(ValueError, match="current content_hash"):
             asset_db.import_asset(str(source))
         assert not asset_db.contains_path(str(source))
     finally:
@@ -221,9 +221,11 @@ def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path
         assert ParticleArtifactRegistry.get(str(source)) is artifact
         assert artifact.hir["stable_id"] == "integration-smoke"
         assert Path(artifact.artifact_path).name == f"{result.guid}.inxparticle"
-        assert Path(
+        runtime_artifact = Path(
             asset_db.get_runtime_artifact_path(result.guid, ResourceType.ParticleGraph)
-        ) == Path(artifact.artifact_path)
+        )
+        published_artifact = Path(artifact.artifact_path)
+        assert runtime_artifact.samefile(published_artifact)
         assert AssetDependencyGraph.instance().get_dependencies(result.guid) == {
             collision_guid,
             mesh_guid,
@@ -693,7 +695,7 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
     )
     mutations = AssetMutationService(DocumentRegistry(), selection)
     published = []
-    mutations.add_listener(published.append)
+    mutations.add_observer(published.append)
     generation_before = asset_db.query_generation
     moved_a = destination_dir / source_a.name
     moved_b = destination_dir / source_b.name
@@ -1053,9 +1055,21 @@ def test_refresh_builds_import_artifacts_only_on_workers(engine):
     fragment_guid = asset_db.import_asset(str(fragment)).guid
     assert vertex_guid and fragment_guid
     material_document = json.loads(InxMaterial.create_default_lit().serialize())
+    vertex_shader_id = asset_db.get_meta_by_path(str(vertex)).get_string("shader_id")
+    fragment_shader_id = asset_db.get_meta_by_path(str(fragment)).get_string(
+        "shader_id"
+    )
     material_document["shaders"] = {
-        "vertex": {"guid": vertex_guid, "shader_id": "worker-vertex", "path_hint": str(vertex)},
-        "fragment": {"guid": fragment_guid, "shader_id": "worker-fragment", "path_hint": str(fragment)},
+        "vertex": {
+            "guid": vertex_guid,
+            "shader_id": vertex_shader_id,
+            "path_hint": str(vertex),
+        },
+        "fragment": {
+            "guid": fragment_guid,
+            "shader_id": fragment_shader_id,
+            "path_hint": str(fragment),
+        },
     }
     material.write_text(json.dumps(material_document), encoding="utf-8")
     model.write_text(
@@ -1184,19 +1198,15 @@ def test_asset_database_async_refresh_commits_worker_artifact(engine):
     with pytest.raises(RuntimeError, match="already pending"):
         asset_db.begin_refresh()
 
-    deadline = time.monotonic() + 10.0
-    committed = False
-    while time.monotonic() < deadline:
-        if asset_db.try_commit_refresh():
-            committed = True
-            break
-        time.sleep(0.001)
+    asset_db.complete_pending_refresh()
 
-    assert committed is True
     assert asset_db.refresh_pending is False
     assert asset_db.last_refresh_scan_on_worker is True
     if asset_db.last_refresh_imported_count:
         assert asset_db.last_refresh_query_build_on_worker is True
+
+    with pytest.raises(RuntimeError, match="no pending refresh"):
+        asset_db.complete_pending_refresh()
 
 
 def test_async_refresh_hides_prepared_state_until_worker_import_finalize(
@@ -1262,33 +1272,38 @@ def test_async_refresh_hides_prepared_state_until_worker_import_finalize(
         asset_db.refresh()
 
 
-def test_asset_database_rejects_stale_async_scan(engine, tmp_path: Path):
+def test_asset_database_restarts_async_scan_after_owner_mutation(engine):
     asset_db = engine.get_asset_database()
+    fixture = Path(asset_db.assets_root) / "owner-mutation-refresh"
+    fixture.mkdir(parents=True, exist_ok=True)
+    mutation = fixture / "mutation-during-scan.txt"
     asset_db.begin_refresh()
 
-    mutation = tmp_path / "mutation-during-scan.txt"
     mutation.write_text("newer owner state", encoding="utf-8")
     guid = asset_db.import_asset(str(mutation)).guid
     assert guid
 
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        try:
-            completed = asset_db.try_commit_refresh()
-        except RuntimeError as error:
-            assert "stale" in str(error)
-            break
-        if completed:
-            pytest.fail("stale scan artifact replaced a newer AssetDatabase generation")
-        time.sleep(0.001)
-    else:
-        pytest.fail("asynchronous AssetDatabase scan did not finish")
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if asset_db.try_commit_refresh():
+                break
+            time.sleep(0.001)
+        else:
+            pytest.fail("replacement AssetDatabase scan did not finish")
 
-    assert asset_db.refresh_pending is False
-    assert asset_db.get_guid_from_path(str(mutation)) == guid
+        assert asset_db.refresh_pending is False
+        assert asset_db.get_guid_from_path(str(mutation)) == guid
+    finally:
+        if asset_db.contains_path(str(mutation)):
+            asset_db.delete_asset(str(mutation))
+        mutation.unlink(missing_ok=True)
+        Path(f"{mutation}.meta").unlink(missing_ok=True)
+        fixture.rmdir()
+        asset_db.refresh()
 
 
-def test_refresh_regenerates_incompatible_metadata(engine):
+def test_refresh_rejects_invalid_metadata_without_rewriting_it(engine):
     asset_db = engine.get_asset_database()
     fixture = Path(asset_db.assets_root) / "prepare-rollback-fixture"
     fixture.mkdir(parents=True, exist_ok=True)
@@ -1299,21 +1314,15 @@ def test_refresh_regenerates_incompatible_metadata(engine):
         asset_db.refresh()
         guid = asset_db.get_guid_from_path(str(source))
         meta_path = Path(f"{source}.meta")
-        meta_path.write_text("{ broken metadata", encoding="utf-8")
+        current_metadata = meta_path.read_text(encoding="utf-8")
+        invalid_metadata = "{ broken metadata"
+        meta_path.write_text(invalid_metadata, encoding="utf-8")
 
-        asset_db.refresh()
+        with pytest.raises(RuntimeError, match="parse error"):
+            asset_db.refresh()
         assert asset_db.get_guid_from_path(str(source)) == guid
-        regenerated = json.loads(meta_path.read_text(encoding="utf-8"))
-        assert set(regenerated) == {"metadata"}
-        assert regenerated["metadata"]["guid"]["value"] == guid
-
-        regenerated["meta_version"] = 2
-        meta_path.write_text(json.dumps(regenerated), encoding="utf-8")
-        asset_db.refresh()
-        assert asset_db.get_guid_from_path(str(source)) == guid
-        regenerated = json.loads(meta_path.read_text(encoding="utf-8"))
-        assert set(regenerated) == {"metadata"}
-        assert regenerated["metadata"]["guid"]["value"] == guid
+        assert meta_path.read_text(encoding="utf-8") == invalid_metadata
+        meta_path.write_text(current_metadata, encoding="utf-8")
     finally:
         if asset_db.refresh_pending:
             deadline = time.monotonic() + 10.0

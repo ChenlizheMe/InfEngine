@@ -39,9 +39,9 @@ def _identity(*, role: str = "Editor", build: str = "Debug") -> RuntimeBaselineI
         flavor=f"{role}{build}",
         platform="Windows",
         architecture="AMD64",
-        python_version="3.12.0",
+        python_version="3.13.0",
         native_profile_enabled=build == "Debug",
-        engine_version="0.2.9",
+        engine_version="0.4.0",
         build_preset=build.casefold(),
     )
 
@@ -505,7 +505,7 @@ def test_distributed_json_schemas_validate_generated_documents():
     jsonschema.validate(
         baseline,
         json.loads(
-            (schema_root / "runtime-baseline-v1.schema.json").read_text(
+            (schema_root / "runtime-baseline.schema.json").read_text(
                 encoding="utf-8"
             )
         ),
@@ -513,7 +513,7 @@ def test_distributed_json_schemas_validate_generated_documents():
     jsonschema.validate(
         comparison,
         json.loads(
-            (schema_root / "runtime-baseline-comparison-v1.schema.json").read_text(
+            (schema_root / "runtime-baseline-comparison.schema.json").read_text(
                 encoding="utf-8"
             )
         ),

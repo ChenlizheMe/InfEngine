@@ -10,15 +10,21 @@ Thanks for contributing.
 
 ## Local setup
 
-The most common workflow in this repository uses Conda:
+The repository provides one Conda environment definition for the supported
+development ABI, Python 3.13:
 
-```bash
-conda create -n infernux python=3.12 -y
+```powershell
+./scripts/setup/configure_development.ps1
 conda activate infernux
-pip install -r requirements.txt
-cmake --preset release
-cmake --build --preset release
+cmake --preset windows-msvc-release
+cmake --build --preset windows-msvc-wheel
 ```
+
+On Ubuntu or Debian, run `scripts/setup/install_linux_dependencies.sh` once and
+then `bash scripts/setup/configure_development.sh`. The setup scripts initialize
+submodules and create or repair the `infernux` environment from
+`environment.yml`. CMake intentionally rejects another Python minor version so
+a local build cannot silently produce an incompatible wheel.
 
 For Hub development:
 
@@ -32,7 +38,7 @@ python packaging/launcher.py
 Generated files have one canonical home:
 
 - `out/build/<preset>/` contains CMake configure and build trees.
-- `out/package/` contains disposable Hub and installer staging output.
+- `out/stage/<preset>/` contains disposable wheel and Hub assembly trees; verified wheels, Hub update archives, and installers are written to `dist/releases/<version>/`.
 - `dist/releases/<version>/` contains final, upload-ready release assets only.
 - `dev/` contains private plans and drafts; it is not a build-output directory.
 

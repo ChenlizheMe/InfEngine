@@ -12,9 +12,14 @@ from Infernux.engine.interaction import (
 from Infernux.lib import InxGUIContext
 from Infernux.physics import settings as _phys_settings
 from .editor_panel import EditorPanel
+from .dpi import scaled_editor_metric
 from .panel_registry import editor_panel
 from .theme import Theme, ImGuiCol, ImGuiWindowFlags
 from .igui import IGUI
+
+
+def _metric(ctx, value: float) -> float:
+    return scaled_editor_metric(ctx, value)
 
 @editor_panel(
     "Tags & Layers",
@@ -117,12 +122,12 @@ class TagLayerSettingsPanel(EditorPanel):
                 if is_builtin:
                     ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
                     ctx.label(f"  {tag}")
-                    ctx.same_line(ctx.get_window_width() - 80)
+                    ctx.same_line(ctx.get_window_width() - _metric(ctx, 80.0))
                     ctx.label("(built-in)")
                     ctx.pop_style_color(1)
                 else:
                     ctx.label(f"  {tag}")
-                    ctx.same_line(ctx.get_window_width() - 30)
+                    ctx.same_line(ctx.get_window_width() - _metric(ctx, 30.0))
                     if IGUI._mini_icon_button(ctx, "##rm", Theme.ICON_IMG_REMOVE, Theme.ICON_REMOVE):
                         self._do_remove_tag(tag)
 
@@ -130,8 +135,10 @@ class TagLayerSettingsPanel(EditorPanel):
 
             ctx.separator()
             ctx.label(t("tags.add_tag"))
-            ctx.same_line(70)
-            ctx.set_next_item_width(ctx.get_content_region_avail_width() - 60)
+            ctx.same_line(_metric(ctx, 70.0))
+            ctx.set_next_item_width(
+                ctx.get_content_region_avail_width() - _metric(ctx, 60.0)
+            )
             self._new_tag_name = ctx.text_input("##new_tag", self._new_tag_name, 128)
             ctx.same_line()
             if IGUI._mini_icon_button(ctx, "##add_tag", Theme.ICON_IMG_PLUS, Theme.ICON_PLUS):
@@ -150,12 +157,12 @@ class TagLayerSettingsPanel(EditorPanel):
                 ctx.push_id_str(f"layer_{i}")
 
                 ctx.label(f"{i:2d}:")
-                ctx.same_line(36)
+                ctx.same_line(_metric(ctx, 36.0))
 
                 if is_builtin:
                     ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
                     ctx.label(name if name else "---")
-                    ctx.same_line(ctx.get_window_width() - 80)
+                    ctx.same_line(ctx.get_window_width() - _metric(ctx, 80.0))
                     ctx.label(t("tags.built_in"))
                     ctx.pop_style_color(1)
                     if capture_semantics:
@@ -167,7 +174,9 @@ class TagLayerSettingsPanel(EditorPanel):
                             string_value=name,
                         )
                 else:
-                    ctx.set_next_item_width(ctx.get_content_region_avail_width() - 10)
+                    ctx.set_next_item_width(
+                        ctx.get_content_region_avail_width() - _metric(ctx, 10.0)
+                    )
                     new_name = ctx.text_input("##layer_name", name, 64)
                     if new_name != name:
                         document = self._settings_controller.section("tag_layers")
@@ -437,9 +446,9 @@ class PhysicsLayerMatrixPanel(EditorPanel):
             ctx.label(t("physics.no_layers"))
             return
 
-        name_col_w = 180.0
-        cell_w = 32.0
-        header_h = 24.0
+        name_col_w = _metric(ctx, 180.0)
+        cell_w = _metric(ctx, 32.0)
+        header_h = _metric(ctx, 24.0)
 
         if ctx.begin_child("##physics_matrix_scroll", 0, 0, True):
             ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
@@ -459,7 +468,12 @@ class PhysicsLayerMatrixPanel(EditorPanel):
 
             for row_idx, (layer_a, name_a) in enumerate(visible_layers):
                 ctx.push_id_str(f"physics_matrix_row_{layer_a}")
-                ctx.begin_child(f"##physics_matrix_label_{layer_a}", name_col_w, 24, False)
+                ctx.begin_child(
+                    f"##physics_matrix_label_{layer_a}",
+                    name_col_w,
+                    _metric(ctx, 24.0),
+                    False,
+                )
                 ctx.label(f"{layer_a:2d} {name_a}")
                 if capture_semantics:
                     ctx.record_semantic_item(

@@ -49,6 +49,17 @@ void CaptureOrReferenceInlineMesh(const MeshRenderer &renderer, const std::vecto
 
 size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool useActiveCameraCulling)
 {
+#if defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+    // Minimal platform players intentionally omit the editor-camera service.
+    // Keeping this symbol available lets the portable extractor compile while
+    // making accidental editor-view use fail closed.
+    (void)useActiveCameraCulling;
+    world.Clear();
+    m_activeCamera = nullptr;
+    m_sceneSources.clear();
+    m_visibleCount = 0;
+    return 0;
+#else
     // Extraction is deliberately camera-neutral. Scene, Game, previews, and
     // future stacked Game cameras all consume this same immutable world and
     // derive their own visible lists in SceneRenderer.
@@ -118,6 +129,7 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
     m_lastContentRevision = currentContentRevision;
     world.Publish();
     return m_visibleCount;
+#endif
 }
 
 size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Camera *camera)
@@ -327,9 +339,14 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
             CaptureOrReferenceInlineMesh(*mr, source.inlineVertices, source.inlineIndices, source.inlineMeshOwner);
         }
 
-        if (transformChanged || dynamicSkinBounds) {
+        // Procedural meshes can move their vertices while the owning Transform
+        // remains unchanged (LineRenderer world-space trails are the common
+        // case). Their cached bounds must follow the content publication or
+        // per-camera frustum culling will keep testing the previous shape.
+        if (transformChanged || bufferDirty || dynamicSkinBounds) {
             const bool translationOnly =
-                transformChanged && std::memcmp(&worldMatrix[0], &frameData.worldMatrix[0], sizeof(glm::vec4) * 3) == 0;
+                transformChanged && !bufferDirty &&
+                std::memcmp(&worldMatrix[0], &frameData.worldMatrix[0], sizeof(glm::vec4) * 3) == 0;
             const glm::vec3 translationDelta = glm::vec3(worldMatrix[3] - frameData.worldMatrix[3]);
             if (transformChanged)
                 frameData.worldMatrix = worldMatrix;
@@ -373,7 +390,15 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
 
             for (size_t drawCallIndex = cache.drawCallStart; drawCallIndex < drawCallEnd; ++drawCallIndex) {
                 DrawCall &dc = frame.m_drawCalls.drawCalls[drawCallIndex];
-                dc.forceBufferUpdate = false;
+                // A rebuilt procedural mesh frequently reuses the freed heap
+                // block of its previous build, so EnsureObjectBuffers' pointer
+                // + size fast path cannot detect the content change on its
+                // own. bufferDirty is the authoritative content-change signal
+                // and must reach the GPU path exactly like RebuildDrawCalls
+                // does, otherwise every-frame trails freeze at the last frame
+                // whose allocation happened to move (and flicker between the
+                // frozen and the fresh publication as sizes drift).
+                dc.forceBufferUpdate = bufferDirty && mr->HasInlineMesh();
                 if (bufferDirty && mr->HasInlineMesh()) {
                     dc.meshDataOwner = source.inlineMeshOwner;
                     dc.meshVertices = source.inlineVertices;

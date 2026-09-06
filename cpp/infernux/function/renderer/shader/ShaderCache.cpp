@@ -98,8 +98,6 @@ void ShaderCache::Store(const ShaderCacheKey &key, const std::vector<uint32_t> &
     // Save to disk immediately
     fs::path cachePath = GetCacheFilePath(key);
     SaveToDisk(cachePath, cached);
-
-    INXLOG_DEBUG("ShaderCache: Stored shader '", key.shaderPath, "' with ", key.enabledKeywords.size(), " keywords");
 }
 
 void ShaderCache::ClearCache()
@@ -199,7 +197,6 @@ void ShaderCache::PrecompileShaders(
 
         // Check if already cached and up-to-date
         if (HasCached(key)) {
-            INXLOG_DEBUG("ShaderCache: Shader already cached: ", shaderPath);
             continue;
         }
 

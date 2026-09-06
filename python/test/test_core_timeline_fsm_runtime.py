@@ -6,8 +6,11 @@ parameter/trigger-driven transitions and timeline-end auto-advance. Runs with a
 """
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
+import Infernux.core.timeline_fsm_runtime as timeline_runtime_module
 from Infernux.core.anim_state_machine import (
     AnimCondition,
     AnimParameter,
@@ -20,6 +23,21 @@ from Infernux.core.timeline_fsm_runtime import TimelineFSMRuntime
 from Infernux.graph import TypeRef, ValueType
 
 
+_TIMELINE_PATHS = {}
+
+
+@pytest.fixture(autouse=True)
+def _asset_database(monkeypatch):
+    _TIMELINE_PATHS.clear()
+
+    class Database:
+        @staticmethod
+        def get_path_from_guid(guid):
+            return _TIMELINE_PATHS.get(guid, "")
+
+    monkeypatch.setattr(timeline_runtime_module, "_get_asset_database", lambda: Database())
+
+
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 def _timeline_file(tmp_path, name, duration=1.0):
@@ -29,12 +47,14 @@ def _timeline_file(tmp_path, name, duration=1.0):
     ])
     path = str(tmp_path / f"{name}.animtimeline")
     tl.save(path)
-    return path
+    guid = uuid.uuid5(uuid.NAMESPACE_URL, path).hex
+    _TIMELINE_PATHS[guid] = path
+    return guid, path
 
 
 def _state(tmp_path, name, *, loop=True, exit_time=1.0, dur=1.0, trans=None):
     s = AnimState(name=name, kind="timeline", loop=loop, exit_time_normalized=exit_time)
-    s.timeline_path = _timeline_file(tmp_path, name, dur)
+    s.timeline_guid, s.timeline_path = _timeline_file(tmp_path, name, dur)
     for target, cond in (trans or []):
         conditions = []
         if cond:
@@ -145,6 +165,26 @@ def test_runtime_play_unknown_state_false(tmp_path):
     assert rt.play("ghost") is False
 
 
+def test_runtime_rejects_timeline_state_without_guid(tmp_path):
+    state = _state(tmp_path, "A")
+    state.timeline_guid = ""
+    rt = TimelineFSMRuntime()
+    rt.set_fsm(_fsm([state]))
+
+    with pytest.raises(ValueError, match="has no asset GUID"):
+        rt.play()
+
+
+def test_runtime_rejects_unregistered_timeline_guid(tmp_path):
+    state = _state(tmp_path, "A")
+    state.timeline_guid = "missing-guid"
+    rt = TimelineFSMRuntime()
+    rt.set_fsm(_fsm([state]))
+
+    with pytest.raises(FileNotFoundError, match="missing-guid"):
+        rt.play()
+
+
 def test_runtime_play_no_default_false(tmp_path):
     fsm = _fsm([_state(tmp_path, "A")])
     fsm.default_state = ""
@@ -246,6 +286,17 @@ def test_first_native_handle_does_not_compare_against_none(tmp_path):
     rt.update(0.1, transform=transform)
 
     assert transform.calls
+
+
+def test_transform_contract_failure_propagates(tmp_path):
+    class InvalidTransform:
+        handle = object()
+
+    rt = TimelineFSMRuntime()
+    rt.set_fsm(_fsm([_state(tmp_path, "A")]))
+
+    with pytest.raises(AttributeError):
+        rt.play(transform=InvalidTransform())
 
 
 def test_runtime_update_without_play_is_noop(tmp_path):

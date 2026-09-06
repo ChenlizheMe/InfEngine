@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 
 from Infernux.debug import Debug
 from Infernux.engine.bootstrap_hierarchy._helpers import (
-    _get_children_safe,
-    _get_py_components_safe,
+    _get_children,
+    _get_py_components,
 )
 
 if TYPE_CHECKING:
@@ -88,7 +88,7 @@ def _wire_canvas_queries(ctx):
                     continue
                 if current_id:
                     canvas_tree_ids.add(current_id)
-                pending.extend(_get_children_safe(current))
+                pending.extend(_get_children(current))
 
         query_cache["scene_ref"] = scene
         query_cache["scene_structure_version"] = scene_structure_version
@@ -112,7 +112,7 @@ def _wire_canvas_queries(ctx):
         go = scene.find_by_id(oid)
         if not go:
             return False
-        for comp in _get_py_components_safe(go):
+        for comp in _get_py_components(go):
             if isinstance(comp, InxUIScreenComponent):
                 return True
         return False
@@ -333,13 +333,10 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
 
     # -- Runtime hidden IDs --
     def _get_runtime_hidden_ids():
-        try:
-            mgr = PlayModeManager.instance()
-            if mgr is not None:
-                return mgr.get_runtime_hidden_object_ids()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-        return set()
+        mgr = PlayModeManager.instance()
+        if mgr is None:
+            raise RuntimeError("Hierarchy runtime visibility requires PlayModeManager")
+        return mgr.get_runtime_hidden_object_ids()
 
     hp.get_runtime_hidden_ids = _get_runtime_hidden_ids
 

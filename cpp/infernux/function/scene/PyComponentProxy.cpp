@@ -38,16 +38,9 @@ void BindPythonMirrorHelpers(const py::object &pyComponent, Component *nativeCom
     if (pyComponent.is_none())
         return;
 
-    if (py::hasattr(pyComponent, "_bind_native_component")) {
-        pyComponent.attr("_bind_native_component")(py::cast(nativeComponent, py::return_value_policy::reference),
-                                                   gameObject ? py::cast(gameObject, py::return_value_policy::reference)
-                                                              : py::none());
-        return;
-    }
-
-    if (gameObject && py::hasattr(pyComponent, "_set_game_object"))
-        pyComponent.attr("_set_game_object")(py::cast(gameObject, py::return_value_policy::reference));
-    pyComponent.attr("_cpp_component") = py::cast(nativeComponent, py::return_value_policy::reference);
+    pyComponent.attr("_bind_native_component")(py::cast(nativeComponent, py::return_value_policy::reference),
+                                               gameObject ? py::cast(gameObject, py::return_value_policy::reference)
+                                                          : py::none());
 }
 
 void SyncPythonMirrorState(const py::object &pyComponent, const Component *nativeComponent)
@@ -55,38 +48,14 @@ void SyncPythonMirrorState(const py::object &pyComponent, const Component *nativ
     if (pyComponent.is_none() || !nativeComponent)
         return;
 
-    try {
-        if (py::hasattr(pyComponent, "_sync_native_state")) {
-            pyComponent.attr("_sync_native_state")(nativeComponent->IsEnabled(), nativeComponent->HasAwake(),
-                                                   nativeComponent->HasStarted(), nativeComponent->IsDestroyed(),
-                                                   nativeComponent->GetExecutionOrder());
-            return;
-        }
-
-        pyComponent.attr("_component_id") = py::int_(nativeComponent->GetComponentID());
-        pyComponent.attr("_execution_order") = py::int_(nativeComponent->GetExecutionOrder());
-        pyComponent.attr("_enabled") = py::bool_(nativeComponent->IsEnabled());
-        pyComponent.attr("_awake_called") = py::bool_(nativeComponent->HasAwake());
-        pyComponent.attr("_has_started") = py::bool_(nativeComponent->HasStarted());
-        pyComponent.attr("_is_destroyed") = py::bool_(nativeComponent->IsDestroyed());
-    } catch (const py::error_already_set &e) {
-        INXLOG_ERROR("[PyComponentProxy] Failed to sync Python mirror state: ", e.what());
-    }
+    pyComponent.attr("_sync_native_state")(nativeComponent->IsEnabled(), nativeComponent->HasAwake(),
+                                           nativeComponent->HasStarted(), nativeComponent->IsDestroyed(),
+                                           nativeComponent->GetExecutionOrder());
 }
 
-void SyncEnabledFromPython(const py::object &pyComponent, bool &enabled, const char *phase)
+void SyncEnabledFromPython(const py::object &pyComponent, bool &enabled)
 {
-    if (!py::hasattr(pyComponent, "enabled")) {
-        return;
-    }
-
-    try {
-        enabled = pyComponent.attr("enabled").cast<bool>();
-    } catch (const py::error_already_set &e) {
-        INXLOG_ERROR("[PyComponentProxy] Failed to get enabled state",
-                     (phase && phase[0] != '\0') ? std::string(" in ") + phase : std::string(), ": ", e.what());
-    }
-
+    enabled = pyComponent.attr("enabled").cast<bool>();
     pyComponent.attr("enabled") = py::bool_(enabled);
 }
 
@@ -173,36 +142,17 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
 
             RefreshPythonLifecycleOverrideMask();
 
-            if (py::hasattr(pyType, "_execute_in_edit_mode_")) {
-                try {
-                    m_executeInEditMode = pyType.attr("_execute_in_edit_mode_").cast<bool>();
-                } catch (const py::error_already_set &e) {
-                    INXLOG_WARN("[PyComponentProxy] Failed to read _execute_in_edit_mode_ for '", m_typeName,
-                                "': ", e.what());
-                    m_executeInEditMode = false;
-                }
-            }
+            m_executeInEditMode = pyType.attr("_execute_in_edit_mode_").cast<bool>();
 
             // Get stable type GUID from Python class (module.classname hash)
-            if (py::hasattr(m_pyComponent, "_get_type_guid")) {
-                py::object typeGuid = pyType.attr("_get_type_guid")();
-                if (!typeGuid.is_none()) {
-                    m_typeGuid = typeGuid.cast<std::string>();
-                }
-            }
+            m_typeGuid = pyType.attr("_get_type_guid")().cast<std::string>();
 
-            SyncEnabledFromPython(m_pyComponent, m_enabled, "constructor");
+            SyncEnabledFromPython(m_pyComponent, m_enabled);
 
-            if (py::hasattr(m_pyComponent, "_script_guid")) {
-                py::object guidAttr = m_pyComponent.attr("_script_guid");
-                if (!guidAttr.is_none()) {
-                    m_scriptGuid = guidAttr.cast<std::string>();
-                }
-            }
+            m_scriptGuid = m_pyComponent.attr("_script_guid").cast<std::string>();
 
             RefreshConstraintTypeId();
-            const bool isMissingScript =
-                py::hasattr(m_pyComponent, "_is_broken") && m_pyComponent.attr("_is_broken").cast<bool>();
+            const bool isMissingScript = m_pyComponent.attr("_is_broken").cast<bool>();
             if (isMissingScript) {
                 // Missing-script placeholders preserve authored data but are
                 // never offered as addable component types.
@@ -225,8 +175,6 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
                     throw;
                 }
             }
-
-            RefreshCoroutineSchedulerFlag();
         } catch (const py::error_already_set &e) {
             INXLOG_ERROR("[PyComponentProxy] Failed to get type name: ", e.what());
             throw;
@@ -241,12 +189,6 @@ PyComponentProxy::~PyComponentProxy()
     // Clear reference to allow Python GC
     m_callAwake = py::none();
     m_callStart = py::none();
-    m_callUpdate = py::none();
-    m_callFixedUpdate = py::none();
-    m_callLateUpdate = py::none();
-    m_callDisabledUpdate = py::none();
-    m_callDisabledFixedUpdate = py::none();
-    m_callDisabledLateUpdate = py::none();
     m_callOnEnable = py::none();
     m_callOnDisable = py::none();
     m_callOnDestroy = py::none();
@@ -264,37 +206,19 @@ void CallCachedLifecycleNoArg(const py::object &callable, const std::string &typ
     }
 }
 
-void CallCachedLifecycleFloatArg(const py::object &callable, const std::string &typeName, const char *displayName,
-                                 float value)
-{
-    try {
-        callable(value);
-    } catch (const py::error_already_set &e) {
-        INXLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
-    }
-}
-
 PyComponentProxy::PyComponentProxy(PyComponentProxy &&other) noexcept
     : Component(std::move(other)), m_pyComponent(std::move(other.m_pyComponent)),
       m_callAwake(std::move(other.m_callAwake)), m_callStart(std::move(other.m_callStart)),
-      m_callUpdate(std::move(other.m_callUpdate)), m_callFixedUpdate(std::move(other.m_callFixedUpdate)),
-      m_callLateUpdate(std::move(other.m_callLateUpdate)), m_callDisabledUpdate(std::move(other.m_callDisabledUpdate)),
-      m_callDisabledFixedUpdate(std::move(other.m_callDisabledFixedUpdate)),
-      m_callDisabledLateUpdate(std::move(other.m_callDisabledLateUpdate)),
       m_callOnEnable(std::move(other.m_callOnEnable)), m_callOnDisable(std::move(other.m_callOnDisable)),
       m_callOnDestroy(std::move(other.m_callOnDestroy)), m_callOnValidate(std::move(other.m_callOnValidate)),
       m_callReset(std::move(other.m_callReset)), m_typeName(std::move(other.m_typeName)),
       m_typeGuid(std::move(other.m_typeGuid)), m_scriptGuid(std::move(other.m_scriptGuid)),
       m_moduleName(std::move(other.m_moduleName)), m_qualifiedName(std::move(other.m_qualifiedName)),
       m_constraintTypeId(std::move(other.m_constraintTypeId)), m_typeConstraints(std::move(other.m_typeConstraints)),
-      m_executeInEditMode(other.m_executeInEditMode), m_overridesUpdate(other.m_overridesUpdate),
-      m_overridesFixedUpdate(other.m_overridesFixedUpdate), m_overridesLateUpdate(other.m_overridesLateUpdate),
-      m_overridesCollisionEnter(other.m_overridesCollisionEnter),
+      m_executeInEditMode(other.m_executeInEditMode), m_overridesCollisionEnter(other.m_overridesCollisionEnter),
       m_overridesCollisionStay(other.m_overridesCollisionStay),
       m_overridesCollisionExit(other.m_overridesCollisionExit), m_overridesTriggerEnter(other.m_overridesTriggerEnter),
-      m_overridesTriggerStay(other.m_overridesTriggerStay), m_overridesTriggerExit(other.m_overridesTriggerExit),
-      m_hasCoroutineScheduler(other.m_hasCoroutineScheduler), m_updateDispatchCount(other.m_updateDispatchCount),
-      m_updateForwardCount(other.m_updateForwardCount)
+      m_overridesTriggerStay(other.m_overridesTriggerStay), m_overridesTriggerExit(other.m_overridesTriggerExit)
 {
     other.m_pyComponent = py::none();
 }
@@ -306,12 +230,6 @@ PyComponentProxy &PyComponentProxy::operator=(PyComponentProxy &&other) noexcept
         m_pyComponent = std::move(other.m_pyComponent);
         m_callAwake = std::move(other.m_callAwake);
         m_callStart = std::move(other.m_callStart);
-        m_callUpdate = std::move(other.m_callUpdate);
-        m_callFixedUpdate = std::move(other.m_callFixedUpdate);
-        m_callLateUpdate = std::move(other.m_callLateUpdate);
-        m_callDisabledUpdate = std::move(other.m_callDisabledUpdate);
-        m_callDisabledFixedUpdate = std::move(other.m_callDisabledFixedUpdate);
-        m_callDisabledLateUpdate = std::move(other.m_callDisabledLateUpdate);
         m_callOnEnable = std::move(other.m_callOnEnable);
         m_callOnDisable = std::move(other.m_callOnDisable);
         m_callOnDestroy = std::move(other.m_callOnDestroy);
@@ -325,58 +243,15 @@ PyComponentProxy &PyComponentProxy::operator=(PyComponentProxy &&other) noexcept
         m_constraintTypeId = std::move(other.m_constraintTypeId);
         m_typeConstraints = std::move(other.m_typeConstraints);
         m_executeInEditMode = other.m_executeInEditMode;
-        m_overridesUpdate = other.m_overridesUpdate;
-        m_overridesFixedUpdate = other.m_overridesFixedUpdate;
-        m_overridesLateUpdate = other.m_overridesLateUpdate;
         m_overridesCollisionEnter = other.m_overridesCollisionEnter;
         m_overridesCollisionStay = other.m_overridesCollisionStay;
         m_overridesCollisionExit = other.m_overridesCollisionExit;
         m_overridesTriggerEnter = other.m_overridesTriggerEnter;
         m_overridesTriggerStay = other.m_overridesTriggerStay;
         m_overridesTriggerExit = other.m_overridesTriggerExit;
-        m_hasCoroutineScheduler = other.m_hasCoroutineScheduler;
-        m_updateDispatchCount = other.m_updateDispatchCount;
-        m_updateForwardCount = other.m_updateForwardCount;
         other.m_pyComponent = py::none();
     }
     return *this;
-}
-
-void PyComponentProxy::RefreshCoroutineSchedulerFlag()
-{
-    if (m_pyComponent.is_none()) {
-        m_hasCoroutineScheduler = false;
-        return;
-    }
-
-    try {
-        if (!py::hasattr(m_pyComponent, "_coroutine_scheduler")) {
-            m_hasCoroutineScheduler = false;
-            return;
-        }
-
-        const py::object scheduler = m_pyComponent.attr("_coroutine_scheduler");
-        // The scheduler object is retained after natural completion and
-        // stop_all(). Dispatch is required only while it owns live work.
-        m_hasCoroutineScheduler = ReadCoroutineSchedulerCount(scheduler) > 0;
-    } catch (const py::error_already_set &e) {
-        INXLOG_WARN("[PyComponentProxy] Failed to inspect coroutine scheduler for '", m_typeName, "': ", e.what());
-        m_hasCoroutineScheduler = true;
-    }
-}
-
-std::size_t PyComponentProxy::ReadCoroutineSchedulerCount(const py::handle &scheduler)
-{
-    if (scheduler.is_none())
-        return 0;
-
-    py::object countValue = py::reinterpret_borrow<py::object>(scheduler).attr("count");
-    // CoroutineScheduler.count is a property in the current Python contract.
-    // Keep accepting the older callable shape so native proxies can inspect a
-    // scheduler across a Play-mode hot reload without manufacturing warnings.
-    if (PyCallable_Check(countValue.ptr()))
-        countValue = countValue();
-    return countValue.cast<std::size_t>();
 }
 
 void PyComponentProxy::RefreshPythonLifecycleDispatchPlan()
@@ -384,12 +259,6 @@ void PyComponentProxy::RefreshPythonLifecycleDispatchPlan()
     if (m_pyComponent.is_none()) {
         m_callAwake = py::none();
         m_callStart = py::none();
-        m_callUpdate = py::none();
-        m_callFixedUpdate = py::none();
-        m_callLateUpdate = py::none();
-        m_callDisabledUpdate = py::none();
-        m_callDisabledFixedUpdate = py::none();
-        m_callDisabledLateUpdate = py::none();
         m_callOnEnable = py::none();
         m_callOnDisable = py::none();
         m_callOnDestroy = py::none();
@@ -403,12 +272,6 @@ void PyComponentProxy::RefreshPythonLifecycleDispatchPlan()
     // is the only event that needs to rebuild this plan.
     m_callAwake = m_pyComponent.attr("_call_awake");
     m_callStart = m_pyComponent.attr("_call_start");
-    m_callUpdate = m_pyComponent.attr("_call_update");
-    m_callFixedUpdate = m_pyComponent.attr("_call_fixed_update");
-    m_callLateUpdate = m_pyComponent.attr("_call_late_update");
-    m_callDisabledUpdate = m_pyComponent.attr("_tick_coroutines_update");
-    m_callDisabledFixedUpdate = m_pyComponent.attr("_tick_coroutines_fixed_update");
-    m_callDisabledLateUpdate = m_pyComponent.attr("_tick_coroutines_late_update");
     m_callOnEnable = m_pyComponent.attr("_call_on_enable");
     m_callOnDisable = m_pyComponent.attr("_call_on_disable");
     m_callOnDestroy = m_pyComponent.attr("_call_on_destroy");
@@ -427,11 +290,7 @@ void PyComponentProxy::BindPythonMirror()
         return;
 
     BindPythonMirrorHelpers(m_pyComponent, static_cast<Component *>(this), m_gameObject);
-    try {
-        m_pyComponent.attr("_execute_in_edit_mode") = py::bool_(m_executeInEditMode);
-    } catch (const py::error_already_set &e) {
-        INXLOG_WARN("[PyComponentProxy] Failed to set _execute_in_edit_mode on '", m_typeName, "': ", e.what());
-    }
+    m_pyComponent.attr("_execute_in_edit_mode") = py::bool_(m_executeInEditMode);
 }
 
 void PyComponentProxy::SyncPythonMirror() const
@@ -466,15 +325,11 @@ void PyComponentProxy::RefreshPythonLifecycleDispatch()
     py::gil_scoped_acquire acquire;
     RefreshPythonLifecycleDispatchPlan();
     RefreshPythonLifecycleOverrideMask();
-    RefreshCoroutineSchedulerFlag();
 }
 
 void PyComponentProxy::RefreshPythonLifecycleOverrideMask()
 {
     if (m_pyComponent.is_none()) {
-        m_overridesUpdate = false;
-        m_overridesFixedUpdate = false;
-        m_overridesLateUpdate = false;
         m_overridesCollisionEnter = false;
         m_overridesCollisionStay = false;
         m_overridesCollisionExit = false;
@@ -484,31 +339,14 @@ void PyComponentProxy::RefreshPythonLifecycleOverrideMask()
         return;
     }
 
-    try {
-        const py::object pyType = m_pyComponent.attr("__class__");
-        const py::object inxComponentType = py::module_::import("Infernux.components").attr("InxComponent");
-        m_overridesUpdate = !pyType.attr("update").is(inxComponentType.attr("update"));
-        m_overridesFixedUpdate = !pyType.attr("fixed_update").is(inxComponentType.attr("fixed_update"));
-        m_overridesLateUpdate = !pyType.attr("late_update").is(inxComponentType.attr("late_update"));
-        m_overridesCollisionEnter = !pyType.attr("on_collision_enter").is(inxComponentType.attr("on_collision_enter"));
-        m_overridesCollisionStay = !pyType.attr("on_collision_stay").is(inxComponentType.attr("on_collision_stay"));
-        m_overridesCollisionExit = !pyType.attr("on_collision_exit").is(inxComponentType.attr("on_collision_exit"));
-        m_overridesTriggerEnter = !pyType.attr("on_trigger_enter").is(inxComponentType.attr("on_trigger_enter"));
-        m_overridesTriggerStay = !pyType.attr("on_trigger_stay").is(inxComponentType.attr("on_trigger_stay"));
-        m_overridesTriggerExit = !pyType.attr("on_trigger_exit").is(inxComponentType.attr("on_trigger_exit"));
-    } catch (const py::error_already_set &error) {
-        INXLOG_WARN("[PyComponentProxy] Failed to refresh lifecycle override mask for '", m_typeName,
-                    "': ", error.what());
-        m_overridesUpdate = true;
-        m_overridesFixedUpdate = true;
-        m_overridesLateUpdate = true;
-        m_overridesCollisionEnter = true;
-        m_overridesCollisionStay = true;
-        m_overridesCollisionExit = true;
-        m_overridesTriggerEnter = true;
-        m_overridesTriggerStay = true;
-        m_overridesTriggerExit = true;
-    }
+    const py::object pyType = m_pyComponent.attr("__class__");
+    const py::object inxComponentType = py::module_::import("Infernux.components").attr("InxComponent");
+    m_overridesCollisionEnter = !pyType.attr("on_collision_enter").is(inxComponentType.attr("on_collision_enter"));
+    m_overridesCollisionStay = !pyType.attr("on_collision_stay").is(inxComponentType.attr("on_collision_stay"));
+    m_overridesCollisionExit = !pyType.attr("on_collision_exit").is(inxComponentType.attr("on_collision_exit"));
+    m_overridesTriggerEnter = !pyType.attr("on_trigger_enter").is(inxComponentType.attr("on_trigger_enter"));
+    m_overridesTriggerStay = !pyType.attr("on_trigger_stay").is(inxComponentType.attr("on_trigger_stay"));
+    m_overridesTriggerExit = !pyType.attr("on_trigger_exit").is(inxComponentType.attr("on_trigger_exit"));
 }
 
 void PyComponentProxy::RefreshPythonMirrorIdentity() noexcept
@@ -518,7 +356,7 @@ void PyComponentProxy::RefreshPythonMirrorIdentity() noexcept
         if (!m_pyComponent.is_none())
             m_pyComponent.attr("_component_id") = py::int_(GetComponentID());
         SyncPythonMirror();
-        if (!m_pyComponent.is_none() && py::hasattr(m_pyComponent, "_refresh_native_handle"))
+        if (!m_pyComponent.is_none())
             m_pyComponent.attr("_refresh_native_handle")();
     } catch (const py::error_already_set &error) {
         INXLOG_ERROR("[PyComponentProxy] Failed to refresh published Python mirror identity: ", error.what());
@@ -531,11 +369,7 @@ void PyComponentProxy::InvalidatePythonMirrorBinding() noexcept
         py::gil_scoped_acquire acquire;
         if (m_pyComponent.is_none())
             return;
-        if (py::hasattr(m_pyComponent, "_invalidate_native_binding")) {
-            m_pyComponent.attr("_invalidate_native_binding")();
-            return;
-        }
-        m_pyComponent.attr("_cpp_component") = py::none();
+        m_pyComponent.attr("_invalidate_native_binding")();
     } catch (const py::error_already_set &error) {
         INXLOG_ERROR("[PyComponentProxy] Failed to invalidate Python mirror binding: ", error.what());
     }
@@ -549,11 +383,10 @@ void PyComponentProxy::Awake()
 
     try {
         BindPythonMirror();
-        SyncEnabledFromPython(m_pyComponent, m_enabled, "Awake");
+        SyncEnabledFromPython(m_pyComponent, m_enabled);
 
         // Call Python awake
         CallCachedLifecycleNoArg(m_callAwake, m_typeName, "awake");
-        RefreshCoroutineSchedulerFlag();
         SyncPythonMirror();
     } catch (const py::error_already_set &e) {
         INXLOG_ERROR("[PyComponentProxy] Error in ", m_typeName, ".awake setup: ", e.what());
@@ -568,7 +401,6 @@ void PyComponentProxy::OnEnable()
 
     SyncPythonMirror();
     CallCachedLifecycleNoArg(m_callOnEnable, m_typeName, "on_enable");
-    RefreshCoroutineSchedulerFlag();
 }
 
 void PyComponentProxy::Start()
@@ -578,74 +410,7 @@ void PyComponentProxy::Start()
         return;
 
     CallCachedLifecycleNoArg(m_callStart, m_typeName, "start");
-    RefreshCoroutineSchedulerFlag();
     SyncPythonMirror();
-}
-
-void PyComponentProxy::Update(float deltaTime)
-{
-    PythonLifecyclePhaseScope acquire;
-    if (m_pyComponent.is_none())
-        return;
-
-    ++m_updateDispatchCount;
-
-    if (!m_overridesUpdate && !m_hasCoroutineScheduler)
-        return;
-
-    ++m_updateForwardCount;
-    CallCachedLifecycleFloatArg(m_callUpdate, m_typeName, "update", deltaTime);
-}
-
-void PyComponentProxy::FixedUpdate(float fixedDeltaTime)
-{
-    PythonLifecyclePhaseScope acquire;
-    if (m_pyComponent.is_none())
-        return;
-
-    if (!m_overridesFixedUpdate && !m_hasCoroutineScheduler)
-        return;
-
-    CallCachedLifecycleFloatArg(m_callFixedUpdate, m_typeName, "fixed_update", fixedDeltaTime);
-}
-
-void PyComponentProxy::LateUpdate(float deltaTime)
-{
-    PythonLifecyclePhaseScope acquire;
-    if (m_pyComponent.is_none())
-        return;
-
-    if (!m_overridesLateUpdate && !m_hasCoroutineScheduler)
-        return;
-
-    CallCachedLifecycleFloatArg(m_callLateUpdate, m_typeName, "late_update", deltaTime);
-}
-
-void PyComponentProxy::TickWhileDisabledUpdate(float deltaTime)
-{
-    PythonLifecyclePhaseScope acquire;
-    if (m_pyComponent.is_none() || !m_hasCoroutineScheduler)
-        return;
-
-    CallCachedLifecycleFloatArg(m_callDisabledUpdate, m_typeName, "tick_coroutines_update", deltaTime);
-}
-
-void PyComponentProxy::TickWhileDisabledFixedUpdate(float fixedDeltaTime)
-{
-    PythonLifecyclePhaseScope acquire;
-    if (m_pyComponent.is_none() || !m_hasCoroutineScheduler)
-        return;
-
-    CallCachedLifecycleFloatArg(m_callDisabledFixedUpdate, m_typeName, "tick_coroutines_fixed_update", fixedDeltaTime);
-}
-
-void PyComponentProxy::TickWhileDisabledLateUpdate(float deltaTime)
-{
-    PythonLifecyclePhaseScope acquire;
-    if (m_pyComponent.is_none() || !m_hasCoroutineScheduler)
-        return;
-
-    CallCachedLifecycleFloatArg(m_callDisabledLateUpdate, m_typeName, "tick_coroutines_late_update", deltaTime);
 }
 
 void PyComponentProxy::OnDisable()
@@ -775,7 +540,7 @@ nlohmann::json PyComponentProxy::SerializeDocument() const
     j["execution_order"] = GetExecutionOrder();
     bool enabled = m_enabled;
     if (!m_pyComponent.is_none()) {
-        SyncEnabledFromPython(m_pyComponent, enabled, "Serialize");
+        SyncEnabledFromPython(m_pyComponent, enabled);
     }
     j["enabled"] = enabled;
     j["component_id"] = m_componentId;

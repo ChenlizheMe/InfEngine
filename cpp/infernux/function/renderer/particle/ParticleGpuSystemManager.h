@@ -129,8 +129,8 @@ struct GpuParticleVectorFieldLayoutProgram
     std::vector<GpuParticleTexture2DParameterProgram> textureParameters;
 };
 
-using GpuParticleVectorFieldTextureResolver =
-    std::function<GpuBillboardTextureLease(const std::string &textureGuid, bool linearFiltering, bool repeat)>;
+using GpuParticleVectorFieldTextureResolver = std::function<GpuBillboardTextureLease(
+    const std::string &textureGuid, bool linearFiltering, bool repeat, GpuParticleTextureRequest request)>;
 
 struct GpuParticleEmitterProgram
 {

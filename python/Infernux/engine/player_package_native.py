@@ -3,8 +3,8 @@
 The package format and all compression/checksum logic live in the C++
 filesystem module.  This file only converts Python arguments and deliberately
 raises when the native backend is unavailable.  Tests may install a fake
-backend with ``set_test_backend``; production code cannot fall back to ZIP,
-Deflate, LZMA or an older Python container.
+backend with ``set_test_backend``; production always uses the package-owned
+native module.
 """
 
 from __future__ import annotations
@@ -20,8 +20,14 @@ import time
 from collections.abc import Iterable
 from typing import Any, Callable
 
+from Infernux.engine.path_utils import lexical_path
+
 
 _test_backend: Any | None = None
+
+ASSET_CATALOG_ARCHIVE_FILENAME = "AssetCatalog.inxcat"
+ASSET_CATALOG_ENTRY_PATH = "RuntimeAssetCatalog.json"
+BUILD_MANIFEST_ENTRY_PATH = "BuildManifest.json"
 
 
 def set_test_backend(backend: Any | None) -> None:
@@ -40,21 +46,7 @@ def using_test_backend() -> bool:
 def _backend() -> Any:
     if _test_backend is not None:
         return _test_backend
-    candidates = ("Infernux.lib._Infernux", "_Infernux")
-    for module_name in candidates:
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError:
-            continue
-        if all(
-            hasattr(module, name)
-            for name in ("_inxpack_write", "_inxpack_read_manifest", "_inxpack_extract", "_inxpack_read_entry")
-        ):
-            return module
-    raise RuntimeError(
-        "Native InxPack backend is unavailable. This Player/package operation "
-        "requires the current native runtime; no Python or legacy-container fallback exists."
-    )
+    return importlib.import_module("Infernux.lib._Infernux")
 
 
 def write_pack(
@@ -112,7 +104,11 @@ def write_pack_isolated(
 
     destination_text = os.fspath(destination)
     source_pairs = [(str(path), os.fspath(source)) for path, source in files]
-    with tempfile.TemporaryDirectory(prefix="infernux-inxpack-worker-") as workspace:
+    output_directory = os.path.dirname(lexical_path(destination_text))
+    os.makedirs(output_directory, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".infernux-inxpack-worker-", dir=output_directory
+    ) as workspace:
         request_path = os.path.join(workspace, "request.json")
         response_path = os.path.join(workspace, "response.json")
         stderr_path = os.path.join(workspace, "stderr.log")
@@ -214,6 +210,9 @@ def read_entry(path: str | os.PathLike[str], entry_path: str) -> bytes:
 
 
 __all__ = [
+    "ASSET_CATALOG_ARCHIVE_FILENAME",
+    "ASSET_CATALOG_ENTRY_PATH",
+    "BUILD_MANIFEST_ENTRY_PATH",
     "extract_pack",
     "read_entry",
     "read_manifest",

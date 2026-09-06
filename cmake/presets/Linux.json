@@ -1,0 +1,129 @@
+{
+  "version": 6,
+  "include": ["Base.json"],
+  "configurePresets": [
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "inherits": "infernux-base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld",
+        "CMAKE_MODULE_LINKER_FLAGS": "-fuse-ld=lld",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=lld",
+        "PKG_CONFIG_EXECUTABLE": "/usr/bin/pkg-config",
+        "INFERNUX_BUILD_PLAYER_HOST": "ON"
+      }
+    },
+    {
+      "name": "linux-clang-dev",
+      "displayName": "Linux Clang Development",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "INFERNUX_BUILD_TESTS": "ON",
+        "INFERNUX_RUNTIME_STATIC": "OFF"
+      }
+    },
+    {
+      "name": "linux-clang-release",
+      "displayName": "Linux Clang Release",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "INFERNUX_BUILD_TESTS": "ON",
+        "INFERNUX_RUNTIME_STATIC": "ON"
+      }
+    },
+    {
+      "name": "linux-clang-headless",
+      "displayName": "Linux Clang Headless Validation",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "INFERNUX_BUILD_TESTS": "ON",
+        "INFERNUX_RUNTIME_STATIC": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-clang-dev",
+      "configurePreset": "linux-clang-dev",
+      "jobs": 8
+    },
+    {
+      "name": "linux-clang-release",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8
+    },
+    {
+      "name": "linux-clang-headless",
+      "configurePreset": "linux-clang-headless",
+      "jobs": 8
+    },
+    {
+      "name": "linux-clang-stage",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["stage_python_package"]
+    },
+    {
+      "name": "linux-clang-player",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["prebuild_player_runtime"]
+    },
+    {
+      "name": "linux-clang-wheel",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["package_python"]
+    },
+    {
+      "name": "linux-clang-install-wheel",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["install_python_wheel"]
+    },
+    {
+      "name": "linux-hub",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["infernux_hub"]
+    },
+    {
+      "name": "linux-hub-installer",
+      "configurePreset": "linux-clang-release",
+      "jobs": 8,
+      "targets": ["infernux_hub_installer"]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "linux-clang-dev",
+      "configurePreset": "linux-clang-dev",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "linux-clang-release",
+      "configurePreset": "linux-clang-release",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "linux-clang-headless",
+      "configurePreset": "linux-clang-headless",
+      "filter": {
+        "exclude": {"label": "requires_vulkan_device"}
+      },
+      "output": {"outputOnFailure": true}
+    }
+  ]
+}

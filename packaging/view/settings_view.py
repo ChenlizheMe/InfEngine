@@ -1,11 +1,27 @@
 """Early Hub settings page."""
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from about_content import ABOUT_DESCRIPTION, ABOUT_TITLE
 from hub_updater import current_hub_version
 from i18n import current_language, detect_system_locale, tr
+from plugin_library import inspect_plugin_library, prune_unreferenced_packages
+from hub_utils import get_hub_shared_data_dir
+from shared_storage_migration import inspect_legacy_storage
+from view.storage_migration_dialog import StorageMigrationDialog
 from view.sidebar_view import ToggleSwitch, apply_theme
 from view.hover_widgets import AnimatedSurfaceFrame
 
@@ -18,7 +34,19 @@ class SettingsView(QWidget):
         super().__init__(parent)
         self._db = db
 
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea(self)
+        scroll.setObjectName("settingsScrollArea")
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.viewport().setObjectName("settingsViewport")
+        content = QWidget()
+        content.setObjectName("settingsContent")
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll)
+
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(18)
 
@@ -28,6 +56,7 @@ class SettingsView(QWidget):
 
         subtitle = QLabel(tr("Hub preferences, updates and project-independent information."))
         subtitle.setObjectName("pageSubtitle")
+        subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
 
         card = AnimatedSurfaceFrame("settingsCard")
@@ -75,6 +104,7 @@ class SettingsView(QWidget):
         appearance_text.addWidget(appearance_label)
         appearance_hint = QLabel(tr("Switch between the neutral dark and light Hub themes."))
         appearance_hint.setObjectName("settingsDescription")
+        appearance_hint.setWordWrap(True)
         appearance_text.addWidget(appearance_hint)
         appearance_layout.addLayout(appearance_text, 1)
         self.theme_toggle = ToggleSwitch()
@@ -82,6 +112,50 @@ class SettingsView(QWidget):
         self.theme_toggle.stateChanged.connect(self._toggle_theme)
         appearance_layout.addWidget(self.theme_toggle)
         layout.addWidget(appearance_card)
+
+        storage_card = AnimatedSurfaceFrame("settingsCard")
+        storage_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        storage_layout = QHBoxLayout(storage_card)
+        storage_layout.setContentsMargins(20, 18, 20, 18)
+        storage_text = QVBoxLayout()
+        storage_label = QLabel(tr("Plugin Library"))
+        storage_label.setObjectName("settingsLabel")
+        storage_text.addWidget(storage_label)
+        self.storage_description = QLabel()
+        self.storage_description.setObjectName("settingsDescription")
+        self.storage_description.setWordWrap(True)
+        self.storage_description.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.storage_description.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        storage_text.addWidget(self.storage_description)
+        storage_layout.addLayout(storage_text, 1)
+        self.clean_plugins_button = QPushButton(tr("Clean Unused Packages"))
+        self.clean_plugins_button.setObjectName("normalBtn")
+        self.clean_plugins_button.setFixedHeight(34)
+        self.clean_plugins_button.clicked.connect(self._clean_plugin_library)
+        storage_layout.addWidget(self.clean_plugins_button)
+        layout.addWidget(storage_card)
+        self._refresh_plugin_library()
+
+        migration_card = AnimatedSurfaceFrame("settingsCard")
+        migration_layout = QVBoxLayout(migration_card)
+        migration_layout.setContentsMargins(20, 18, 20, 18)
+        shared_path = QLabel(tr("Shared resources: {path}", path=get_hub_shared_data_dir()))
+        shared_path.setWordWrap(True)
+        shared_path.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        shared_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        migration_layout.addWidget(shared_path)
+        self.migrate_storage_button = QPushButton(tr("Migrate Legacy Resources"))
+        self.migrate_storage_button.setObjectName("normalBtn")
+        self.migrate_storage_button.setFixedHeight(34)
+        self.migrate_storage_button.clicked.connect(self._migrate_legacy_storage)
+        migration_layout.addWidget(self.migrate_storage_button, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(migration_card)
 
         update_card = AnimatedSurfaceFrame("settingsCard")
         update_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -91,8 +165,9 @@ class SettingsView(QWidget):
         update_label = QLabel(tr("Hub Update"))
         update_label.setObjectName("settingsLabel")
         update_text.addWidget(update_label)
-        update_description = QLabel(tr("Check GitHub Releases for a verified Hub update."))
+        update_description = QLabel(tr("Check the Infernux release catalog for a Hub update."))
         update_description.setObjectName("settingsDescription")
+        update_description.setWordWrap(True)
         update_text.addWidget(update_description)
         update_layout.addLayout(update_text, 1)
         update_button = QPushButton(tr("Check for Updates"))
@@ -132,10 +207,125 @@ class SettingsView(QWidget):
         configure_language(mode)
         self.language_changed.emit(mode)
 
+    def refresh(self):
+        """Refresh state owned outside the Hub process."""
+
+        self._refresh_plugin_library()
+
     def _toggle_theme(self, state: int):
         if self._db:
             self._db.set_setting("theme", "dark" if state else "light")
         apply_theme(self.window(), bool(state))
+
+    def _project_roots(self) -> tuple[str, ...]:
+        if not self._db:
+            return ()
+        return tuple(record.path for record in self._db.all_projects())
+
+    @staticmethod
+    def _format_bytes(value: int) -> str:
+        amount = float(max(0, int(value)))
+        units = ("B", "KiB", "MiB", "GiB", "TiB")
+        unit = units[0]
+        for unit in units:
+            if amount < 1024.0 or unit == units[-1]:
+                break
+            amount /= 1024.0
+        return f"{int(amount)} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
+
+    def _refresh_plugin_library(self):
+        try:
+            stats = inspect_plugin_library(self._project_roots())
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.storage_description.setText(
+                tr("Plugin library cleanup is unavailable: {message}", message=str(exc))
+            )
+            self.clean_plugins_button.setEnabled(False)
+            return
+        self.storage_description.setText(
+            tr(
+                "{count} packages · {size} · {path}",
+                count=stats.package_count,
+                size=self._format_bytes(stats.total_bytes),
+                path=str(stats.root),
+            )
+        )
+        self.clean_plugins_button.setEnabled(bool(stats.removable))
+        self.clean_plugins_button.setToolTip(
+            tr(
+                "{count} unused packages can release {size}.",
+                count=len(stats.removable),
+                size=self._format_bytes(stats.removable_bytes),
+            )
+            if stats.removable
+            else tr("Every downloaded package is still referenced by a Hub project.")
+        )
+
+    def _clean_plugin_library(self):
+        try:
+            before = inspect_plugin_library(self._project_roots())
+        except (OSError, RuntimeError, ValueError) as exc:
+            QMessageBox.critical(self, tr("Plugin Library"), str(exc))
+            self._refresh_plugin_library()
+            return
+        if not before.removable:
+            self._refresh_plugin_library()
+            return
+        answer = QMessageBox.question(
+            self,
+            tr("Clean Unused Packages"),
+            tr(
+                "Delete {count} unreferenced plugin packages and release {size}?",
+                count=len(before.removable),
+                size=self._format_bytes(before.removable_bytes),
+            ),
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            prune_unreferenced_packages(self._project_roots())
+        except (OSError, RuntimeError, ValueError) as exc:
+            QMessageBox.critical(self, tr("Plugin Library"), str(exc))
+        self._refresh_plugin_library()
+
+    def _migrate_legacy_storage(self):
+        try:
+            plan = inspect_legacy_storage()
+        except (OSError, RuntimeError, ValueError) as exc:
+            QMessageBox.critical(self, tr("Migrate Legacy Resources"), str(exc))
+            return
+        preview = QMessageBox(self)
+        preview.setWindowTitle(tr("Migrate Legacy Resources"))
+        preview.setText(tr(
+            "Move {count} complete resources from {source} to {destination}?\n"
+            "Close all Editors, builds and downloads first. Existing targets ({conflicts}) "
+            "will be skipped and retained at the old location. Projects, settings and "
+            "unfinished downloads are not moved. See details for the exact list.",
+            count=len(plan.items), source=str(plan.source), destination=str(plan.destination),
+            conflicts=len(plan.conflicts),
+        ))
+        preview.setDetailedText(
+            tr("Move:") + "\n" + "\n".join(path.as_posix() for path in plan.items)
+            + "\n\n" + tr("Keep at old location (target exists):") + "\n"
+            + "\n".join(path.as_posix() for path in plan.conflicts)
+        )
+        preview.setStandardButtons(
+            QMessageBox.Yes | QMessageBox.No if plan.items else QMessageBox.Ok
+        )
+        preview.setDefaultButton(QMessageBox.No if plan.items else QMessageBox.Ok)
+        if preview.exec() != QMessageBox.Yes or not plan.items:
+            return
+        dialog = StorageMigrationDialog(plan, self._project_roots(), self)
+        dialog.exec()
+        if dialog.worker.error:
+            QMessageBox.critical(self, tr("Migrate Legacy Resources"), dialog.worker.error)
+        else:
+            QMessageBox.information(self, tr("Migrate Legacy Resources"), tr(
+                "Moved {count} resources. {conflicts} existing targets were skipped; "
+                "their old copies have not been deleted.",
+                count=len(dialog.worker.result), conflicts=len(plan.conflicts),
+            ))
+        self._refresh_plugin_library()
 
 
 __all__ = ["SettingsView"]

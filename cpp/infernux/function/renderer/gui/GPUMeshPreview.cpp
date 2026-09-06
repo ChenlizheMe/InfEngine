@@ -251,7 +251,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
         if (!pipelineReady || !previewMat)
             continue;
 
-        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(previewMat, true);
+        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(previewMat);
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE)
             continue;
 
@@ -283,7 +283,7 @@ std::shared_ptr<vk::ImageReadbackTicket> GPUMeshPreview::BeginRenderToPixelsCame
     bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
                                   [&](SubmeshBinding &binding) {
                                       MaterialPassRenderData *rd =
-                                          m_vkCore->GetOrCreatePreviewMaterialPass(binding.ownedMaterial, true);
+                                          m_vkCore->GetOrCreatePreviewMaterialPass(binding.ownedMaterial);
                                       if (!rd || !rd->isValid || rd->pipeline == VK_NULL_HANDLE ||
                                           rd->pipelineLayout == VK_NULL_HANDLE || rd->descriptorSet == VK_NULL_HANDLE ||
                                           !rd->shaderProgram)
@@ -958,7 +958,7 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
         }
         if (!pipelineReady || !previewMat)
             continue;
-        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(previewMat, true);
+        MaterialPassRenderData *rd = m_vkCore->GetOrCreatePreviewMaterialPass(previewMat);
         if (!rd || !rd->isValid || rd->descriptorSet == VK_NULL_HANDLE)
             continue;
         previewMat->SetPassPipeline(ShaderCompileTarget::Forward, rd->pipeline);
@@ -983,7 +983,7 @@ uint64_t GPUMeshPreview::RenderToImGuiTextureCamera(const InxMesh &mesh,
     bindings.erase(std::remove_if(bindings.begin(), bindings.end(),
                                   [&](SubmeshBinding &binding) {
                                       MaterialPassRenderData *rd =
-                                          m_vkCore->GetOrCreatePreviewMaterialPass(binding.ownedMaterial, true);
+                                          m_vkCore->GetOrCreatePreviewMaterialPass(binding.ownedMaterial);
                                       if (!rd || !rd->isValid || rd->pipeline == VK_NULL_HANDLE ||
                                           rd->pipelineLayout == VK_NULL_HANDLE || rd->descriptorSet == VK_NULL_HANDLE ||
                                           !rd->shaderProgram)

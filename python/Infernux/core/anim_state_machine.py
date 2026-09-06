@@ -338,7 +338,7 @@ class AnimState:
     name: str = "New State"
     kind: str = "clip"        # "clip" | "blend" | "timeline"
     clip_guid: str = ""       # GUID of the referenced .animclip2d / .animclip3d (clip A)
-    clip_path: str = ""       # fallback path (editor-only hint)
+    clip_path: str = ""       # editor-only display hint; runtime resolves clip_guid
     # Blend-state second clip (B) + per-node Lerp (0..1) when kind == "blend".
     clip_b_guid: str = ""
     clip_b_path: str = ""

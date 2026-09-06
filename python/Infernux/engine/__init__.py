@@ -15,7 +15,6 @@ import uuid
 _PLAYER_MODE = os.environ.get("_INFERNUX_PLAYER_MODE")
 
 from Infernux.lib import InxGUIRenderable, InxGUIContext, TextureLoader, TextureData
-from Infernux.debug import Debug
 from Infernux import resources as _resources
 from .engine import Engine, LogLevel
 from .path_utils import resolved_path
@@ -54,14 +53,10 @@ def __getattr__(name: str):
 def _signal_engine_loaded() -> None:
     ready_file = os.environ.get("_INFERNUX_READY_FILE", "").strip()
     if ready_file:
-        try:
-            with open(ready_file, "w", encoding="utf-8") as f:
-                f.write("ENGINE_LOADED\n")
-                f.flush()
-                os.fsync(f.fileno())
-        except OSError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass
+        with open(ready_file, "w", encoding="utf-8") as f:
+            f.write("ENGINE_LOADED\n")
+            f.flush()
+            os.fsync(f.fileno())
     print("ENGINE_LOADED", flush=True)
 
 
@@ -70,34 +65,38 @@ def _is_pid_running(pid: int) -> bool:
         return False
 
     if os.name == "nt":
-        try:
-            import ctypes
+        import ctypes
 
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            STILL_ACTIVE = 259
-            handle = ctypes.windll.kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION,
-                False,
-                pid,
-            )
-            if not handle:
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        ERROR_INVALID_PARAMETER = 87
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION,
+            False,
+            pid,
+        )
+        if not handle:
+            error_code = ctypes.windll.kernel32.GetLastError()
+            if error_code == ERROR_INVALID_PARAMETER:
                 return False
-            try:
-                exit_code = ctypes.c_ulong()
-                if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                    return False
-                return exit_code.value == STILL_ACTIVE
-            finally:
-                ctypes.windll.kernel32.CloseHandle(handle)
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            return False
+            raise ctypes.WinError(error_code)
+        try:
+            exit_code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(
+                handle,
+                ctypes.byref(exit_code),
+            ):
+                raise ctypes.WinError(ctypes.windll.kernel32.GetLastError())
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
 
     try:
         os.kill(pid, 0)
-    except OSError as _exc:
-        Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
     return True
 
 
@@ -108,12 +107,11 @@ def _default_lock_path(project_path: str) -> str:
 def _remove_project_lock(lock_path: str, token: str) -> None:
     if not lock_path or not os.path.isfile(lock_path):
         return
-    try:
-        with open(lock_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        data = None
-    if data and data.get("token") != token:
+    with open(lock_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"project lock must contain a JSON object: {lock_path}")
+    if data.get("token") != token:
         return
     last_error = None
     for attempt in range(20):
@@ -130,7 +128,7 @@ def _remove_project_lock(lock_path: str, token: str) -> None:
             last_error = exc
             break
     if last_error is not None:
-        Debug.log(f"[Suppressed] {type(last_error).__name__}: {last_error}")
+        raise last_error
 
 
 def _acquire_project_lock(project_path: str, mode: str) -> tuple[str, str]:
@@ -138,22 +136,27 @@ def _acquire_project_lock(project_path: str, mode: str) -> tuple[str, str]:
     token = os.environ.get("_INFERNUX_PROJECT_LOCK_TOKEN", "").strip() or uuid.uuid4().hex
 
     if os.path.isfile(lock_path):
-        try:
-            with open(lock_path, "r", encoding="utf-8") as f:
-                current = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            current = None
-
-        if current:
-            current_pid = int(current.get("pid", 0) or 0)
-            current_token = str(current.get("token", ""))
-            if current_pid > 0 and _is_pid_running(current_pid):
-                if current_token != token:
-                    raise RuntimeError(
-                        f"Project is already open in another Infernux process:\n{project_path}"
-                    )
-            else:
-                _remove_project_lock(lock_path, current_token or token)
+        with open(lock_path, "r", encoding="utf-8") as f:
+            current = json.load(f)
+        if not isinstance(current, dict):
+            raise ValueError(f"project lock must contain a JSON object: {lock_path}")
+        current_pid = current.get("pid")
+        current_token = current.get("token")
+        if (
+            isinstance(current_pid, bool)
+            or not isinstance(current_pid, int)
+            or current_pid <= 0
+            or not isinstance(current_token, str)
+            or not current_token
+        ):
+            raise ValueError(f"project lock has invalid process identity: {lock_path}")
+        if _is_pid_running(current_pid):
+            if current_token != token:
+                raise RuntimeError(
+                    f"Project is already open in another Infernux process:\n{project_path}"
+                )
+        else:
+            _remove_project_lock(lock_path, current_token)
 
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
     payload = {
@@ -186,20 +189,18 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
     _resources.activate_library(project_path)
 
     lock_path, lock_token = _acquire_project_lock(project_path, "editor")
+    process_exit_ready = False
     try:
         bootstrap = EditorBootstrap(project_path, engine_log_level)
         bootstrap.run()
+        bootstrap.engine._set_process_owned_exit()
 
         bootstrap.engine.set_window_icon(_resources.icon_path)
 
         # Window title: "Infernux{version} - {project name}", version taken
         # from the installed package metadata (single source: pyproject.toml).
-        try:
-            from importlib.metadata import version as _pkg_version
-            _engine_version = _pkg_version("Infernux")
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            _engine_version = ""
+        from importlib.metadata import version as _pkg_version
+        _engine_version = _pkg_version("Infernux")
         _project_name = os.path.basename(resolved_path(project_path))
         bootstrap.engine.set_window_title(f"Infernux{_engine_version} - {_project_name}")
 
@@ -210,14 +211,18 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
 
         bootstrap.engine.show()
         bootstrap.engine.run()
+        process_exit_ready = True
     finally:
-        try:
+        # A normally-returning standalone Editor is about to terminate this
+        # entire process, so per-plugin unload hooks would only stall the UI.
+        # Initialization/run failures do unwind plugins because the caller may
+        # catch the exception and keep this interpreter alive.
+        if not process_exit_ready:
             from Infernux.plugins import PluginManager
+
             manager = PluginManager.instance()
             if manager is not None:
                 manager.shutdown()
-        except Exception as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
         _remove_project_lock(lock_path, lock_token)
 
     # Force-terminate: this is a standalone engine child process.
@@ -226,16 +231,79 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
     os._exit(0)
 
 
+def _load_player_build_manifest(project_path: str) -> dict[str, object]:
+    """Load the build-owned Player presentation contract without defaults."""
+
+    manifest_path = os.path.join(project_path, "BuildManifest.json")
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Player package has no BuildManifest.json: {manifest_path}"
+        ) from None
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"Player BuildManifest.json is unreadable: {manifest_path}"
+        ) from error
+    if not isinstance(manifest, dict):
+        raise ValueError("Player BuildManifest.json must contain a JSON object")
+
+    string_fields = ("game_name", "icon_path", "display_mode")
+    for field in string_fields:
+        if field not in manifest or not isinstance(manifest[field], str):
+            raise TypeError(f"Player BuildManifest.json {field} must be a string")
+    if not str(manifest["game_name"]).strip():
+        raise ValueError("Player BuildManifest.json game_name must not be empty")
+    if manifest["display_mode"] not in {"fullscreen_borderless", "windowed"}:
+        raise ValueError("Player BuildManifest.json display_mode is invalid")
+
+    for field in ("window_width", "window_height"):
+        value = manifest.get(field)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"Player BuildManifest.json {field} must be an integer")
+        if value <= 0:
+            raise ValueError(f"Player BuildManifest.json {field} must be positive")
+    if not isinstance(manifest.get("window_resizable"), bool):
+        raise TypeError(
+            "Player BuildManifest.json window_resizable must be a boolean"
+        )
+    splash_items = manifest.get("splash_items")
+    if not isinstance(splash_items, list) or not all(
+        isinstance(item, dict) for item in splash_items
+    ):
+        raise TypeError("Player BuildManifest.json splash_items must contain objects")
+    scenes = manifest.get("scenes")
+    if not isinstance(scenes, list) or not all(
+        isinstance(scene, str) and bool(scene.strip()) for scene in scenes
+    ):
+        raise TypeError(
+            "Player BuildManifest.json scenes must contain non-empty strings"
+        )
+    if not scenes:
+        raise ValueError("Player BuildManifest.json scenes must not be empty")
+
+    icon_path = str(manifest["icon_path"])
+    if icon_path:
+        normalized_icon = icon_path.replace("\\", "/")
+        parts = normalized_icon.split("/")
+        if normalized_icon.startswith("/") or any(
+            part in {"", ".", ".."} for part in parts
+        ):
+            raise ValueError("Player BuildManifest.json icon_path must be relative")
+        manifest["icon_path"] = "/".join(parts)
+    return manifest
+
+
 def run_player(project_path: str, engine_log_level=LogLevel.Info):
     """Launch Infernux in standalone player mode (no editor chrome).
 
-    Opens the project's first scene from BuildSettings.json, applies the
-    display mode from BuildManifest.json (fullscreen borderless or windowed
-    with a custom resolution), and reveals the window after runtime startup.
+    Opens the first scene declared by BuildManifest.json, applies its display
+    mode (fullscreen borderless or windowed with a custom resolution), and
+    reveals the window after runtime startup.
     A project-configured splash remains optional and Play starts after it has
     finished; the engine does not impose a default loading window.
     """
-    import json
     from Infernux.application import Application
     from .player_bootstrap import PlayerBootstrap
 
@@ -256,25 +324,16 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
         lock_path, lock_token = _acquire_project_lock(project_path, "player")
 
     try:
-        # Read optional BuildManifest for display & splash settings
-        manifest_path = os.path.join(project_path, "BuildManifest.json")
-        manifest = {}
-        if os.path.isfile(manifest_path):
-            try:
-                with open(manifest_path, "r", encoding="utf-8", errors="replace") as _f:
-                    manifest = json.load(_f)
-            except Exception as _exc:
-                Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                pass
-
-        display_mode = manifest.get("display_mode", "fullscreen_borderless")
-        window_width = manifest.get("window_width", 1920)
-        window_height = manifest.get("window_height", 1080)
-        window_resizable = manifest.get("window_resizable", True)
-        splash_items = manifest.get("splash_items", [])
-        build_icon_path = manifest.get("icon_path", "")
-        game_name = manifest.get("game_name", "")
-        title = game_name or os.path.basename(resolved_path(project_path))
+        manifest = _load_player_build_manifest(project_path)
+        display_mode = manifest["display_mode"]
+        window_width = manifest["window_width"]
+        window_height = manifest["window_height"]
+        window_resizable = manifest["window_resizable"]
+        splash_items = manifest["splash_items"]
+        scenes = manifest["scenes"]
+        build_icon_path = manifest["icon_path"]
+        game_name = manifest["game_name"]
+        title = game_name
         window_icon = (
             os.path.join(project_path, build_icon_path)
             if isinstance(build_icon_path, str) and build_icon_path
@@ -293,6 +352,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
 
         bootstrap = PlayerBootstrap(
             project_path, engine_log_level,
+            scenes=scenes,
             display_mode=display_mode,
             window_width=window_width,
             window_height=window_height,
@@ -302,6 +362,7 @@ def run_player(project_path: str, engine_log_level=LogLevel.Info):
             window_resizable=window_resizable,
         )
         bootstrap.run()
+        bootstrap.engine._set_process_owned_exit()
 
         bootstrap.engine.set_window_title(title)
         if display_mode == "fullscreen_borderless":

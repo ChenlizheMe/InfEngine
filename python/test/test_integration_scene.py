@@ -815,6 +815,14 @@ class TestPrimitives:
         }[ptype]
         assert expected_collider in comps
 
+    def test_cylinder_primitive_collider_keeps_vertical_default_axis(self, scene):
+        cylinder = scene.create_primitive(PrimitiveType.Cylinder, "VerticalCylinder")
+
+        collider = cylinder.get_component("CylinderCollider")
+        assert collider.direction == 1
+        assert collider.height == pytest.approx(1.0)
+        assert collider.radius == pytest.approx(0.5)
+
     def test_primitive_has_mesh_data(self, scene):
         cube = scene.create_primitive(PrimitiveType.Cube, "Cube")
         mr = cube.get_component("MeshRenderer")
@@ -2025,7 +2033,7 @@ class TestSceneSerialization:
         existing = scene.create_game_object("WorkerFailureExisting")
         original_document = scene.serialize_document()
         candidate = json.loads(json.dumps(original_document))
-        candidate["legacy"] = True
+        candidate["unexpected"] = True
         path = tmp_path / "invalid-worker.scene"
         path.write_text(json.dumps(candidate), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
@@ -2033,7 +2041,7 @@ class TestSceneSerialization:
         assert transaction.run_to_completion(raise_on_failure=False) is False
         assert transaction.ran_on_worker is True
         assert transaction.state is SceneDocumentTransactionState.FAILED
-        assert "unknown field 'legacy'" in transaction.error
+        assert "unknown field 'unexpected'" in transaction.error
         assert scene.serialize_document() == original_document
         assert scene.find("WorkerFailureExisting") is existing
 
@@ -2794,6 +2802,49 @@ class TestSceneSerialization:
             SceneFileManager._instance = previous_manager
             set_project_root(previous_root)
 
+    def test_scene_file_manager_reimports_existing_scene_after_save(
+        self,
+        scene,
+        tmp_path,
+        monkeypatch,
+    ):
+        from Infernux.engine.project_context import get_project_root, set_project_root
+
+        previous_root = get_project_root()
+        previous_manager = SceneFileManager._instance
+        project_root = tmp_path / "Project"
+        scene_path = project_root / "Assets" / "Existing.scene"
+        scene_path.parent.mkdir(parents=True)
+        scene_path.write_text("{}", encoding="utf-8")
+
+        try:
+            set_project_root(str(project_root))
+            manager = SceneFileManager()
+            monkeypatch.setattr(manager, "_save_camera_state", lambda _path: None)
+            reimported_paths = []
+
+            class _AssetDatabase:
+                @staticmethod
+                def contains_path(_path):
+                    return True
+
+            from Infernux.core.assets import AssetManager
+
+            manager._asset_database = _AssetDatabase()
+            monkeypatch.setattr(
+                AssetManager,
+                "reimport_asset",
+                classmethod(
+                    lambda _cls, path, **_kwargs: reimported_paths.append(path) or True
+                ),
+            )
+
+            assert manager._do_save_inner(str(scene_path)) is True
+            assert reimported_paths == [str(scene_path.resolve())]
+        finally:
+            SceneFileManager._instance = previous_manager
+            set_project_root(previous_root)
+
     def test_runtime_scene_publish_rebuilds_scaled_collider_from_current_world_transform(self, scene):
         from Infernux.lib import Physics
 
@@ -2941,13 +2992,13 @@ class TestSceneSerialization:
         elif corruption == "invalid_main_camera":
             candidate["mainCameraComponentId"] = first_doc["components"][0]["component_id"]
         elif corruption == "unknown_scene_field":
-            candidate["legacy"] = True
+            candidate["unexpected"] = True
         elif corruption == "unknown_object_field":
-            first_doc["legacy"] = True
+            first_doc["unexpected"] = True
         elif corruption == "invalid_layer":
             first_doc["layer"] = 32
         elif corruption == "invalid_python_descriptor":
-            _python_records(first_doc)[0]["legacy"] = True
+            _python_records(first_doc)[0]["unexpected"] = True
         elif corruption == "empty_python_script_guid":
             descriptor = _python_records(first_doc)[0]
             descriptor["type_id"] = descriptor["type_id"].replace("python:", "python::", 1)
@@ -3459,7 +3510,7 @@ class TestSceneSerialization:
         elif corruption == "missing_name":
             candidate.pop("name")
         elif corruption == "unknown_field":
-            candidate["legacy"] = True
+            candidate["unexpected"] = True
         else:
             candidate["layer"] = -1
 

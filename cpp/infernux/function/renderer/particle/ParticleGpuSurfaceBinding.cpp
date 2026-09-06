@@ -192,7 +192,8 @@ bool ParticleGpuSurfaceBinding::Create(rhi::Device &device, std::shared_ptr<cons
         if (m_textures.empty()) {
             if (!m_textureResolver)
                 return fail();
-            m_sceneDepthFallback = m_textureResolver("white", "_InxParticleSceneDepth");
+            m_sceneDepthFallback =
+                m_textureResolver("white", "_InxParticleSceneDepth", GpuParticleTextureRequest::Poll);
             if (m_sceneDepthFallback.status != GpuBillboardTextureStatus::Ready ||
                 !m_sceneDepthFallback.texture.IsValid() || !m_sceneDepthFallback.sampler.IsValid() ||
                 !m_sceneDepthFallback.gpuView || !m_sceneDepthFallback.gpuView->IsValid())
@@ -253,8 +254,8 @@ GpuBillboardMaterialState ParticleGpuSurfaceBinding::ResolveMaterialState() cons
         const auto &renderState = m_material->GetRenderState();
         state = {renderState.renderQueue, renderState.blendEnable, renderState.depthTestEnable,
                  renderState.depthWriteEnable,
-                 renderState.srcColorBlendFactor == VK_BLEND_FACTOR_ONE &&
-                     renderState.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA};
+                 renderState.srcColorBlendFactor == MaterialBlendFactor::One &&
+                     renderState.dstColorBlendFactor == MaterialBlendFactor::OneMinusSourceAlpha};
     }
     if (m_semantics.softParticles) {
         state.renderQueue = std::max(state.renderQueue, EngineConfig::Get().transparentQueueMin);
@@ -496,7 +497,7 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
             }
         }
         if (lease.status != GpuBillboardTextureStatus::Ready)
-            lease = m_textureResolver(textureGuid, binding.name);
+            lease = m_textureResolver(textureGuid, binding.name, GpuParticleTextureRequest::Poll);
         const bool pending = lease.status == GpuBillboardTextureStatus::Pending;
         if (pending && textureGuid == binding.requestedGuid && binding.gpuView && binding.gpuView->IsValid() &&
             binding.texture.IsValid() && binding.sampler.IsValid()) {
@@ -509,7 +510,7 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
             const std::string fallbackGuid = !binding.defaultGuid.empty() && binding.defaultGuid != textureGuid
                                                  ? binding.defaultGuid
                                                  : std::string{};
-            lease = m_textureResolver(fallbackGuid, binding.name);
+            lease = m_textureResolver(fallbackGuid, binding.name, GpuParticleTextureRequest::Poll);
             usingFallback = true;
         }
         if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() || !lease.sampler.IsValid() ||

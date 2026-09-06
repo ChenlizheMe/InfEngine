@@ -1,5 +1,7 @@
 #include "EditorThemeRegistry.h"
 
+#include <stdexcept>
+
 namespace infernux
 {
 namespace
@@ -100,18 +102,31 @@ const std::unordered_map<std::string, float> &EditorThemeRegistry::Floats()
     return Reg().Active().floats;
 }
 
-ImVec4 EditorThemeRegistry::Color(const std::string &name, const ImVec4 &fallback)
+ImVec4 EditorThemeRegistry::Color(const std::string &name)
 {
     const auto &m = Reg().Active().colors;
-    auto it = m.find(name);
-    return it != m.end() ? it->second : fallback;
+    const auto it = m.find(name);
+    if (it == m.end())
+        throw std::out_of_range("Editor theme is missing required color token: " + name);
+    return it->second;
 }
 
-float EditorThemeRegistry::Float(const std::string &name, float fallback)
+ImVec2 EditorThemeRegistry::Vec2(const std::string &name)
+{
+    const auto &m = Reg().Active().vec2s;
+    const auto it = m.find(name);
+    if (it == m.end())
+        throw std::out_of_range("Editor theme is missing required vec2 token: " + name);
+    return it->second;
+}
+
+float EditorThemeRegistry::Float(const std::string &name)
 {
     const auto &m = Reg().Active().floats;
-    auto it = m.find(name);
-    return it != m.end() ? it->second : fallback;
+    const auto it = m.find(name);
+    if (it == m.end())
+        throw std::out_of_range("Editor theme is missing required float token: " + name);
+    return it->second;
 }
 
 std::vector<std::string> EditorThemeRegistry::ThemeNames()
@@ -145,16 +160,14 @@ void EditorThemeRegistry::ApplyImGuiColors()
     ImGuiStyle &style = ImGui::GetStyle();
     ImVec4 *c = style.Colors;
 
-    // Semantic roles (fallbacks reproduce the current Infernux dark look, which
-    // is preserved by design — only the architecture/switchability changes).
-    const ImVec4 accent = Color("ROLE_ACCENT", ImVec4(0.922f, 0.341f, 0.341f, 1.0f));
-    const ImVec4 bg = Color("ROLE_BG_BASE", ImVec4(0.098f, 0.098f, 0.098f, 1.0f));
-    const ImVec4 surf = Color("ROLE_BG_SURFACE", ImVec4(0.125f, 0.125f, 0.125f, 1.0f));
-    const ImVec4 raised = Color("ROLE_BG_RAISED", ImVec4(0.150f, 0.150f, 0.150f, 1.0f));
-    const ImVec4 hover = Color("ROLE_BG_HOVER", ImVec4(0.165f, 0.165f, 0.165f, 1.0f));
-    const ImVec4 text = Color("ROLE_TEXT", ImVec4(0.812f, 0.812f, 0.812f, 1.0f));
-    const ImVec4 dim = Color("ROLE_TEXT_DIM", ImVec4(0.55f, 0.55f, 0.55f, 1.0f));
-    const ImVec4 border = Color("ROLE_BORDER", ImVec4(0.184f, 0.184f, 0.184f, 1.0f));
+    const ImVec4 accent = Color("ROLE_ACCENT");
+    const ImVec4 bg = Color("ROLE_BG_BASE");
+    const ImVec4 surf = Color("ROLE_BG_SURFACE");
+    const ImVec4 raised = Color("ROLE_BG_RAISED");
+    const ImVec4 hover = Color("ROLE_BG_HOVER");
+    const ImVec4 text = Color("ROLE_TEXT");
+    const ImVec4 dim = Color("ROLE_TEXT_DIM");
+    const ImVec4 border = Color("ROLE_BORDER");
 
     const ImVec4 transparent(0.0f, 0.0f, 0.0f, 0.0f);
 

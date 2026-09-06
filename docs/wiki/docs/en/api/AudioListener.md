@@ -15,7 +15,7 @@ one active listener; additional enabled listeners remain registered but can
 be standby instead of immediately replacing the active listener.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.7
+**Status:** Preview · **Verified with:** 0.4.0
 
 Place one intended active listener at the scene's listening position, normally on the active Camera or player head. Source distance is measured relative to it.
 <!-- USER CONTENT END -->
@@ -45,13 +45,13 @@ Place one intended active listener at the scene's listening position, normally o
 
 <!-- USER CONTENT START --> example
 ```python
-from Infernux import AudioListener, GameObject
+import infernux as inx
 
-camera_object = GameObject.find("Main Camera")
+camera_object = inx.GameObject.find("Main Camera")
 if camera_object is not None:
-    listener = camera_object.get_component(AudioListener)
+    listener = camera_object.get_component(inx.AudioListener)
     if listener is None:
-        listener = camera_object.add_component(AudioListener)
+        listener = camera_object.add_component(inx.AudioListener)
 ```
 <!-- USER CONTENT END -->
 

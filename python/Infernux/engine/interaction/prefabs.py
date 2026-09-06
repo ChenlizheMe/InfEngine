@@ -272,7 +272,6 @@ class PrefabCommandService:
         from Infernux.engine.undo import PrefabUnpackCommand
 
         self._execute(PrefabUnpackCommand(root.id), origin)
-        Debug.log_internal(f"Unpacked prefab instance: {root.name}")
         return True
 
     def shutdown(self) -> None:

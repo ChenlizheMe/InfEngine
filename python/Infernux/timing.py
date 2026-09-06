@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import time as _time_mod
 import math as _math
-from Infernux.debug import Debug
+import sys as _sys
 
 
 # ---------------------------------------------------------------------------
@@ -130,21 +130,19 @@ class _TimeMeta(type):
         value = float(value)
         if not _math.isfinite(value) or value < 0.0:
             raise ValueError("time_scale must be finite and non-negative")
+        play_mode_module = _sys.modules.get("Infernux.engine.play_mode")
+        play_mode_manager = (
+            play_mode_module.PlayModeManager.instance()
+            if play_mode_module is not None
+            else None
+        )
         from Infernux.lib import SceneManager
         SceneManager.instance().time_scale = value
         cls._time_scale = value
-        # Keep PlayModeManager in sync (lazy import to avoid cycles)
-        try:
-            from Infernux.engine.play_mode import PlayModeManager
-            pm = PlayModeManager.instance()
-            if pm is not None:
-                pm._time_scale = cls._time_scale
-        except ImportError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            pass  # PlayModeManager not yet loaded during early init
-        except Exception as exc:
-            import sys
-            print(f"[Time] Failed to sync time_scale to PlayModeManager: {exc}", file=sys.stderr)
+        # A loaded editor owns a PlayModeManager mirror. Player and early
+        # startup do not import editor services just to update that mirror.
+        if play_mode_manager is not None:
+            play_mode_manager._time_scale = cls._time_scale
 
     # -- Frame counting -----------------------------------------------------
 

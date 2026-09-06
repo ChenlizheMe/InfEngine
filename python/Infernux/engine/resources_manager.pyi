@@ -1,6 +1,6 @@
 """ResourcesManager — file-system watcher for live asset reloading.
 
-Monitors the project's asset directory for changes and triggers
+Monitors the project's Assets and Packages directories and triggers
 shader / script reloads automatically.
 
 Example::
@@ -49,6 +49,15 @@ class ResourcesManager:
     def process_pending_reloads(self, *, force: bool = ...) -> int:
         """Commit worker artifacts and coalesced asset events on the main thread."""
         ...
+
+    def begin_script_transaction(
+        self,
+        paths: object,
+        *,
+        retire_paths: object = ...,
+    ) -> str: ...
+
+    def retire_script_paths(self, paths: object) -> None: ...
 
     def submit_script_change(
         self,

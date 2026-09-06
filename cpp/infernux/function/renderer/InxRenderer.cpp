@@ -33,8 +33,10 @@
 #include "vk/VmaContext.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cmath>
+#include <core/config/EngineConfig.h>
 #include <core/config/MathConstants.h>
 #include <core/threading/JobSystem.h>
 #include <cstdlib>
@@ -405,6 +407,21 @@ CompiledParticleProgramBundle CompileParticleProgramBundle()
     return result;
 }
 
+uint32_t ResolveMaxFramesInFlight() noexcept
+{
+    auto &config = EngineConfig::Get();
+    uint32_t frames = std::clamp(config.maxFramesInFlight, 1u, 4u);
+    if (const char *raw = std::getenv("INFERNUX_MAX_FRAMES_IN_FLIGHT")) {
+        const char *end = raw + std::strlen(raw);
+        uint32_t requested = 0;
+        const auto parsed = std::from_chars(raw, end, requested);
+        if (parsed.ec == std::errc{} && parsed.ptr == end && requested >= 1u && requested <= 4u)
+            frames = requested;
+    }
+    config.maxFramesInFlight = frames;
+    return frames;
+}
+
 } // namespace
 
 struct ParticleProgramBootstrap
@@ -415,7 +432,7 @@ struct ParticleProgramBootstrap
 
 InxRenderer::InxRenderer()
 {
-    m_vkCore = std::make_unique<InxVkCoreModular>();
+    m_vkCore = std::make_unique<InxVkCoreModular>(static_cast<int>(ResolveMaxFramesInFlight()));
     m_view = std::make_unique<InxView>();
     m_captureService = std::make_unique<CaptureService>();
     m_scenePickingService = std::make_unique<ScenePickingService>();
@@ -433,7 +450,8 @@ InxRenderer::~InxRenderer()
 
     // 1. Single GPU drain — after this the device is idle, all subsequent
     //    vkDeviceWaitIdle calls inside subsystem destructors are redundant.
-    if (m_vkCore) {
+    const bool hasVulkanDevice = m_vkCore && m_vkCore->GetDeviceContext().IsValid();
+    if (hasVulkanDevice) {
         m_vkCore->GetDeviceContext().WaitIdle();
         m_vkCore->SetShuttingDown(true);
         m_vkCore->ReleaseActiveDrawLists();
@@ -463,7 +481,7 @@ InxRenderer::~InxRenderer()
     m_componentGizmos.reset();
     m_particleGpuDrawRegistry.reset();
 
-    if (m_vkCore)
+    if (hasVulkanDevice)
         m_vkCore->ReleaseGpuPreviews();
     m_gui.reset();
 
@@ -941,6 +959,14 @@ void InxRenderer::DrawFrame()
     if (m_deltaTime > 1.0f / 3.0f)
         m_deltaTime = 1.0f / 3.0f;
 
+    // Deterministic stepping (Infernux::Tick in graphical mode) supplies the
+    // exact simulation delta; the wall clock only reset m_lastFrameTime above
+    // so a later free-running frame does not observe a stale timestamp.
+    if (m_nextFrameDeltaTimeOverride >= 0.0f) {
+        m_deltaTime = m_nextFrameDeltaTimeOverride;
+        m_nextFrameDeltaTimeOverride = -1.0f;
+    }
+
     // ========================================================================
     // Frame Profiler - aggregates per-phase timings and reports at a bounded cadence.
     // Controlled by INFERNUX_FRAME_PROFILE in ProfileConfig.h (0 = off, 1 = on).
@@ -1076,6 +1102,19 @@ void InxRenderer::DrawFrame()
     // Actual ImGui/Vulkan work remains below the minimized early return.
     if (m_preGuiCallback) {
         m_preGuiCallback();
+    }
+
+    if (m_view->NeedsSurfaceRecreation() && !m_view->IsApplicationInBackground()) {
+        const bool recreated =
+            m_vkCore && m_vkCore->RecreatePresentationSurface([this](VkInstance instance, VkSurfaceKHR *surface) {
+                return m_view->TryCreateSurface(instance, surface);
+            });
+        if (recreated) {
+            m_view->AcknowledgeSurfaceRecreation();
+        } else {
+            SDL_Delay(16);
+            return;
+        }
     }
 
     // A minimized swapchain has no presentable images, but Agent UI work must
@@ -1325,7 +1364,7 @@ void InxRenderer::DrawFrame()
         m_outlineRenderer->Initialize(m_vkCore.get(), m_sceneRenderTarget.get());
         m_outlineRenderer->SetOutlineObjectIds(m_selectedOutlineObjectIds);
     } else if (m_outlineRenderer) {
-        m_outlineRenderer->SetOutlineObjectId(0);
+        m_outlineRenderer->SetOutlineObjectIds({});
     }
 
     if (m_sceneRenderGraph)
@@ -1393,6 +1432,12 @@ void InxRenderer::DrawFrame()
     // Render frame with scene camera
     sceneManager.EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderGraph);
     m_vkCore->DrawFrame(m_cameraPos, m_cameraLookAt, m_cameraUp);
+    if (m_vkCore->ConsumePresentationSurfaceLost()) {
+        // VK_ERROR_SURFACE_LOST_KHR cannot be repaired by recreating a
+        // swapchain against the old VkSurfaceKHR. Route it through the same
+        // platform-surface rebind used by Android lifecycle transitions.
+        m_view->RequestSurfaceRecreation();
+    }
     SubmitPendingCaptureReadbacks();
     if (m_captureService)
         m_captureService->Poll();
@@ -1658,24 +1703,8 @@ void InxRenderer::DrawFrame()
                         << (rgProfile.executeCalls ? static_cast<double>(rgProfile.graphicsPassCount) /
                                                          static_cast<double>(rgProfile.executeCalls)
                                                    : 0.0)
-                        << " dynamic/exec="
-                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.dynamicRenderingPassCount) /
-                                                         static_cast<double>(rgProfile.executeCalls)
-                                                   : 0.0)
-                        << " renderPass/exec="
-                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.legacyRenderPassCount) /
-                                                         static_cast<double>(rgProfile.executeCalls)
-                                                   : 0.0)
                         << " barrierCalls/exec="
                         << (rgProfile.executeCalls ? static_cast<double>(rgProfile.barrierCallCount) /
-                                                         static_cast<double>(rgProfile.executeCalls)
-                                                   : 0.0)
-                        << " sync2/exec="
-                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.synchronization2BarrierBatchCount) /
-                                                         static_cast<double>(rgProfile.executeCalls)
-                                                   : 0.0)
-                        << " legacy/exec="
-                        << (rgProfile.executeCalls ? static_cast<double>(rgProfile.legacyBarrierBatchCount) /
                                                          static_cast<double>(rgProfile.executeCalls)
                                                    : 0.0)
                         << " rhiPipeline/exec="
@@ -2551,10 +2580,9 @@ void InxRenderer::SetGUIFont(const char *fontPath, float fontSize)
 
 float InxRenderer::GetDisplayScale() const
 {
-    if (m_gui) {
-        return m_gui->GetDisplayScale();
-    }
-    return 1.0f;
+    if (!m_gui)
+        throw std::logic_error("Cannot query display scale before the GUI is initialized");
+    return m_gui->GetDisplayScale();
 }
 
 void InxRenderer::RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority)
@@ -2593,11 +2621,12 @@ void InxRenderer::QueueDockTabSelection(const char *windowId, bool allowDuringMo
 }
 
 uint64_t InxRenderer::SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount,
-                                            int width, int height, VkFilter filter, bool pinned)
+                                            int width, int height, rhi::FilterMode filter, bool pinned)
 {
     if (!m_gui)
         throw std::logic_error("ImGui texture submission requires an initialized GUI");
-    return m_gui->SubmitTextureForImGui(name, pixels, byteCount, width, height, filter, pinned);
+    const VkFilter vkFilter = filter == rhi::FilterMode::Nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    return m_gui->SubmitTextureForImGui(name, pixels, byteCount, width, height, vkFilter, pinned);
 }
 
 uint64_t InxRenderer::QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid)
@@ -3383,7 +3412,7 @@ void InxRenderer::ResizeSceneRenderTarget(uint32_t width, uint32_t height)
         const rhi::SubmissionSerial cutoverEpoch =
             m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
         if (m_sceneRenderGraph)
-            m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+            m_sceneRenderGraph->InvalidateBeforeTargetReplacement();
 
         std::unique_ptr<SceneRenderTarget> retiredTarget = std::move(m_sceneRenderTarget);
         std::unique_ptr<OutlineRenderer> retiredOutline = std::move(m_outlineRenderer);
@@ -3461,7 +3490,8 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
     m_particleGpuSystemManagerInitializationAttempted = true;
     auto manager = std::make_unique<particle::ParticleGpuSystemManager>();
     auto particleTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
-                                                           const std::string &bindingName) {
+                                                           const std::string &bindingName,
+                                                           particle::GpuParticleTextureRequest request) {
         particle::GpuBillboardTextureLease lease;
         TextureResolveResult resolved;
         if (textureGuid.empty() || textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
@@ -3477,7 +3507,8 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
             resolved.binding.gpuSlot = std::move(residentSlot);
             resolved.binding.gpuView = std::move(resident);
         } else {
-            resolved = core->ResolveTextureForMaterial(textureGuid, bindingName);
+            resolved = core->ResolveTextureForMaterial(textureGuid, bindingName,
+                                                       request == particle::GpuParticleTextureRequest::Prepare);
         }
 
         if (resolved.status == TextureResolveStatus::Pending) {
@@ -3497,9 +3528,11 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
         return lease;
     };
     auto particleVectorFieldTextureResolver = [core = m_vkCore.get()](const std::string &textureGuid,
-                                                                      bool linearFiltering, bool repeat) {
+                                                                      bool linearFiltering, bool repeat,
+                                                                      particle::GpuParticleTextureRequest request) {
         particle::GpuBillboardTextureLease lease;
-        auto resolved = core->ResolveTextureForVectorField(textureGuid, linearFiltering, repeat);
+        auto resolved = core->ResolveTextureForVectorField(textureGuid, linearFiltering, repeat,
+                                                           request == particle::GpuParticleTextureRequest::Prepare);
         if (resolved.status == TextureResolveStatus::Pending) {
             lease.status = particle::GpuBillboardTextureStatus::Pending;
             return lease;
@@ -3853,7 +3886,7 @@ uint64_t InxRenderer::GetMeshPreviewDisplayTextureId() const
     return m_vkCore ? m_vkCore->GetMeshPreviewDisplayTextureId() : 0;
 }
 
-void InxRenderer::InvalidateShaderCache(const std::string &shaderId)
+void InxRenderer::InvalidateShaderCache(const std::string &shaderId, const std::string &shaderType)
 {
     INXLOG_DEBUG("InvalidateShaderCache called: ", shaderId);
 
@@ -3872,7 +3905,7 @@ void InxRenderer::InvalidateShaderCache(const std::string &shaderId)
         graph->InvalidateFullscreenShader(shaderId);
     }
 
-    m_vkCore->InvalidateShaderCache(shaderId);
+    m_vkCore->InvalidateShaderCache(shaderId, shaderType);
 }
 
 void InxRenderer::InvalidateTextureCache(const std::string &texturePath)
@@ -4165,13 +4198,9 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
         // Create the screen UI renderer for GPU-based 2D UI in the game render graph
         if (!m_screenUIRenderer) {
             m_screenUIRenderer = std::make_unique<InxScreenUIRenderer>();
-            const bool dynamicCommandsAvailable = rhi::ResolveDynamicRenderingCommands(m_vkCore->GetDevice()).IsValid();
-            const bool useDynamicRendering = rhi::SelectDynamicRenderingPath(
-                m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled,
-                dynamicCommandsAvailable, false);
             m_screenUIRenderer->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
                                            m_gameRenderTarget->GetColorFormat(),
-                                           m_gameRenderTarget->GetMsaaSampleCount(), useDynamicRendering);
+                                           m_gameRenderTarget->GetMsaaSampleCount());
             m_screenUIRenderer->SetRetirementQueue(&m_vkCore->GetRetirementQueue());
             m_screenUIRenderer->SetTextureUsageValidator(
                 [this](uint64_t textureId) { return m_gui && m_gui->TouchImGuiTextureId(textureId); });
@@ -4197,7 +4226,7 @@ void InxRenderer::ResizeGameRenderTarget(uint32_t width, uint32_t height)
             m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
         for (auto &[cameraId, graph] : m_gameRenderGraphs) {
             (void)cameraId;
-            graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+            graph->InvalidateBeforeTargetReplacement();
         }
 
         std::unique_ptr<SceneRenderTarget> retiredTarget = std::move(m_gameRenderTarget);
@@ -4441,12 +4470,8 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
 
     if (m_gameRenderTarget && (!gameAligned || !materialsAligned)) {
         replacementScreenUI = std::make_unique<InxScreenUIRenderer>();
-        const bool dynamicCommandsAvailable = rhi::ResolveDynamicRenderingCommands(m_vkCore->GetDevice()).IsValid();
-        const bool useDynamicRendering = rhi::SelectDynamicRenderingPath(
-            m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled,
-            dynamicCommandsAvailable, false);
         if (!replacementScreenUI->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
-                                             m_gameRenderTarget->GetColorFormat(), vkSamples, useDynamicRendering)) {
+                                             m_gameRenderTarget->GetColorFormat(), vkSamples)) {
             INXLOG_ERROR("Failed to create the replacement Screen UI pipeline for ", samples,
                          "x MSAA; keeping all current resources.");
             return false;
@@ -4486,14 +4511,13 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
     std::unique_ptr<InxScreenUIRenderer> retiredScreenUI;
     std::unique_ptr<OutlineRenderer> retiredOutline;
 
-    // Framebuffers own references to target image views. Detach them before
-    // publishing the replacement target and before queuing target retirement.
+    // Invalidate graphs before publishing replacement target views.
     if (replacementSceneTarget && m_sceneRenderGraph)
-        m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+        m_sceneRenderGraph->InvalidateBeforeTargetReplacement();
     if (replacementGameTarget) {
         for (auto &[cameraId, graph] : m_gameRenderGraphs) {
             (void)cameraId;
-            graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch);
+            graph->InvalidateBeforeTargetReplacement();
         }
     }
 
@@ -4651,6 +4675,17 @@ void InxRenderer::SetEditorFpsCap(float fps)
 float InxRenderer::GetEditorFpsCap() const
 {
     return m_view ? m_view->GetIdling().editorFpsCap : 0.0f;
+}
+
+void InxRenderer::SetPlayFpsCap(float fps)
+{
+    if (m_view)
+        m_view->GetIdling().playFpsCap = std::max(0.0f, fps);
+}
+
+float InxRenderer::GetPlayFpsCap() const
+{
+    return m_view ? m_view->GetIdling().playFpsCap : 0.0f;
 }
 
 void InxRenderer::SetPlayModeRendering(bool play)

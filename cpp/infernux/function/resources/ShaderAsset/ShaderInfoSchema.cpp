@@ -380,9 +380,6 @@ class Parser final
             if (key.text == "Name") {
                 if (auto value = Scalar(key.text))
                     m_document.name = value->text;
-            } else if (key.text == "Version") {
-                Error(key, "ShaderInfo Version has been removed");
-                SkipUnknownValue();
             } else if (key.text == "ShadingModel") {
                 if (auto value = Scalar(key.text))
                     m_document.shadingModel = value->text;

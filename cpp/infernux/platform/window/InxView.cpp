@@ -1,4 +1,6 @@
 #include "InxView.h"
+#include "WindowSizingPolicy.h"
+#include "WindowsDpiPolicy.h"
 
 #include <algorithm>
 #include <array>
@@ -216,7 +218,7 @@ void InxView::ProcessEvent()
     // Frame-rate limiter
     //
     // Three tiers:
-    //   play mode      → no sleep, full speed (bypass entirely)
+    //   play mode      → optional explicit cap, otherwise full speed
     //   editor active  → hard cap to editorFpsCap via SDL_Delay
     //   editor idle    → sleep via SDL_WaitEventTimeout, wake on input
     //
@@ -228,7 +230,6 @@ void InxView::ProcessEvent()
     m_idling.isIdling = false;
 
     FramePacingSample pacing{};
-    pacing.playModeBypass = m_isPlayMode;
     const auto pacingStart = std::chrono::steady_clock::now();
     pacing.cooldownRemainingMs = static_cast<int>(std::max<int64_t>(
         0, std::chrono::duration_cast<std::chrono::milliseconds>(m_activeUntil - pacingStart).count()));
@@ -236,47 +237,48 @@ void InxView::ProcessEvent()
     SDL_Event firstEvent{};
     bool gotFirstEvent = false;
 
-    if (!m_isPlayMode) {
-        bool isIdle = m_idling.enableIdling && m_idling.fpsIdle > 0.0f && pacingStart >= m_activeUntil &&
-                      !HasPendingSyntheticInput();
-        float targetFps = isIdle ? m_idling.fpsIdle : m_idling.editorFpsCap;
+    const bool isIdle = !m_isPlayMode && m_idling.enableIdling && m_idling.fpsIdle > 0.0f &&
+                        pacingStart >= m_activeUntil && !HasPendingSyntheticInput();
+    const float targetFps = m_isPlayMode ? m_idling.playFpsCap : (isIdle ? m_idling.fpsIdle : m_idling.editorFpsCap);
+    pacing.playModeBypass = m_isPlayMode && targetFps <= 0.0f;
 
-        pacing.idleMode = isIdle;
-        pacing.targetFps = targetFps;
+    pacing.idleMode = isIdle;
+    pacing.targetFps = targetFps;
 
-        if (targetFps > 0.0f) {
-            auto now = std::chrono::steady_clock::now();
-            double elapsed = std::chrono::duration<double>(now - m_lastFrameStart).count();
-            double budget = 1.0 / static_cast<double>(targetFps);
-            double requestedSleepMs = (budget - elapsed) * 1000.0;
-            int sleepMs = static_cast<int>(requestedSleepMs);
+    if (targetFps > 0.0f) {
+        auto now = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration<double>(now - m_lastFrameStart).count();
+        double budget = 1.0 / static_cast<double>(targetFps);
+        double requestedSleepMs = (budget - elapsed) * 1000.0;
+        int sleepMs = static_cast<int>(requestedSleepMs);
 
-            pacing.elapsedBeforeSleepMs = elapsed * 1000.0;
-            pacing.frameBudgetMs = budget * 1000.0;
-            pacing.requestedSleepMs = requestedSleepMs > 0.0 ? requestedSleepMs : 0.0;
+        pacing.elapsedBeforeSleepMs = elapsed * 1000.0;
+        pacing.frameBudgetMs = budget * 1000.0;
+        pacing.requestedSleepMs = requestedSleepMs > 0.0 ? requestedSleepMs : 0.0;
 
-            if (sleepMs > 0) {
-                if (isIdle) {
-                    // Idle: block until an event arrives OR the timeout expires.
-                    // A real event struct is used so the event data is preserved.
-                    auto sleepStart = std::chrono::steady_clock::now();
-                    gotFirstEvent = SDL_WaitEventTimeout(&firstEvent, sleepMs);
+        if (sleepMs > 0) {
+            if (isIdle) {
+                // Idle: block until an event arrives OR the timeout expires.
+                // A real event struct is used so the event data is preserved.
+                auto sleepStart = std::chrono::steady_clock::now();
+                gotFirstEvent = SDL_WaitEventTimeout(&firstEvent, sleepMs);
 
-                    auto sleepEnd = std::chrono::steady_clock::now();
-                    double actualSleepMs = std::chrono::duration<double, std::milli>(sleepEnd - sleepStart).count();
-                    pacing.slept = true;
-                    pacing.wokeByEvent = gotFirstEvent;
-                    pacing.actualSleepMs = actualSleepMs;
+                auto sleepEnd = std::chrono::steady_clock::now();
+                double actualSleepMs = std::chrono::duration<double, std::milli>(sleepEnd - sleepStart).count();
+                pacing.slept = true;
+                pacing.wokeByEvent = gotFirstEvent;
+                pacing.actualSleepMs = actualSleepMs;
 
-                    m_idling.isIdling = (actualSleepMs > pacing.frameBudgetMs * 0.9);
-                } else {
-                    // Active editor: hard sleep for the remaining frame budget.
-                    auto sleepStart = std::chrono::steady_clock::now();
-                    SDL_Delay(sleepMs);
-                    auto sleepEnd = std::chrono::steady_clock::now();
-                    pacing.slept = true;
-                    pacing.actualSleepMs = std::chrono::duration<double, std::milli>(sleepEnd - sleepStart).count();
-                }
+                m_idling.isIdling = (actualSleepMs > pacing.frameBudgetMs * 0.9);
+            } else {
+                // Active editor or capped play mode: hard sleep for the
+                // remaining frame budget without delaying event dispatch more
+                // than one frame.
+                auto sleepStart = std::chrono::steady_clock::now();
+                SDL_Delay(sleepMs);
+                auto sleepEnd = std::chrono::steady_clock::now();
+                pacing.slept = true;
+                pacing.actualSleepMs = std::chrono::duration<double, std::milli>(sleepEnd - sleepStart).count();
             }
         }
     }
@@ -324,6 +326,10 @@ void InxView::ProcessEvent()
         case SDL_EVENT_KEY_DOWN:
         case SDL_EVENT_KEY_UP:
         case SDL_EVENT_TEXT_INPUT:
+        case SDL_EVENT_FINGER_DOWN:
+        case SDL_EVENT_FINGER_MOTION:
+        case SDL_EVENT_FINGER_UP:
+        case SDL_EVENT_FINGER_CANCELED:
         case SDL_EVENT_DROP_FILE:
         case SDL_EVENT_DROP_TEXT:
             pacing.wokeByInputEvent = true;
@@ -452,6 +458,10 @@ bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP:
     case SDL_EVENT_TEXT_INPUT:
+    case SDL_EVENT_FINGER_DOWN:
+    case SDL_EVENT_FINGER_MOTION:
+    case SDL_EVENT_FINGER_UP:
+    case SDL_EVENT_FINGER_CANCELED:
     case SDL_EVENT_DROP_FILE:
     case SDL_EVENT_DROP_TEXT:
     case SDL_EVENT_QUIT:
@@ -673,6 +683,7 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
             positionEvent.motion.yrel = 0.0f;
             hadInputEvent = ProcessOneEvent(positionEvent, true) || hadInputEvent;
         }
+        InputManager::Instance().TrackSyntheticEvent(event);
         hadInputEvent = ProcessOneEvent(event, synthetic.type == SyntheticInputType::MouseMotion) || hadInputEvent;
         if (synthetic.type == SyntheticInputType::MouseMotion)
             pointerMotionProcessedInBatch = true;
@@ -714,6 +725,11 @@ void InxView::NotifyGuiFrameBuilt() noexcept
 
 void InxView::Quit()
 {
+    if (m_eventWatchInstalled) {
+        SDL_RemoveEventWatch(&InxView::WatchApplicationEvents, this);
+        m_eventWatchInstalled = false;
+    }
+    InputManager::Instance().ShutdownMotionSensors();
     if (m_window) {
         SDL_DestroyWindow(m_window);
         m_window = nullptr;
@@ -733,6 +749,12 @@ int InxView::GetUserEvent()
 void InxView::Show()
 {
     if (m_window) {
+        // A token-authenticated Player control channel is an automated test
+        // surface. Keep its Vulkan window alive and rendering, but never let
+        // the test steal foreground focus from the developer's desktop.
+        const char *controlFile = std::getenv("_INFERNUX_PLAYER_CONTROL_FILE");
+        if (controlFile != nullptr && *controlFile != '\0')
+            return;
         SDL_ShowWindow(m_window);
     } else {
         INXLOG_ERROR("InxView Window is not initialized.");
@@ -853,12 +875,47 @@ void InxView::SetWindowResizable(bool resizable)
 void InxView::SDLInit()
 {
     SDL_SetLogPriorities(SDL_LOG_PRIORITY_VERBOSE);
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
+    // The Editor and Windows Player are Per-Monitor V2 applications. Make the
+    // process contract explicit before SDL initializes video; silently using
+    // system DPI awareness would make monitor transitions geometrically wrong.
+    ConfigureRequiredWindowsDpiPolicy();
+    // Touch is a first-class input stream. Compatibility mouse synthesis would
+    // otherwise deliver one physical contact through both APIs and cause
+    // duplicate gameplay/UI actions on Android and mobile Web.
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_SENSOR)) {
         const std::string error = SDL_GetError();
         INXLOG_ERROR("SDL_Init failed: ", error);
         throw std::runtime_error("SDL initialization failed: " + error);
     }
+    VerifyRequiredWindowsDpiPolicy();
+    InputManager::Instance().InitializeMotionSensors();
     INXLOG_DEBUG("SDL_Init succeeded.");
+    if (!SDL_AddEventWatch(&InxView::WatchApplicationEvents, this)) {
+        INXLOG_WARN("Could not install SDL application lifecycle watch: ", SDL_GetError());
+    } else {
+        m_eventWatchInstalled = true;
+    }
+
+    const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
+    const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
+    if (!playerMode) {
+        const SDL_DisplayID primaryDisplay = SDL_GetPrimaryDisplay();
+        if (primaryDisplay == 0)
+            throw std::runtime_error(std::string("Cannot resolve the primary display: ") + SDL_GetError());
+
+        SDL_Rect usableBounds{};
+        if (!SDL_GetDisplayUsableBounds(primaryDisplay, &usableBounds))
+            throw std::runtime_error(std::string("Cannot resolve primary display usable bounds: ") + SDL_GetError());
+
+        const WindowSize initialSize =
+            ResolveEditorInitialWindowSize(m_windowWidth, m_windowHeight, usableBounds.w, usableBounds.h);
+        m_windowWidth = initialSize.width;
+        m_windowHeight = initialSize.height;
+        INXLOG_INFO("Editor initial window constrained to ", m_windowWidth, "x", m_windowHeight, " for usable display ",
+                    usableBounds.w, "x", usableBounds.h);
+    }
 
     INXLOG_DEBUG("Window engine: SDL Vulkan");
     m_window =
@@ -871,10 +928,13 @@ void InxView::SDLInit()
     }
     INXLOG_DEBUG("Window created successfully.");
 
-    const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
-    const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
-    if (!playerMode)
-        SDL_MaximizeWindow(m_window);
+    if (!playerMode) {
+        if (!SDL_MaximizeWindow(m_window))
+            throw std::runtime_error(std::string("Cannot maximize the Editor window: ") + SDL_GetError());
+        if (!SDL_SyncWindow(m_window))
+            throw std::runtime_error(std::string("Cannot commit the maximized Editor window: ") + SDL_GetError());
+        SDL_GetWindowSize(m_window, &m_windowWidth, &m_windowHeight);
+    }
 }
 
 void InxView::CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface)
@@ -882,12 +942,70 @@ void InxView::CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface)
     if (!m_window || !vkInstance || *vkInstance == VK_NULL_HANDLE || !vkSurface) {
         throw std::runtime_error("Cannot create Vulkan surface before the window and instance are initialized");
     }
-    if (!SDL_Vulkan_CreateSurface(m_window, *vkInstance, nullptr, vkSurface)) {
+    if (!TryCreateSurface(*vkInstance, vkSurface)) {
         const std::string error = SDL_GetError();
         INXLOG_ERROR("Could not create Vulkan surface: ", error);
         throw std::runtime_error("Vulkan surface creation failed: " + error);
     }
     INXLOG_DEBUG("Vulkan surface created successfully.");
+}
+
+bool InxView::TryCreateSurface(VkInstance vkInstance, VkSurfaceKHR *vkSurface) noexcept
+{
+    if (!m_window || vkInstance == VK_NULL_HANDLE || !vkSurface)
+        return false;
+    *vkSurface = VK_NULL_HANDLE;
+    const bool created = SDL_Vulkan_CreateSurface(m_window, vkInstance, nullptr, vkSurface);
+    if (created)
+        m_hasCreatedSurface.store(true, std::memory_order_release);
+    return created;
+}
+
+bool SDLCALL InxView::WatchApplicationEvents(void *userdata, SDL_Event *event)
+{
+    auto *view = static_cast<InxView *>(userdata);
+    if (!view || !event)
+        return true;
+
+    switch (event->type) {
+    case SDL_EVENT_WILL_ENTER_BACKGROUND:
+    case SDL_EVENT_DID_ENTER_BACKGROUND:
+        // SDL requires mobile lifecycle events to be handled from an event
+        // watch: Android may suspend the normal event loop immediately after
+        // delivering them. Stop presentation before SurfaceView tears down.
+        view->m_applicationInBackground.store(true, std::memory_order_release);
+#if defined(SDL_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(ANDROID)
+        // Android replaces the ANativeWindow while an Activity is backgrounded.
+        // The old VkSurfaceKHR and its swapchain cannot be reused on resume.
+        view->m_surfaceRecreationPending.store(true, std::memory_order_release);
+#endif
+        break;
+    case SDL_EVENT_WILL_ENTER_FOREGROUND:
+        // Keep presentation suspended until the new native surface is ready.
+        break;
+    case SDL_EVENT_DID_ENTER_FOREGROUND:
+        view->m_applicationInBackground.store(false, std::memory_order_release);
+        view->RequestExternalWake();
+        break;
+#if defined(SDL_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(ANDROID)
+    case SDL_EVENT_WINDOW_RESIZED:
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        // Android may replace the SurfaceView buffer queue after the Activity
+        // has already resumed (notably during fixed-rotation transitions).
+        // Recreating only on DID_ENTER_FOREGROUND can therefore bind Vulkan to
+        // the retiring ANativeWindow and leave the renderer dequeuing from an
+        // abandoned BufferQueue. Once the initial surface exists, any native
+        // pixel-size transition is a presentation-surface boundary.
+        if (view->m_hasCreatedSurface.load(std::memory_order_acquire)) {
+            view->m_surfaceRecreationPending.store(true, std::memory_order_release);
+            view->RequestExternalWake();
+        }
+        break;
+#endif
+    default:
+        break;
+    }
+    return true;
 }
 
 void InxView::SetAppMetadata(InxAppMetadata appMetaData)

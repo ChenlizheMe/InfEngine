@@ -21,7 +21,7 @@ def test_camera_helpers_use_shader_linker_per_view_camera_contract():
 def test_shader_control_api_rejects_compute():
     for operation in (
         lambda: Shader.is_loaded("parallel", "compute"),
-        lambda: Shader.load_spirv("parallel", b"", "compute"),
+        lambda: Shader.reload("parallel", "compute"),
     ):
         try:
             operation()
@@ -81,3 +81,12 @@ def test_surface_passes_fall_back_to_geometric_normal():
         surface_call = source.index("${SURFACE_CALL}")
         normal_resolve = source.index("ResolveSurfaceNormal", surface_call)
         assert normal_resolve > surface_call
+
+
+def test_gizmo_icon_shader_applies_component_vertex_tint():
+    from pathlib import Path
+
+    source = Path("python/Infernux/resources/shaders/gizmo_icon.frag").read_text(
+        encoding="utf-8"
+    )
+    assert "texColor.rgb * v_Color * material.baseColor.rgb" in source

@@ -15,7 +15,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <chrono>
-#include <vulkan/vulkan.h>
 
 namespace infernux
 {
@@ -44,65 +43,6 @@ struct Vertex
     glm::vec2 texCoord{0.0f};                  ///< Missing UVs deterministically use the origin
     glm::uvec4 boneIndices{0, 0, 0, 0};        ///< GPU skinning bone indices
     glm::vec4 boneWeights{0.0f};               ///< GPU skinning weights
-
-    static VkVertexInputBindingDescription getBindingDescription()
-    {
-        VkVertexInputBindingDescription bindingDescription{};
-        bindingDescription.binding = 0;
-        bindingDescription.stride = sizeof(Vertex);
-        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-        return bindingDescription;
-    }
-
-    static std::array<VkVertexInputAttributeDescription, 7> getAttributeDescriptions()
-    {
-        std::array<VkVertexInputAttributeDescription, 7> attributeDescriptions{};
-
-        // Location 0: Position
-        attributeDescriptions[0].binding = 0;
-        attributeDescriptions[0].location = 0;
-        attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[0].offset = offsetof(Vertex, pos);
-
-        // Location 1: Normal
-        attributeDescriptions[1].binding = 0;
-        attributeDescriptions[1].location = 1;
-        attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[1].offset = offsetof(Vertex, normal);
-
-        // Location 2: Tangent (vec4 for handedness)
-        attributeDescriptions[2].binding = 0;
-        attributeDescriptions[2].location = 2;
-        attributeDescriptions[2].format = VK_FORMAT_R32G32B32A32_SFLOAT;
-        attributeDescriptions[2].offset = offsetof(Vertex, tangent);
-
-        // Location 3: Color
-        attributeDescriptions[3].binding = 0;
-        attributeDescriptions[3].location = 3;
-        attributeDescriptions[3].format = VK_FORMAT_R32G32B32_SFLOAT;
-        attributeDescriptions[3].offset = offsetof(Vertex, color);
-
-        // Location 4: TexCoord
-        attributeDescriptions[4].binding = 0;
-        attributeDescriptions[4].location = 4;
-        attributeDescriptions[4].format = VK_FORMAT_R32G32_SFLOAT;
-        attributeDescriptions[4].offset = offsetof(Vertex, texCoord);
-
-        // Location 5: Skin bone indices
-        attributeDescriptions[5].binding = 0;
-        attributeDescriptions[5].location = 5;
-        attributeDescriptions[5].format = VK_FORMAT_R32G32B32A32_UINT;
-        attributeDescriptions[5].offset = offsetof(Vertex, boneIndices);
-
-        // Location 6: Skin bone weights
-        attributeDescriptions[6].binding = 0;
-        attributeDescriptions[6].location = 6;
-        attributeDescriptions[6].format = VK_FORMAT_R32G32B32A32_SFLOAT;
-        attributeDescriptions[6].offset = offsetof(Vertex, boneWeights);
-
-        return attributeDescriptions;
-    }
 
     /// @brief Create a vertex with position, normal, and UV (common case)
     static Vertex Create(const glm::vec3 &position, const glm::vec3 &norm, const glm::vec2 &uv,

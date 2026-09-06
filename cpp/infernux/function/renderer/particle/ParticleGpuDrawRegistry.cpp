@@ -191,12 +191,6 @@ ParticleGpuDrawRegistry::SnapshotHandle ParticleGpuDrawRegistry::SnapshotShared(
     return result;
 }
 
-std::vector<GpuParticleDrawEntry> ParticleGpuDrawRegistry::Snapshot(int32_t queueMin, int32_t queueMax) const
-{
-    const auto snapshot = SnapshotShared(queueMin, queueMax);
-    return snapshot ? *snapshot : std::vector<GpuParticleDrawEntry>{};
-}
-
 uint64_t ParticleGpuDrawRegistry::Revision() const
 {
     const auto state = std::atomic_load_explicit(&m_state, std::memory_order_acquire);

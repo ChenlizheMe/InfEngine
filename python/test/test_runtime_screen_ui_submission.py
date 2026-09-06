@@ -67,6 +67,7 @@ def test_runtime_submission_publishes_latest_hud_without_a_game_panel(monkeypatc
         enabled=True,
         game_object=SimpleNamespace(active_in_hierarchy=True),
         compute_scale=lambda *_args: (2.0, 2.0, 2.0),
+        compute_logical_size=lambda *_args: (100.0, 50.0),
         _get_elements=lambda: (element,),
     )
     texture_cache = SimpleNamespace(
@@ -112,6 +113,63 @@ def test_runtime_submission_publishes_latest_hud_without_a_game_panel(monkeypatc
     engine._render_submission_frame = 2
     assert submission.submit() is True
     assert [entry[0] for entry in dispatches] == ["first", "latest"]
+
+
+def test_runtime_submission_anchors_against_live_logical_canvas(monkeypatch):
+    import Infernux.engine.runtime_screen_ui as module
+    from Infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
+    from Infernux.ui.enums import RenderMode
+
+    renderer = _Renderer()
+    engine = _Engine(renderer)
+    engine._render_submission_frame = 1
+    scene = SimpleNamespace(structure_version=1)
+    logical_sizes = []
+    element = SimpleNamespace(
+        enabled=True,
+        game_object=SimpleNamespace(active_in_hierarchy=True),
+        get_rect=lambda width, height: logical_sizes.append((width, height))
+        or (32.0, 32.0, 520.0, 52.0),
+    )
+    canvas = SimpleNamespace(
+        render_mode=RenderMode.ScreenOverlay,
+        reference_width=1920.0,
+        reference_height=1080.0,
+        enabled=True,
+        game_object=SimpleNamespace(active_in_hierarchy=True),
+        compute_scale=lambda *_args: (1.5, 1.5, 1.5),
+        compute_logical_size=lambda *_args: (3200.0 / 1.5, 1440.0 / 1.5),
+        _get_elements=lambda: (element,),
+    )
+    texture_cache = SimpleNamespace(
+        has_pending=False,
+        generation=1,
+        get_bound=lambda _engine: (lambda _path: 0),
+    )
+    dispatches = []
+    _install_scene_manager(monkeypatch, scene)
+    monkeypatch.setattr(
+        module,
+        "collect_sorted_runtime_canvas_snapshot",
+        lambda *_args, **_kwargs: [canvas],
+    )
+    monkeypatch.setattr(module, "clear_rect_cache", lambda *_args: None)
+    monkeypatch.setattr(module, "_get_tex_cache", lambda: texture_cache)
+    monkeypatch.setattr(module, "_runtime_ui_revision", lambda *_args: 1)
+    monkeypatch.setattr(
+        module,
+        "_ui_dispatch",
+        lambda _element, _backend, **kwargs: dispatches.append(kwargs),
+    )
+
+    submission = RuntimeScreenUISubmission(engine)
+    submission.set_target_size(3200, 1440)
+    assert submission.submit() is True
+    assert logical_sizes == [(3200.0 / 1.5, 1440.0 / 1.5)]
+    assert dispatches[0]["sx"] == 48.0
+    assert dispatches[0]["sy"] == 48.0
+    assert dispatches[0]["ref_w"] == 3200.0 / 1.5
+    assert dispatches[0]["ref_h"] == 1440.0 / 1.5
 
 
 def test_runtime_submission_clears_stale_commands_without_an_active_scene(monkeypatch):
@@ -203,6 +261,45 @@ def test_render_pipeline_submits_ui_before_delegating_camera_render(monkeypatch)
         ("render", "context", "camera"),
         "dispose",
     ]
+
+
+def test_render_pipeline_does_not_render_a_frame_after_screen_ui_failure():
+    from Infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
+
+    calls = []
+
+    def fail_submission():
+        calls.append("screen_ui")
+        raise RuntimeError("screen UI contract failed")
+
+    pipeline = RuntimeScreenUIRenderPipeline(
+        SimpleNamespace(submit=fail_submission),
+        SimpleNamespace(
+            render=lambda *_args: calls.append("render"),
+            dispose=lambda: calls.append("dispose"),
+        ),
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="screen UI contract failed"):
+        pipeline.render("context", "camera")
+
+    assert calls == ["screen_ui"]
+
+
+def test_render_pipeline_requires_delegate_dispose_contract():
+    from Infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
+
+    pipeline = RuntimeScreenUIRenderPipeline(
+        SimpleNamespace(submit=lambda: None),
+        SimpleNamespace(render=lambda *_args: None),
+    )
+
+    import pytest
+
+    with pytest.raises(AttributeError, match="dispose"):
+        pipeline.dispose()
 
 
 def test_engine_wraps_custom_python_pipelines_with_runtime_ui_submission():

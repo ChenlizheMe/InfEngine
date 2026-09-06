@@ -103,12 +103,17 @@ _FILE_MODULE_MEMBERS = frozenset(
     }
 )
 _DYNAMIC_CODE_NAMES = frozenset({"exec", "eval", "compile"})
+_PUBLIC_ENGINE_MODULES = frozenset({"Infernux", "infernux"})
 _PURE_CALL_NAMES = frozenset(
     {
         "bool", "bytes", "bytearray", "complex", "dict", "float", "frozenset",
         "int", "list", "range", "set", "slice", "str", "tuple",
-        "Path", "Vector2", "Vector3", "Vector4", "Color", "Quaternion", "Matrix4x4",
-        "serialized_field", "field", "cast", "auto", "dataclass",
+        "Path", "Vector2", "Vector3", "Vector4", "vec4f", "quatf",
+        "vector2", "vector3", "vector4", "quaternion", "Color", "Quaternion", "Matrix4x4",
+        "AnimationCurve", "Keyframe", "Gradient", "GradientKey",
+        "GameObjectRef", "MaterialRef", "ComponentRef", "PrefabRef",
+        "serialized_field", "int_field", "list_field", "component_field",
+        "component_list_field", "hide_field", "field", "cast", "auto", "dataclass",
         "dataclass_transform", "final", "override", "unique",
     }
 )
@@ -380,6 +385,8 @@ class _PolicyVisitor(ast.NodeVisitor):
         module = path[0].lstrip(".")
         if module in {"numpy", "np"}:
             return len(path) == 2 and path[1] in _NUMPY_PURE_CALLS
+        if module in _PUBLIC_ENGINE_MODULES:
+            return path[-1] in _PURE_CALL_NAMES
         return module in _PURE_CALL_MODULES
 
     def _is_controlled_declaration_decorator(self, node: ast.Call) -> bool:
@@ -393,26 +400,51 @@ class _PolicyVisitor(ast.NodeVisitor):
 
         if self._declaration_decorator_depth <= 0:
             return False
+        controlled_paths = {
+            ("Infernux.jit", "njit"),
+            ("Infernux", "njit"),
+            ("infernux", "njit"),
+            ("Infernux.renderstack", "render_effect_feature"),
+            ("infernux", "renderstack", "render_effect_feature"),
+        }
+        component_decorators = {
+            "require_component",
+            "disallow_multiple",
+            "execute_in_edit_mode",
+            "add_component_menu",
+            "icon",
+            "help_url",
+            "RequireComponent",
+            "DisallowMultipleComponent",
+            "ExecuteInEditMode",
+            "AddComponentMenu",
+            "Icon",
+            "HelpURL",
+        }
         if isinstance(node.func, ast.Name):
             imported = self.imported_members.get(node.func.id)
-            if imported in {
-                ("Infernux.jit", "njit"),
-                ("Infernux", "njit"),
-                ("Infernux.renderstack", "render_effect_feature"),
+            if imported in controlled_paths:
+                return True
+            if imported and imported[1] in component_decorators and imported[0] in {
+                "Infernux",
+                "infernux",
+                "Infernux.components",
+                "Infernux.components.decorators",
             }:
                 return True
             # ``from Infernux import *`` intentionally has no member table.
-            return node.func.id in {"njit", "render_effect_feature"}
+            return node.func.id in {"njit", "render_effect_feature", *component_decorators}
         path = self._imported_path(node.func)
-        return bool(
-            path
-            and path
-            in {
-                ("Infernux.jit", "njit"),
-                ("Infernux", "njit"),
-                ("Infernux.renderstack", "render_effect_feature"),
-            }
-        )
+        if not path:
+            return False
+        if path in controlled_paths:
+            return True
+        return path[-1] in component_decorators and path[:-1] in {
+            ("Infernux",),
+            ("infernux",),
+            ("Infernux", "components"),
+            ("Infernux", "components", "decorators"),
+        }
 
     def visit_Call(self, node: ast.Call) -> None:
         path = self._imported_path(node.func)

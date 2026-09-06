@@ -38,12 +38,7 @@ void InxTexture::ApplyImportSettings(const InxResourceMeta &meta)
         m_wrapMode = meta.GetDataAs<std::string>("wrap_mode");
     }
     if (meta.HasKey("aniso_level")) {
-        const int importedLevel = meta.GetDataAs<int>("aniso_level");
-        // Level 1 was the old importer default and never enabled Vulkan
-        // anisotropic filtering. The current authoring contract treats that
-        // legacy value as automatic device quality, matching the Python asset
-        // settings reader and the TextureImporter migration.
-        m_anisoLevel = importedLevel == 1 ? -1 : importedLevel;
+        m_anisoLevel = meta.GetDataAs<int>("aniso_level");
     }
 }
 

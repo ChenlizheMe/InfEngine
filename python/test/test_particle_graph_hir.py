@@ -1678,9 +1678,10 @@ def test_color_parameter_hdr_is_runtime_metadata_not_behavior():
     assert encoded["parameters"][0]["hdr"] is True
     assert decode_particle_runtime_metadata(encoded).parameters[0].hdr is True
 
-    legacy = copy.deepcopy(encoded)
-    del legacy["parameters"][0]["hdr"]
-    assert decode_particle_runtime_metadata(legacy).parameters[0].hdr is False
+    incomplete = copy.deepcopy(encoded)
+    del incomplete["parameters"][0]["hdr"]
+    with pytest.raises(ParticleRuntimeMetadataError, match="does not match the schema"):
+        decode_particle_runtime_metadata(incomplete)
 
 
 def test_writable_graph_parameter_lowers_to_one_typed_shared_store():
@@ -2599,7 +2600,7 @@ def test_particle_data_interfaces_round_trip_with_stable_identity_and_space():
         )
 
 
-@pytest.mark.parametrize("kind", ["mesh_data", "mesh_resource"])
+@pytest.mark.parametrize("kind", ["mesh_resource"])
 def test_mesh_resource_bindings_are_not_public_data_interfaces(kind):
     from Infernux.particle.data_interface import (
         ParticleDataInterfaceError,
@@ -2646,11 +2647,6 @@ def test_runtime_mesh_resource_parser_accepts_only_current_internal_schema():
         mesh=AssetReference(guid="mesh-guid"),
         mesh_parameter="surface-mesh",
     )
-
-    legacy = dict(current, kind="mesh_data")
-    with pytest.raises(ParticleDataInterfaceError, match="unsupported"):
-        particle_runtime_resource_from_dict(legacy)
-
 
 @pytest.mark.parametrize("stage", ["init", "update", "rendering"])
 def test_particle_graph_rejects_deleted_or_replaced_stage_root(stage):
@@ -5036,11 +5032,11 @@ class TargetMotion(ParticleScript):
 def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations():
     source = PARTICLE_SCRIPT_SOURCE.replace(
         "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField",
-        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, Curve, CurveKey, Gradient, GradientKey",
+        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, AnimationCurve, Keyframe, Gradient, GradientKey",
     ).replace(
         "particles .add_velocity((0.0, -0.2, 0.0))",
         """particles.set_size(ctx.sample_curve(
-                Curve(keys=(CurveKey(0.0, 0.0, 1.0, 1.0), CurveKey(1.0, 1.0, 1.0, 1.0))),
+                AnimationCurve(keys=(Keyframe(0.0, 0.0, 1.0, 1.0), Keyframe(1.0, 1.0, 1.0, 1.0))),
                 particles.age / particles.lifetime,
             ))
             particles.set_color(ctx.sample_gradient(
@@ -5061,12 +5057,12 @@ def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations(
 def test_particle_script_curve_and_gradient_parameters_share_dynamic_kernel_path():
     source = '''\
 from Infernux.particle import (
-    Curve, Gradient, Parameter, ParticleScript, ParticleEmitter, EmitterSettings,
+    AnimationCurve, Gradient, Parameter, ParticleScript, ParticleEmitter, EmitterSettings,
 )
 
 class RampParameters(ParticleScript):
     parameters = (
-        Parameter("size", "Size", "curve", Curve()),
+        Parameter("size", "Size", "curve", AnimationCurve()),
         Parameter("color", "Color", "gradient", Gradient()),
     )
 
@@ -5466,12 +5462,56 @@ def test_particle_graph_save_compiles_the_in_memory_snapshot_once(tmp_path, monk
 
     path.unlink()
     ParticleArtifactRegistry.clear()
-    restored = ParticleArtifactRegistry.load_runtime_reference(
-        "Assets/SingleSnapshot.particlegraph", guid="scene-reference-guid"
+    with pytest.raises(ParticleArtifactError, match="empty GUID"):
+        ParticleArtifactRegistry.load_runtime_reference(
+            "Assets/SingleSnapshot.particlegraph", guid="scene-reference-guid"
+        )
+
+
+def test_particle_runtime_reference_never_uses_path_or_stable_id_fallback(
+    tmp_path, monkeypatch
+):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    source_path = tmp_path / "Assets" / "PathFallback.particlegraph"
+    source_path.parent.mkdir()
+    ParticleGraphAsset(stable_id="path-fallback").save(str(source_path))
+    fallback_artifact = (
+        tmp_path
+        / "Library"
+        / "Artifacts"
+        / "Particle"
+        / "path-fallback.inxparticle"
     )
-    assert restored is not None
-    assert restored.source_kind == "graph"
-    assert restored.behavior_hash == persisted.behavior_hash
+    assert fallback_artifact.is_file()
+
+    runtime_index = fallback_artifact.parent / "RuntimeIndex.json"
+    runtime_index.write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.particle_runtime_index",
+                "entries": [
+                    {
+                        "guid": "different-guid",
+                        "path_hint": "Assets/PathFallback.particlegraph",
+                        "stable_id": "path-fallback",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_path.unlink()
+    ParticleArtifactRegistry.clear()
+
+    assert (
+        ParticleArtifactRegistry.load_runtime_reference(
+            "Assets/PathFallback.particlegraph", guid="requested-guid"
+        )
+        is None
+    )
 
 
 def test_particle_artifacts_are_indexed_by_asset_guid(tmp_path, monkeypatch):
@@ -5657,6 +5697,34 @@ def test_source_needs_compile_when_library_artifact_is_stale(tmp_path, monkeypat
     assert ParticleArtifactRegistry.source_needs_compile(str(path))
     rebuilt = ParticleArtifactRegistry.ensure_source_compiled(str(path))
     assert rebuilt is not None
+    assert not ParticleArtifactRegistry.source_needs_compile(str(path))
+
+
+def test_source_needs_compile_when_generated_gpu_contract_is_stale(
+    tmp_path, monkeypatch
+):
+    from Infernux.engine import project_context
+
+    ParticleArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "CompilerUpgrade.particlegraph"
+    path.parent.mkdir(parents=True)
+    ParticleGraphAsset(stable_id="compiler-upgrade", name="Compiler Upgrade").save(
+        str(path)
+    )
+    current = ParticleArtifactRegistry.get(str(path))
+    assert current is not None
+    artifact_path = Path(current.artifact_path)
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    payload["gpu_glsl"]["emitters"][0]["stages"]["init"] += "\n// stale"
+    artifact_path.write_text(json.dumps(payload), encoding="utf-8")
+    ParticleArtifactRegistry.clear()
+
+    assert ParticleArtifactRegistry.source_needs_compile(str(path))
+    rebuilt = ParticleArtifactRegistry.ensure_source_compiled(str(path))
+
+    assert rebuilt is not None
+    assert "// stale" not in rebuilt.gpu_glsl["emitters"][0]["stages"]["init"]
     assert not ParticleArtifactRegistry.source_needs_compile(str(path))
 
 

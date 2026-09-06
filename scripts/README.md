@@ -7,10 +7,12 @@ runtime code stays in `cpp/` and `python/`; Hub application code stays in
 
 | Directory | Purpose | Primary entry point |
 |:----------|:--------|:--------------------|
+| `acceptance/` | Reusable project-level runtime acceptance, cross-host trajectory comparison, and release evidence manifests | `headless_project_smoke.py` / `compare_headless_trajectories.py` / `build_evidence_manifest.py` |
 | `build/` | Build wrappers needed by a specific host toolchain | `cmake_build.py` |
 | `docs/` | Maintainer entry points that orchestrate documentation tools | `update_api_docs.bat` |
 | `maintenance/` | Safe local workspace housekeeping | `clean_workspace.ps1` |
 | `release/` | Hub, installer, wheel, and GitHub Release orchestration | `release_hub.bat` |
+| `setup/` | Clone bootstrap and the supported Python 3.13 Conda environment | `configure_development.ps1` / `configure_development.sh` |
 
 Run every command from the repository root. The entry points resolve the root
 from their own location, so they also work when invoked by an absolute path.
@@ -25,3 +27,60 @@ Website tool names under `docs/tools/` are intentionally verb-based:
 `build-*` creates deterministic artifacts, `check-*` enforces a contract,
 `test-*` exercises browser-independent behavior, and `verify-site.mjs` is the
 aggregate consistency gate.
+
+For cross-host physics evidence, run `headless_project_smoke.py` with identical
+`--fixed-delta`, `--play-frames`, `--track-object`, and `--sample-every`
+arguments on each host. Save each result with `--trajectory-output`, then pass
+the two JSON files to `compare_headless_trajectories.py`. The comparison ignores
+host-specific project paths and checks the sampled state with an explicit
+numeric tolerance.
+
+Browser acceptance dependencies are isolated under `scripts/acceptance/`.
+Run `npm ci --prefix scripts/acceptance` after cloning, then invoke
+`web_mobile_input_smoke.cjs` against a locally served Web Player. On Windows it
+uses the installed Microsoft Edge binary; CI hosts may install the pinned
+Playwright Chromium build explicitly.
+
+`acceptance/build_player.py` is the non-interactive Player build entry point for
+local acceptance and managed CI. It resolves Android and Web exporters from the
+source checkout, emits the same progress events as the Editor, and writes an
+atomic JSON evidence report even when project validation or toolchain diagnosis
+fails. Exporter-specific values use repeatable `--option KEY=JSON` arguments.
+
+For example:
+
+```powershell
+conda activate infernux
+python scripts/acceptance/build_player.py C:\Projects\Balance android-arm64 C:\Builds\Balance `
+  --option android_artifact='"apk"' `
+  --option android_python_prefix='"E:\toolchains\infernux-python-3.13.15-android\arm64-v8a"'
+```
+
+Release-candidate artifacts and JSON smoke results can be bound to one source
+commit with `build_evidence_manifest.py`. Every `--artifact` and `--result`
+uses `ID=PATH`; paths must live below `--root`, directory hashes are stable over
+sorted relative file names, and `--require-clean` rejects an uncommitted source
+tree. The manifest timestamp comes from the source commit rather than wall-clock
+time so the same release inputs reproduce the same provenance record.
+
+Android CPython prefixes are accepted only when they carry a complete
+`infernux-android-python.json` provenance manifest. After preparing a prefix,
+use `setup/android_python_runtime.py stamp` to record its ABI, CPython and
+effective minimum Android API levels, NDK version, official source hash,
+bundled wheels, and complete payload hash. Use the `verify` command in local or
+CI setup before starting an Android build. Prefixes with missing, incompatible,
+or modified payloads fail before any Player staging work begins.
+
+On Linux, `setup/build_android_python_runtime.sh` prepares a complete
+prefix from pinned CPython and NumPy source archives. It uses CPython's Android
+build, cibuildwheel's Android backend, the tracked NumPy cross-file contract,
+and an atomic output directory. The command never overwrites an existing
+prefix; pass a new output path when rebuilding an ABI.
+
+`setup/build_web_toolchain.sh` prepares the pinned Emscripten SDK, CPython
+browser runtime, and Dawn Tint translator used by the Web exporter. It accepts
+one cacheable toolchain root, verifies source archives before extraction, keeps
+platform code out of the engine package, and records key output hashes in
+`infernux-web-toolchain.json`. Install `glslangValidator` separately through the
+host package manager because it is a system shader compiler rather than part of
+the cached Web toolchain.

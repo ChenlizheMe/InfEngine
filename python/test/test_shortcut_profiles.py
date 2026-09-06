@@ -8,7 +8,6 @@ import pytest
 from Infernux.engine.interaction.shortcut_profiles import (
     DEFAULT_PROFILE_ID,
     SHORTCUT_PROFILES_SCHEMA,
-    SHORTCUT_PROFILES_VERSION,
     ShortcutProfileDiffKind,
     ShortcutProfileModel,
 )
@@ -302,7 +301,7 @@ def test_persistence_round_trip_saves_defaults_overrides_and_active_profile():
 
     payload = persistence.payload
     assert payload["schema"] == SHORTCUT_PROFILES_SCHEMA
-    assert payload["version"] == SHORTCUT_PROFILES_VERSION
+    assert "version" not in payload
     assert payload["active_profile_id"] == "custom"
     assert payload["defaults"] == [
         {"binding_id": "file.save.global", "chord": "Ctrl+S"},
@@ -341,7 +340,7 @@ def _valid_payload():
     "mutate",
     [
         lambda data: data.update(extra=True),
-        lambda data: data.update(schema="legacy.shortcut_profiles"),
+        lambda data: data.update(schema="other.shortcut_profiles"),
         lambda data: data.update(version=0),
         lambda data: data.update(version=True),
         lambda data: data.update(active_profile_id="missing"),

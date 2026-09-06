@@ -21,7 +21,7 @@
 <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header" role="banner">
-        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.7</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.0</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
             <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
             <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
@@ -48,9 +48,9 @@
     <span class="bp">self</span><span class="o">.</span><span class="n">_handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">flash</span><span class="p">())</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">flash</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-    <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash starts"</span><span class="p">)</span>
-    <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
-    <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash ends"</span><span class="p">)</span>
+    <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash starts"</span><span class="p">)</span>
+    <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
+    <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash ends"</span><span class="p">)</span>
 </code></pre></div>
 
 <p><code>start_coroutine()</code> runs the generator immediately until its first <code>yield</code>. In the example, <code>flash starts</code> is logged inside <code>start()</code>. The returned <code>Coroutine</code> handle represents the scheduled continuation. Its <code>is_finished</code> property becomes <code>True</code> after normal completion or cancellation.</p>
@@ -62,22 +62,12 @@
 <li>Attach <code>CoroutineTour</code> to <code>CoroutineLab</code>.</li>
 <li>Open <strong>Console</strong>, clear old messages, and enter Play mode.</li>
 </ol>
-<p>The example needs no Collider or Rigidbody. <code>WaitForFixedUpdate()</code> waits for the engine's next fixed-update phase even when this component does not override <code>fixed_update()</code>.</p>
+<p>The example needs no Collider or Rigidbody. <code>inx.WaitForFixedUpdate()</code> waits for the engine's next fixed-update phase even when this component does not override <code>fixed_update()</code>.</p>
 <h2 id="complete-tour">Run every wait type</h2>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.coroutine</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">WaitForEndOfFrame</span><span class="p">,</span>
-    <span class="n">WaitForFixedUpdate</span><span class="p">,</span>
-    <span class="n">WaitForFrames</span><span class="p">,</span>
-    <span class="n">WaitForSeconds</span><span class="p">,</span>
-    <span class="n">WaitForSecondsRealtime</span><span class="p">,</span>
-    <span class="n">WaitUntil</span><span class="p">,</span>
-    <span class="n">WaitWhile</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.debug</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">CoroutineTour</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">CoroutineTour</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">awake</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_sequence_handle</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">False</span>
@@ -87,52 +77,52 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_sequence_handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">run_sequence</span><span class="p">())</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">run_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"1. sequence started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"1. sequence started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="k">yield</span> <span class="kc">None</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"2. one update frame passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"2. one update frame passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        <span class="k">yield</span> <span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"3. two more update frames passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"3. two more update frames passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"4. 0.5 scaled seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"4. 0.5 scaled seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        <span class="k">yield</span> <span class="n">WaitForSecondsRealtime</span><span class="p">(</span><span class="mf">0.25</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"5. 0.25 real seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSecondsRealtime</span><span class="p">(</span><span class="mf">0.25</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"5. 0.25 real seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        <span class="k">yield</span> <span class="n">WaitForFixedUpdate</span><span class="p">()</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"6. resumed in fixed update"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForFixedUpdate</span><span class="p">()</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"6. resumed in fixed update"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        <span class="k">yield</span> <span class="n">WaitForEndOfFrame</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"7. two late-update phases passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForEndOfFrame</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"7. two late-update phases passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">open_gate_later</span><span class="p">())</span>
-        <span class="k">yield</span> <span class="n">WaitUntil</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"8. WaitUntil observed an open gate"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitUntil</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"8. WaitUntil observed an open gate"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">clear_busy_later</span><span class="p">())</span>
-        <span class="k">yield</span> <span class="n">WaitWhile</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"9. WaitWhile observed idle state"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitWhile</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"9. WaitWhile observed idle state"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="n">child</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">child_sequence</span><span class="p">())</span>
         <span class="k">yield</span> <span class="n">child</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"10. child finished; parent finished"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"10. child finished; parent finished"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">open_gate_later</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">True</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">clear_busy_later</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">yield</span> <span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">child_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
-        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child completed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child completed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">cancel_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">"""May be bound to a UI Button."""</span>
@@ -163,37 +153,37 @@
 <td><code>update</code></td>
 </tr>
 <tr>
-<td><code>WaitForFrames(n)</code></td>
+<td><code>inx.WaitForFrames(n)</code></td>
 <td>Resume after exactly <code>n</code> update-phase checks. <code>n</code> must be an integer of at least 1; <code>bool</code> is rejected.</td>
 <td><code>update</code></td>
 </tr>
 <tr>
-<td><code>WaitForSeconds(seconds)</code></td>
+<td><code>inx.WaitForSeconds(seconds)</code></td>
 <td>Accumulate the update-phase frame delta until it reaches <code>seconds</code>.</td>
 <td><code>update</code></td>
 </tr>
 <tr>
-<td><code>WaitForSecondsRealtime(seconds)</code></td>
+<td><code>inx.WaitForSecondsRealtime(seconds)</code></td>
 <td>Resume on the first update check at or after its wall-clock target.</td>
 <td><code>update</code></td>
 </tr>
 <tr>
-<td><code>WaitForFixedUpdate()</code></td>
+<td><code>inx.WaitForFixedUpdate()</code></td>
 <td>Resume on the next fixed-update scheduler pass.</td>
 <td><code>fixed_update</code></td>
 </tr>
 <tr>
-<td><code>WaitForEndOfFrame(n)</code></td>
+<td><code>inx.WaitForEndOfFrame(n)</code></td>
 <td>Resume after <code>n</code> late-update scheduler passes. <code>n</code> has the same integer validation as <code>WaitForFrames</code>.</td>
 <td><code>late_update</code></td>
 </tr>
 <tr>
-<td><code>WaitUntil(predicate)</code></td>
+<td><code>inx.WaitUntil(predicate)</code></td>
 <td>Call <code>predicate()</code> on update checks and resume when its result is truthy.</td>
 <td><code>update</code></td>
 </tr>
 <tr>
-<td><code>WaitWhile(predicate)</code></td>
+<td><code>inx.WaitWhile(predicate)</code></td>
 <td>Call <code>predicate()</code> on update checks and resume when its result becomes falsy.</td>
 <td><code>update</code></td>
 </tr>
@@ -247,7 +237,7 @@
 <div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">temporary_state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="k">try</span><span class="p">:</span>
-        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">5.0</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">5.0</span><span class="p">)</span>
     <span class="k">finally</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
 </code></pre></div>
@@ -276,7 +266,7 @@
 <h2 id="common-errors">Common errors</h2>
 <ul>
 <li><strong>Passing the method instead of its generator</strong>: call <code>self.start_coroutine(self.run_sequence())</code>, including the final parentheses.</li>
-<li><strong>Using <code>time.sleep()</code></strong>: it blocks the thread and freezes other engine work. Yield <code>WaitForSecondsRealtime()</code> for a wall-clock delay.</li>
+<li><strong>Using <code>time.sleep()</code></strong>: it blocks the thread and freezes other engine work. Yield <code>inx.WaitForSecondsRealtime()</code> for a wall-clock delay.</li>
 <li><strong>Expecting an exact timestamp</strong>: waits resume on scheduler checks, so a duration is a minimum and can overshoot by part of a frame.</li>
 <li><strong>Expecting <code>WaitForSeconds</code> to respect pause</strong>: the current scheduler feeds the raw update delta, so <code>time_scale</code> does not change this wait. Use realtime waiting for wall-clock delays, and accumulate <code>Time.delta_time</code> manually when a sequence must follow the game clock.</li>
 <li><strong>Treating <code>WaitForEndOfFrame</code> as post-render capture</strong>: it maps to late update in the current scheduler.</li>
@@ -304,9 +294,9 @@
     <span class="bp">self</span><span class="o">.</span><span class="n">_handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">flash</span><span class="p">())</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">flash</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-    <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash starts"</span><span class="p">)</span>
-    <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
-    <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash ends"</span><span class="p">)</span>
+    <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash starts"</span><span class="p">)</span>
+    <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
+    <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"flash ends"</span><span class="p">)</span>
 </code></pre></div>
 
 <p><code>start_coroutine()</code> 会立即运行生成器，直到遇到第一个 <code>yield</code>。上例中的 <code>flash starts</code> 会在 <code>start()</code> 内记录。返回的 <code>Coroutine</code> 句柄代表后续调度；正常结束或取消后，<code>is_finished</code> 都会变成 <code>True</code>。</p>
@@ -318,22 +308,12 @@
 <li>把 <code>CoroutineTour</code> 挂到 <code>CoroutineLab</code>。</li>
 <li>打开 <strong>Console</strong>，清除旧消息，再进入 Play 模式。</li>
 </ol>
-<p>示例不需要 Collider 或 Rigidbody。即使组件没有重写 <code>fixed_update()</code>，<code>WaitForFixedUpdate()</code> 仍会等待引擎的下一个固定更新阶段。</p>
+<p>示例不需要 Collider 或 Rigidbody。即使组件没有重写 <code>fixed_update()</code>，<code>inx.WaitForFixedUpdate()</code> 仍会等待引擎的下一个固定更新阶段。</p>
 <h2 id="zh-complete-tour">运行全部等待类型</h2>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.coroutine</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">WaitForEndOfFrame</span><span class="p">,</span>
-    <span class="n">WaitForFixedUpdate</span><span class="p">,</span>
-    <span class="n">WaitForFrames</span><span class="p">,</span>
-    <span class="n">WaitForSeconds</span><span class="p">,</span>
-    <span class="n">WaitForSecondsRealtime</span><span class="p">,</span>
-    <span class="n">WaitUntil</span><span class="p">,</span>
-    <span class="n">WaitWhile</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.debug</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">CoroutineTour</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">CoroutineTour</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">awake</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_sequence_handle</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">False</span>
@@ -343,52 +323,52 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_sequence_handle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">run_sequence</span><span class="p">())</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">run_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"1. sequence started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"1. sequence started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="k">yield</span> <span class="kc">None</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"2. one update frame passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"2. one update frame passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        <span class="k">yield</span> <span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"3. two more update frames passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"3. two more update frames passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"4. 0.5 scaled seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"4. 0.5 scaled seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        <span class="k">yield</span> <span class="n">WaitForSecondsRealtime</span><span class="p">(</span><span class="mf">0.25</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"5. 0.25 real seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSecondsRealtime</span><span class="p">(</span><span class="mf">0.25</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"5. 0.25 real seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        <span class="k">yield</span> <span class="n">WaitForFixedUpdate</span><span class="p">()</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"6. resumed in fixed update"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForFixedUpdate</span><span class="p">()</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"6. resumed in fixed update"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
-        <span class="k">yield</span> <span class="n">WaitForEndOfFrame</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"7. two late-update phases passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForEndOfFrame</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"7. two late-update phases passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">open_gate_later</span><span class="p">())</span>
-        <span class="k">yield</span> <span class="n">WaitUntil</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"8. WaitUntil observed an open gate"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitUntil</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"8. WaitUntil observed an open gate"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">clear_busy_later</span><span class="p">())</span>
-        <span class="k">yield</span> <span class="n">WaitWhile</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"9. WaitWhile observed idle state"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitWhile</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"9. WaitWhile observed idle state"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="n">child</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">start_coroutine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">child_sequence</span><span class="p">())</span>
         <span class="k">yield</span> <span class="n">child</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"10. child finished; parent finished"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"10. child finished; parent finished"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">open_gate_later</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_gate_open</span> <span class="o">=</span> <span class="kc">True</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">clear_busy_later</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">yield</span> <span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForFrames</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">child_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
-        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child completed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child started immediately"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.2</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"child completed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">cancel_sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">"""可绑定到 UI Button。"""</span>
@@ -419,37 +399,37 @@
 <td><code>update</code></td>
 </tr>
 <tr>
-<td><code>WaitForFrames(n)</code></td>
+<td><code>inx.WaitForFrames(n)</code></td>
 <td>经过恰好 <code>n</code> 次更新阶段检查后恢复。<code>n</code> 必须是至少为 1 的整数，<code>bool</code> 会被拒绝。</td>
 <td><code>update</code></td>
 </tr>
 <tr>
-<td><code>WaitForSeconds(seconds)</code></td>
+<td><code>inx.WaitForSeconds(seconds)</code></td>
 <td>累加更新阶段的帧间隔，达到 <code>seconds</code> 后恢复。</td>
 <td><code>update</code></td>
 </tr>
 <tr>
-<td><code>WaitForSecondsRealtime(seconds)</code></td>
+<td><code>inx.WaitForSecondsRealtime(seconds)</code></td>
 <td>墙钟时间达到目标后，在首次更新检查时恢复。</td>
 <td><code>update</code></td>
 </tr>
 <tr>
-<td><code>WaitForFixedUpdate()</code></td>
+<td><code>inx.WaitForFixedUpdate()</code></td>
 <td>在下一次固定更新调度中恢复。</td>
 <td><code>fixed_update</code></td>
 </tr>
 <tr>
-<td><code>WaitForEndOfFrame(n)</code></td>
+<td><code>inx.WaitForEndOfFrame(n)</code></td>
 <td>经过 <code>n</code> 次后期更新调度后恢复。<code>n</code> 与 <code>WaitForFrames</code> 使用相同的整数校验。</td>
 <td><code>late_update</code></td>
 </tr>
 <tr>
-<td><code>WaitUntil(predicate)</code></td>
+<td><code>inx.WaitUntil(predicate)</code></td>
 <td>每次更新检查都调用 <code>predicate()</code>，结果为真时恢复。</td>
 <td><code>update</code></td>
 </tr>
 <tr>
-<td><code>WaitWhile(predicate)</code></td>
+<td><code>inx.WaitWhile(predicate)</code></td>
 <td>每次更新检查都调用 <code>predicate()</code>，结果变为假时恢复。</td>
 <td><code>update</code></td>
 </tr>
@@ -503,7 +483,7 @@
 <div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">temporary_state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="k">try</span><span class="p">:</span>
-        <span class="k">yield</span> <span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">5.0</span><span class="p">)</span>
+        <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">5.0</span><span class="p">)</span>
     <span class="k">finally</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
 </code></pre></div>
@@ -532,7 +512,7 @@
 <h2 id="zh-common-errors">常见错误</h2>
 <ul>
 <li><strong>传入方法本身</strong>：应写成 <code>self.start_coroutine(self.run_sequence())</code>，末尾括号不能省略。</li>
-<li><strong>使用 <code>time.sleep()</code></strong>：它会阻塞线程并冻结其他引擎工作。墙钟延时请 <code>yield WaitForSecondsRealtime()</code>。</li>
+<li><strong>使用 <code>time.sleep()</code></strong>：它会阻塞线程并冻结其他引擎工作。墙钟延时请 <code>yield inx.WaitForSecondsRealtime()</code>。</li>
 <li><strong>期待精确时间点</strong>：等待只能在调度检查时恢复，所以指定时长是下限，可能多出一小段帧时间。</li>
 <li><strong>期待 <code>WaitForSeconds</code> 响应暂停</strong>：当前调度器传入的是原始更新 delta，<code>time_scale</code> 不会改变这个等待。墙钟延时用实时等待；流程必须跟随游戏时钟时，请自行累计 <code>Time.delta_time</code>。</li>
 <li><strong>把 <code>WaitForEndOfFrame</code> 当成渲染后截图点</strong>：当前调度器把它映射到后期更新。</li>

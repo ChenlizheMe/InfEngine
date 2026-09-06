@@ -2,7 +2,7 @@
 globalThis.INFERNUX_PAGE_TRANSLATIONS = {
     "en": {
         "pageTitle.roadmap": "熔炉 · Infernux — Roadmap",
-        "roadmap.hero.badge": "CURRENT CYCLE · 0.3.7 → 0.5.2",
+        "roadmap.hero.badge": "CURRENT CYCLE · 0.4.0 → 0.5.2",
         "roadmap.hero.description": "From a working engine on Windows to cross-platform shipping, models running through the data plane, and agents that can build tools safely. No dates here, only what each step has to do before it counts as done.",
         "roadmap.hero.kicker": "Roadmap",
         "roadmap.hero.primary": "Track issues",
@@ -35,10 +35,10 @@ globalThis.INFERNUX_PAGE_TRANSLATIONS = {
         "roadmap.priorities.intro": "These have to close real shipping loops. Writing the architecture document does not count, and neither does getting one isolated demo to run.",
         "roadmap.priorities.kicker": "On the bench right now",
         "roadmap.priorities.title": "The next three.",
-        "roadmap.release.current.item1": "InxPackage plugins install from files, folders, Git and the official registry; MCP now ships as the removable default plugin.",
-        "roadmap.release.current.item2": "Separate FBX animation files map by exact joint identity, accept importer pivot helpers and reject incompatible rigs explicitly.",
-        "roadmap.release.current.tag": "RUNNING",
-        "roadmap.release.current.title": "Plugin foundations and reliable skeletal animation",
+        "roadmap.release.current.item1": "Repository packages use a package/ payload root and a standalone packer. Local authors work directly in their selected folder; scripts and assets under Packages refresh alongside project content.",
+        "roadmap.release.current.item2": "Player content stays packed in Content.inxpkg. Authored asset paths resolve through cooked GUID identities, with real file access for payloads that require it.",
+        "roadmap.release.current.tag": "0.4.0 · PLUGINS AND ASSETS",
+        "roadmap.release.current.title": "Packaged assets and live plugin authoring",
         "roadmap.release.long.item1": "0.5.0 formalises Engine Tools and draws a hard line between trusted and untrusted execution. 0.5.1 ships the distribution format for plugins and models, with their own tests run in a sandbox before anything lands in your project.",
         "roadmap.release.long.item2": "0.5.2 has to string cross-platform Players, models, schemas, replay, batch worlds and tool governance into one path somebody can walk end to end, live.",
         "roadmap.release.long.tag": "0.5.0–0.5.2 · CONVERGENCE",
@@ -47,14 +47,14 @@ globalThis.INFERNUX_PAGE_TRANSLATIONS = {
         "roadmap.release.mid.item2": "Every one of these produces a versioned contract and acceptance evidence somebody else can measure. A private path that only survives inside a demo does not count.",
         "roadmap.release.mid.tag": "0.4.1–0.4.4 · PLUMBING",
         "roadmap.release.mid.title": "Headless, semantics, replay, batch data",
-        "roadmap.release.next.item1": "0.3.7 has to install a first APK on real hardware. 0.3.8 hardens Android inference and packaging. 0.4.0 requires one project to ship on Android and Web at the same time.",
-        "roadmap.release.next.item2": "Torch runs through all three: train and export with native PyTorch in the editor, then swap in whatever inference runtime the target platform can actually carry. Nobody should install a CUDA Toolkit to play a game.",
-        "roadmap.release.next.tag": "0.3.7–0.4.0 · LEAVING WINDOWS",
-        "roadmap.release.next.title": "Android, Web, Torch"
+        "roadmap.release.next.item1": "0.4.0 adds Windows and Linux Editors and Player exports for Windows, Linux, Android, and Web. The shared MultiPlatform040 project exercises gameplay, input, UI, and packaged asset reads.",
+        "roadmap.release.next.item2": "Platform plugins carry their reusable build payloads. Hub manages Python and shared Android toolchains, while GUID-backed runtime content stays packed instead of exposing the project directory tree.",
+        "roadmap.release.next.tag": "0.4.0 · MULTIPLATFORM",
+        "roadmap.release.next.title": "Four targets, one build workflow"
     },
     "zh": {
         "pageTitle.roadmap": "熔炉 · Infernux — 路线图",
-        "roadmap.hero.badge": "当前周期 · 0.3.7 → 0.5.2",
+        "roadmap.hero.badge": "当前周期 · 0.4.0 → 0.5.2",
         "roadmap.hero.description": "从 Windows 上一台能用的引擎，走到跨平台发布、模型贯穿数据面、Agent 能安全造工具。这里不写日期，只写每一格要做到什么才算过。",
         "roadmap.hero.kicker": "路线图",
         "roadmap.hero.primary": "查看 Issues",
@@ -87,10 +87,10 @@ globalThis.INFERNUX_PAGE_TRANSLATIONS = {
         "roadmap.priorities.intro": "这几件事必须闭合真实的发布链路。写完架构文档不算过，跑通一个孤立 demo 也不算。",
         "roadmap.priorities.kicker": "手头正在做的",
         "roadmap.priorities.title": "接下来三关。",
-        "roadmap.release.current.item1": "InxPackage 可以从文件、目录、Git 和官方注册表安装；MCP 现在作为可卸载的默认插件交付。",
-        "roadmap.release.current.item2": "独立 FBX 动画按精确关节名称映射，允许导入器 pivot 辅助节点，并明确拒绝不兼容骨架。",
-        "roadmap.release.current.tag": "跑着呢",
-        "roadmap.release.current.title": "插件基础设施与可靠骨骼动画",
+        "roadmap.release.current.item1": "仓库以 package/ 为载荷根目录，使用独立脚本打包。本地作者直接使用所选文件夹；Packages 内脚本与资产和项目内容一同刷新。",
+        "roadmap.release.current.item2": "Player 内容保留在 Content.inxpkg。原始资产路径通过构建后的 GUID 身份解析，需要真实路径的载荷可以获得文件访问。",
+        "roadmap.release.current.tag": "0.4.0 · 插件与资产",
+        "roadmap.release.current.title": "资产封包与插件实时创作",
         "roadmap.release.long.item1": "0.5.0 把 Engine Tool 正式化，在可信和不可信执行之间划一条死线。0.5.1 交付插件和模型的分发格式，装进项目之前先在沙箱里跑完它自带的测试。",
         "roadmap.release.long.item2": "0.5.2 要把跨平台 Player、模型、schema、回放、批量世界和工具治理串成一条能当场从头走到尾的路径。",
         "roadmap.release.long.tag": "0.5.0–0.5.2 · 合拢",
@@ -99,9 +99,9 @@ globalThis.INFERNUX_PAGE_TRANSLATIONS = {
         "roadmap.release.mid.item2": "每一格都要交出版本化契约，和别人能复测的验收证据。只在演示里跑得通的私路不算数。",
         "roadmap.release.mid.tag": "0.4.1–0.4.4 · 地基",
         "roadmap.release.mid.title": "无窗口、语义、回放、批量数据",
-        "roadmap.release.next.item1": "0.3.7 要在真机上装出第一个 APK。0.3.8 打磨 Android 的推理和打包。0.4.0 要求同一个项目能同时发 Android 和 Web。",
-        "roadmap.release.next.item2": "Torch 贯穿这三关：编辑器里用原生 PyTorch 训练和导出，Player 里换成那个平台真扛得动的推理运行时。玩家不该为了跑一个游戏去装 CUDA Toolkit。",
-        "roadmap.release.next.tag": "0.3.7–0.4.0 · 出 Windows",
-        "roadmap.release.next.title": "Android、Web、Torch"
+        "roadmap.release.next.item1": "0.4.0 加入 Windows/Linux 编辑器，以及 Windows、Linux、Android、Web 四端 Player 导出。共享 MultiPlatform040 项目覆盖玩法、输入、UI 与包内资产读取。",
+        "roadmap.release.next.item2": "平台插件携带可复用构建载荷，Hub 管理 Python 与共享安卓工具链。运行时内容通过 GUID 索引访问，保留资产封包，不再展开项目目录树。",
+        "roadmap.release.next.tag": "0.4.0 · 多平台",
+        "roadmap.release.next.title": "四个目标，一条构建流程"
     }
 };

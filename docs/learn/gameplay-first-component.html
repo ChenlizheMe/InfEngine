@@ -21,7 +21,7 @@
 <body>
     <a class="skip-link" href="#main-content">Skip to content</a>
     <header class="site-header" role="banner">
-        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.3.7</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
+        <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.0</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
             <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
             <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
@@ -45,34 +45,33 @@
 <h2 id="create-the-script">Create the script</h2>
 <p>Open a project with the <strong>Project</strong>, <strong>Hierarchy</strong>, <strong>Inspector</strong>, <strong>Game</strong>, and <strong>Console</strong> panels visible. In the Project panel, open <code>Assets</code>, right-click empty space, choose <strong>Script (.py)</strong>, and name the asset <code>HelloComponent</code>. Script names must be valid Python identifiers; the editor adds <code>.py</code> when needed.</p>
 <p>Open <code>HelloComponent.py</code> and replace its contents with this complete component:</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">HelloComponent</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloComponent</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
     <span class="n">_elapsed_seconds</span> <span class="o">=</span> <span class="mf">0.0</span>
     <span class="n">_reported_first_second</span> <span class="o">=</span> <span class="kc">False</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">awake</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Awake: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Awake: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">on_enable</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnEnable"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnEnable"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Start"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Start"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_elapsed_seconds</span> <span class="o">+=</span> <span class="n">delta_time</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reported_first_second</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_elapsed_seconds</span> <span class="o">&gt;=</span> <span class="mf">1.0</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_reported_first_second</span> <span class="o">=</span> <span class="kc">True</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Update has run for one second"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Update has run for one second"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">on_disable</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDisable"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDisable"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">on_destroy</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDestroy"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDestroy"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 </code></pre></div>
 
 <p>Private names beginning with <code>_</code> stay out of serialization and the Inspector. They are useful for runtime bookkeeping. Do not add an <code>__init__</code> method: <code>InxComponent</code> owns construction and raises <code>TypeError</code> when a subclass overrides it. Use <code>awake</code> or <code>start</code> for setup.</p>
@@ -162,34 +161,33 @@
 <h2 id="create-the-script_1">创建脚本</h2>
 <p>打开一个项目，并显示 <strong>Project</strong>、<strong>Hierarchy</strong>、<strong>Inspector</strong>、<strong>Game</strong> 与 <strong>Console</strong> 面板。在 Project 中进入 <code>Assets</code>，右键空白处，选择 <strong>脚本 (.py)</strong>，命名为 <code>HelloComponent</code>。脚本名必须是有效的 Python 标识符；需要时编辑器会自动补上 <code>.py</code>。</p>
 <p>打开 <code>HelloComponent.py</code>，把内容替换为下面这份完整组件：</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">Debug</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="n">InxComponent</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
-<span class="k">class</span><span class="w"> </span><span class="nc">HelloComponent</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloComponent</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
     <span class="n">_elapsed_seconds</span> <span class="o">=</span> <span class="mf">0.0</span>
     <span class="n">_reported_first_second</span> <span class="o">=</span> <span class="kc">False</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">awake</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Awake: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Awake: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">on_enable</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnEnable"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnEnable"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Start"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Start"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">delta_time</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_elapsed_seconds</span> <span class="o">+=</span> <span class="n">delta_time</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reported_first_second</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_elapsed_seconds</span> <span class="o">&gt;=</span> <span class="mf">1.0</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_reported_first_second</span> <span class="o">=</span> <span class="kc">True</span>
-            <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Update has run for one second"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+            <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"Update has run for one second"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">on_disable</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDisable"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDisable"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">on_destroy</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDestroy"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDestroy"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 </code></pre></div>
 
 <p>以 <code>_</code> 开头的私有名称不会进入序列化和 Inspector，适合保存运行时状态。请勿添加 <code>__init__</code>：组件构造由 <code>InxComponent</code> 管理，子类覆写它时会抛出 <code>TypeError</code>。初始化工作放进 <code>awake</code> 或 <code>start</code>。</p>

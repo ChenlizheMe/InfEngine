@@ -589,6 +589,14 @@ bool VkDeviceContext::HasStencilComponent(VkFormat format)
 
 bool VkDeviceContext::CreateInstance(const DeviceConfig &config)
 {
+#if defined(INFERNUX_USE_VOLK)
+    const VkResult loaderResult = volkInitialize();
+    if (loaderResult != VK_SUCCESS) {
+        INXLOG_ERROR("Failed to initialize the Vulkan loader, VkResult=", static_cast<int>(loaderResult));
+        return false;
+    }
+#endif
+
     m_validationEnabled = config.enableValidationLayers;
 
     // Check validation layer support
@@ -658,6 +666,9 @@ bool VkDeviceContext::CreateInstance(const DeviceConfig &config)
         INXLOG_ERROR("vkCreateInstance failed: ", VkResultToString(result));
         return false;
     }
+#if defined(INFERNUX_USE_VOLK)
+    volkLoadInstanceOnly(m_instance);
+#endif
 
     return true;
 }
@@ -761,12 +772,20 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     const auto capabilitySnapshot = VulkanCapabilitySnapshot::FromProbe(capabilityProbe);
     VulkanDeviceFeatureChain featureChain(capabilitySnapshot);
     rhi::DeviceCapabilityRequest capabilityRequest{};
+    if (!capabilitySnapshot.supported.dynamicRendering.supported) {
+        INXLOG_ERROR("The selected Vulkan device does not support the required Dynamic Rendering capability");
+        return false;
+    }
+    if (!capabilitySnapshot.supported.synchronization2.supported) {
+        INXLOG_ERROR("The selected Vulkan device does not support the required Synchronization2 capability");
+        return false;
+    }
     const bool forceBoundedDescriptors = ForceBoundedDescriptors();
     capabilityRequest.descriptorIndexing =
         capabilitySnapshot.supported.bindless.IsSupported() && !forceBoundedDescriptors;
     capabilityRequest.timelineSemaphore = capabilitySnapshot.supported.timelineSemaphore.supported;
-    capabilityRequest.dynamicRendering = capabilitySnapshot.supported.dynamicRendering.supported;
-    capabilityRequest.synchronization2 = capabilitySnapshot.supported.synchronization2.supported;
+    capabilityRequest.dynamicRendering = true;
+    capabilityRequest.synchronization2 = true;
     capabilityRequest.submit2 = capabilitySnapshot.supported.submit2.supported;
     if (forceBoundedDescriptors)
         INXLOG_INFO("Descriptor indexing disabled by INFERNUX_FORCE_BOUNDED_DESCRIPTORS; validating bounded "
@@ -819,19 +838,14 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
     createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
-    // Validation layers (deprecated for devices, but included for older implementations)
-    if (m_validationEnabled) {
-        createInfo.enabledLayerCount = static_cast<uint32_t>(VALIDATION_LAYERS.size());
-        createInfo.ppEnabledLayerNames = VALIDATION_LAYERS.data();
-    } else {
-        createInfo.enabledLayerCount = 0;
-    }
-
     VkResult result = vkCreateDevice(m_physicalDevice, &createInfo, nullptr, &m_device);
     if (result != VK_SUCCESS) {
         INXLOG_ERROR("vkCreateDevice failed: ", VkResultToString(result));
         return false;
     }
+#if defined(INFERNUX_USE_VOLK)
+    volkLoadDevice(m_device);
+#endif
     m_rhiCapabilityState = enabledCapabilityState;
     m_descriptorIndexingEnabled = m_rhiCapabilityState.bindless.IsEnabled();
     m_timelineSemaphoreEnabled = m_rhiCapabilityState.timelineSemaphore.enabled;

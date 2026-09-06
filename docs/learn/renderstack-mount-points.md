@@ -86,20 +86,20 @@ Stable IDs are asset-facing API. A pipeline author can refactor internal pass na
 Here is one minimal high-level pipeline that exposes all four scopes through current public calls:
 
 ```python
-from Infernux.renderstack import Queue, RenderPipeline
+import infernux as inx
 
 
-class ScopeProbePipeline(RenderPipeline):
+class ScopeProbePipeline(inx.renderstack.RenderPipeline):
     name = "Scope Probe"
 
     def define(self, pipeline):
         pipeline.frame(hdr=True)
         with pipeline.opaque() as opaque:
             with opaque.layer("Selected Objects") as selected:
-                selected.forward(Queue(1000, 1099)).effects(
+                selected.forward(inx.renderstack.Queue(1000, 1099)).effects(
                     "route_probe", label="Route Probe"
                 )
-                selected.forward(Queue(1100, 1199))
+                selected.forward(inx.renderstack.Queue(1100, 1199))
                 selected.effects("layer_probe", label="Layer Probe")
             opaque.otherwise().forward()
             opaque.effects("opaque_probe", label="Opaque Stage Probe")
@@ -284,20 +284,20 @@ Stage 契约会建立局部语义 Resource Bus。它的 `inputs` 决定 `color`�
 下面这条最小高层管线通过当前公开调用暴露四种 Scope：
 
 ```python
-from Infernux.renderstack import Queue, RenderPipeline
+import infernux as inx
 
 
-class ScopeProbePipeline(RenderPipeline):
+class ScopeProbePipeline(inx.renderstack.RenderPipeline):
     name = "Scope Probe"
 
     def define(self, pipeline):
         pipeline.frame(hdr=True)
         with pipeline.opaque() as opaque:
             with opaque.layer("Selected Objects") as selected:
-                selected.forward(Queue(1000, 1099)).effects(
+                selected.forward(inx.renderstack.Queue(1000, 1099)).effects(
                     "route_probe", label="Route Probe"
                 )
-                selected.forward(Queue(1100, 1199))
+                selected.forward(inx.renderstack.Queue(1100, 1199))
                 selected.effects("layer_probe", label="Layer Probe")
             opaque.otherwise().forward()
             opaque.effects("opaque_probe", label="Opaque Stage Probe")

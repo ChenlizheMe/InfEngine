@@ -52,11 +52,11 @@ def test_material_texture_sampler_honors_device_max_anisotropy_and_filter_mode()
     assert "sampler.maxAnisotropy" in source
     assert 'filterMode == "linear" || filterMode == "bilinear"' in source
     assert "sampler.mipFilter = rhi::FilterMode::Nearest" in source
-    assert 'meta.GetDataAs<int>("aniso_level") == 1' in importer
+    assert 'meta.GetDataAs<int>("aniso_level") == 1' not in importer
     assert 'meta.AddMetadata("aniso_level", -1)' in importer
 
 
-def test_native_texture_settings_migrate_the_legacy_anisotropy_default() -> None:
+def test_native_texture_settings_preserve_authored_anisotropy() -> None:
     source = (
         ROOT
         / "cpp"
@@ -67,7 +67,7 @@ def test_native_texture_settings_migrate_the_legacy_anisotropy_default() -> None
         / "InxTexture.cpp"
     ).read_text(encoding="utf-8")
 
-    assert "importedLevel == 1 ? -1 : importedLevel" in source
+    assert 'm_anisoLevel = meta.GetDataAs<int>("aniso_level")' in source
 
 
 def test_lit_geometry_uses_the_camera_local_lighting_domain() -> None:
@@ -222,7 +222,14 @@ def test_descriptor_pool_ownership_is_centralized() -> None:
 
 
 def test_native_render_dll_dependency_direction() -> None:
-    cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    cmake = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            ROOT / "CMakeLists.txt",
+            ROOT / "cmake" / "InfernuxSources.cmake",
+            ROOT / "cmake" / "InfernuxNativeTargets.cmake",
+        )
+    )
 
     assert re.search(
         r"target_link_libraries\(InfernuxRenderCore\s+PUBLIC\s+InfernuxFoundation\s*\)",
@@ -300,20 +307,25 @@ def test_standalone_shader_modules_remain_pipeline_manager_owned() -> None:
 
 def test_fullscreen_effect_shader_reload_retires_cached_pipeline_revision() -> None:
     fullscreen = (RENDERER / "FullscreenRenderer.cpp").read_text(encoding="utf-8")
+    vulkan_adapter = (RENDERER / "FullscreenRendererVkAdapter.cpp").read_text(
+        encoding="utf-8"
+    )
     renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
     invalidate = _function_body(fullscreen, "void FullscreenRenderer::InvalidateShader")
-    retire = _function_body(fullscreen, "void RetirePipeline")
     renderer_invalidate = _function_body(
         renderer, "void InxRenderer::InvalidateShaderCache"
     )
 
-    assert "m_impl->RetirePipeline" in invalidate
-    assert "GetRetirementQueue().Retire" in retire
+    assert "m_impl->DestroyPipeline" in invalidate
+    assert "device->Release(entry.rhi.pipeline)" in fullscreen
     assert "vkDeviceWaitIdle" not in invalidate
-    assert "vkDeviceWaitIdle" not in retire
+    assert "vkDeviceWaitIdle" not in fullscreen
+    assert "VkPipeline" not in fullscreen
+    assert "VulkanRhiDevice" not in fullscreen
+    assert "VulkanFullscreenRendererHost" in vulkan_adapter
     assert renderer_invalidate.count("InvalidateFullscreenShader(shaderId)") == 2
     assert renderer_invalidate.index("InvalidateFullscreenShader(shaderId)") < (
-        renderer_invalidate.index("m_vkCore->InvalidateShaderCache(shaderId)")
+        renderer_invalidate.index("m_vkCore->InvalidateShaderCache(shaderId, shaderType)")
     )
 
 
@@ -323,13 +335,33 @@ def test_fullscreen_passes_use_render_graph_dynamic_rendering_contract() -> None
     scene_graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
 
     assert "bool useDynamicRendering = false;" in fullscreen_header
-    assert "BuildVkPipelineRenderingInfo" in fullscreen
-    assert "pipelineInfo.renderPass = key.useDynamicRendering ? VK_NULL_HANDLE : renderPass;" in fullscreen
-    assert "const bool useDynamicFullscreen = m_renderGraph->SupportsDynamicRendering();" in scene_graph
-    assert "key.useDynamicRendering = useDynamicFullscreen;" in scene_graph
+    assert "desc.useDynamicRendering = key.useDynamicRendering;" in fullscreen
+    assert "desc.renderingSignature.colorFormats[0] = key.colorFormat;" in fullscreen
+    assert "device->CreateGraphicsPipeline(desc)" in fullscreen
+    assert "VkRenderPass" not in fullscreen
+    assert "key.useDynamicRendering = true;" in scene_graph
+    assert "GetPassRenderTargetLayout" not in scene_graph
     assert "perViewShadowTextureName" in scene_graph
     assert "builder.ReadSampledDepth(fullscreenShadowInput);" in scene_graph
     assert "fullscreenShadowDependencyDeclared = true;" in scene_graph
+
+
+def test_fullscreen_passes_discard_undefined_attachment_contents() -> None:
+    scene_graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
+
+    fullscreen_setup = scene_graph.index(
+        "fsWrittenVersion = builder.WriteColor(fsOutputTarget, 0);"
+    )
+    clear = scene_graph.index(
+        "builder.SetClearColor(0.0F, 0.0F, 0.0F, 0.0F);",
+        fullscreen_setup,
+    )
+    render_area = scene_graph.index(
+        "builder.SetRenderArea(fsPassWidth, fsPassHeight);",
+        clear,
+    )
+
+    assert fullscreen_setup < clear < render_area
 
 
 def test_presentation_recreation_uses_queue_scoped_drain() -> None:
@@ -438,7 +470,7 @@ def test_scene_and_game_resize_publish_target_generations_without_device_drain()
         assert "WaitIdle" not in body and "vkDeviceWaitIdle" not in body
         assert "std::make_unique<SceneRenderTarget>" in body
         assert "GetLastReservedCompletionEpoch" in body
-        assert "RetireFramebuffersBeforeTargetReplacement" in body
+        assert "InvalidateBeforeTargetReplacement" in body
         assert "ReplaceSceneTarget" in body
         assert "RetireResourcesAfter" in body
 
@@ -478,7 +510,7 @@ def test_scene_picking_pass_publishes_dynamic_viewport_before_any_draw() -> None
     picking = (RENDERER / "ScenePickingService.cpp").read_text(encoding="utf-8")
     record = _function_body(picking, "void ScenePickingService::Record")
 
-    begin = record.index("dynamicCommands.begin")
+    begin = record.index("m_dynamicRenderingCommands.begin")
     viewport = record.index("vkCmdSetViewport", begin)
     scissor = record.index("vkCmdSetScissor", viewport)
     geometry = record.index("DrawSceneFiltered", scissor)
@@ -561,13 +593,13 @@ def test_completed_async_uploads_retain_timeline_dependency_until_publication() 
 
 def test_runtime_screen_ui_uses_dynamic_rendering_with_msaa_resolve() -> None:
     screen_ui = (RENDERER / "gui" / "InxScreenUIRenderer.cpp").read_text(encoding="utf-8")
-    scene_graph = (RENDERER / "SceneRenderGraph.cpp").read_text(encoding="utf-8")
     graph_compile = (RENDERER / "vk" / "RenderGraphCompile.cpp").read_text(encoding="utf-8")
 
     assert "VkPipelineRenderingCreateInfo renderingInfo" in screen_ui
     assert "pipeInfo.renderPass = VK_NULL_HANDLE" in screen_ui
-    assert "m_screenUIRenderer->UsesDynamicRendering()" in scene_graph
-    assert "builder.UseDynamicRendering();" in scene_graph
+    assert "INFERNUX_SCREEN_UI_READY" in screen_ui
+    assert "bool RenderGraph::CompileGraphicsAttachments()" in graph_compile
+    assert "CreateVulkanRenderPasses" not in graph_compile
     assert "attachment.resolveImageView" in graph_compile
     assert "VK_RESOLVE_MODE_AVERAGE_BIT" in graph_compile
 
@@ -596,6 +628,65 @@ def test_per_view_descriptor_publication_only_waits_for_its_frame_slot() -> None
     assert "AllocatePerViewDescriptorSet" not in core_header
     assert "m_perViewDescriptorLeases" not in core_header
     assert "AllocatePerViewDescriptorLease" in core_header
+
+
+def test_forward_plus_grid_orders_ssbo_clear_before_atomic_population() -> None:
+    source = (
+        RENDERER / "lighting" / "ForwardPlusLightGrid.cpp"
+    ).read_text(encoding="utf-8")
+    shader = _function_body(
+        source, "std::string_view ForwardPlusLightGrid::ShaderSource"
+    )
+
+    clear = "tile_light_masks[offset + word] = 0u;"
+    atomic = "atomicOr(tile_light_masks[offset + (local_index >> 5u)]"
+    first_memory_barrier = shader.index("memoryBarrierBuffer();", shader.index(clear))
+    first_control_barrier = shader.index("barrier();", first_memory_barrier)
+
+    assert shader.index(clear) < first_memory_barrier < first_control_barrier
+    assert first_control_barrier < shader.index(atomic)
+    assert shader.count("memoryBarrierBuffer();") >= 2
+
+
+def test_render_graph_images_do_not_use_unsynchronized_memory_aliasing() -> None:
+    source = (VULKAN_BACKEND / "RenderGraphCompile.cpp").read_text(encoding="utf-8")
+
+    assert "imageInfo.flags |= VK_IMAGE_CREATE_ALIAS_BIT;" not in source
+    assert "vkBindImageMemory(device, resource.allocatedImage, heap.memory" not in source
+    assert "Allocate every graph image independently" in source
+
+
+def test_render_graph_preserves_internal_resource_state_between_in_flight_frames() -> None:
+    source = (VULKAN_BACKEND / "RenderGraph.cpp").read_text(encoding="utf-8")
+    prepare = _function_body(
+        source, "void RenderGraph::PrepareExecutionResourceStates"
+    )
+    begin = _function_body(source, "void RenderGraph::BeginExecution")
+    execute = _function_body(source, "void RenderGraph::Execute")
+
+    assert "resource.isExternal" in prepare
+    assert "resource.type == ResourceType::RendererList" in prepare
+    assert "previous.writerPassId == UINT32_MAX" in prepare
+    assert "m_resourceStates[index] = m_initialResourceStates[index]" in prepare
+    assert "PrepareExecutionResourceStates();" in begin
+    assert "PrepareExecutionResourceStates();" in execute
+    assert "m_resourceStates = m_initialResourceStates;" not in begin
+    assert "m_resourceStates = m_initialResourceStates;" not in execute
+
+
+def test_fullscreen_triangle_uses_the_standard_three_vertex_extent() -> None:
+    source = (
+        ROOT
+        / "python"
+        / "Infernux"
+        / "resources"
+        / "shaders"
+        / "fullscreen_triangle.vert"
+    ).read_text(encoding="utf-8")
+
+    assert "(gl_VertexIndex & 1) << 2" in source
+    assert "(gl_VertexIndex & 2) << 1" in source
+    assert "(gl_VertexIndex & 2) << 2" not in source
 
 
 def test_per_view_descriptor_leases_follow_view_and_preview_lifetimes() -> None:
@@ -670,12 +761,6 @@ def test_dynamic_msaa_retires_every_old_resource_at_one_cutover_epoch() -> None:
     assert apply_msaa.count("GetLastReservedCompletionEpoch()") == 1
 
     required_publications = {
-        "Scene framebuffer": (
-            "m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
-        ),
-        "Game framebuffer": (
-            "graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
-        ),
         "Outline": "retirementQueue.RetireAfter(cutoverEpoch",
         "Scene target": (
             "retiredSceneTarget->RetireResourcesAfter(retirementQueue, cutoverEpoch)"
@@ -708,57 +793,42 @@ def test_dynamic_msaa_retires_every_old_resource_at_one_cutover_epoch() -> None:
     assert screen_ui_retirement, "Screen UI must retire at the shared cutover epoch."
     assert apply_msaa.count("retirementQueue.RetireAfter(cutoverEpoch") == 2
 
-    scene_framebuffer_retirement = (
-        "m_sceneRenderGraph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
-    )
-    game_framebuffer_retirement = (
-        "graph->RetireFramebuffersBeforeTargetReplacement(cutoverEpoch)"
-    )
-    assert apply_msaa.index(scene_framebuffer_retirement) < apply_msaa.index(
+    scene_graph_invalidation = "m_sceneRenderGraph->InvalidateBeforeTargetReplacement()"
+    game_graph_invalidation = "graph->InvalidateBeforeTargetReplacement()"
+    assert apply_msaa.index(scene_graph_invalidation) < apply_msaa.index(
         "m_sceneRenderGraph->ReplaceSceneTarget"
     )
-    assert apply_msaa.index(game_framebuffer_retirement) < apply_msaa.index(
+    assert apply_msaa.index(game_graph_invalidation) < apply_msaa.index(
         "graph->ReplaceSceneTarget"
     )
     assert apply_msaa.index("CommitMaterialPipelineGeneration") < apply_msaa.index(
         "m_sceneRenderGraph->ReplaceSceneTarget"
     )
-    assert apply_msaa.index(scene_framebuffer_retirement) < apply_msaa.index(
+    assert apply_msaa.index(scene_graph_invalidation) < apply_msaa.index(
         "retiredSceneTarget->RetireResourcesAfter"
     )
-    assert apply_msaa.index(game_framebuffer_retirement) < apply_msaa.index(
+    assert apply_msaa.index(game_graph_invalidation) < apply_msaa.index(
         "retiredGameTarget->RetireResourcesAfter"
     )
 
 
 def test_msaa_retirement_helpers_defer_destruction_without_idle_waits() -> None:
     target_source = (RENDERER / "SceneRenderTarget.cpp").read_text(encoding="utf-8")
-    graph_source = (VULKAN_BACKEND / "RenderGraph.cpp").read_text(encoding="utf-8")
     outline_source = (RENDERER / "OutlineRenderer.cpp").read_text(encoding="utf-8")
 
     retire_target = _function_body(
         target_source, "void SceneRenderTarget::RetireResourcesAfter"
     )
-    retire_framebuffers = _function_body(
-        graph_source, "void RenderGraph::RetireFramebufferCacheAfter"
-    )
     cleanup_outline = _function_body(
         outline_source, "void OutlineRenderer::Cleanup(bool waitForIdle)"
     )
 
-    for name, body in (
-        ("SceneRenderTarget", retire_target),
-        ("RenderGraph framebuffer cache", retire_framebuffers),
-    ):
-        assert "WaitIdle" not in body, f"{name} retirement must not wait for the GPU."
-        assert "RetireAfter" in body, f"{name} destruction must be completion-gated."
-        assert "retirementSerial" in body
+    assert "WaitIdle" not in retire_target
+    assert "RetireAfter" in retire_target
+    assert "retirementSerial" in retire_target
 
     assert retire_target.index("RetireAfter(retirementSerial") < retire_target.index(
         "m_imguiDescriptorSet = VK_NULL_HANDLE"
-    )
-    assert retire_framebuffers.index("m_framebufferCache.clear()") < (
-        retire_framebuffers.index("RetireAfter(retirementSerial")
     )
     assert "if (waitForIdle && !m_core->IsShuttingDown())" in cleanup_outline
     assert "WaitIdle" in cleanup_outline
@@ -943,13 +1013,13 @@ def test_dynamic_rendering_migration_covers_outline_gizmos_and_previews() -> Non
     assert "GetEditorOverlayMaterialPass() const" in graph_header
     assert "const auto editorOverlayPass = GetEditorOverlayMaterialPass();" in graph
     assert graph.count("&editorOverlayPass") >= 3
-    assert graph.count("builder.UseDynamicRendering();") >= 3
+    assert "builder.UseDynamicRendering" not in graph
 
     assert "GraphicsRenderingSignature &maskSignature" in outline_header
     assert "BuildVkPipelineRenderingInfo(m_outlineMaskRenderingSignature" in outline
     assert "BuildVkPipelineRenderingInfo(m_outlineCompositeRenderingSignature" in outline
-    assert "m_outlineMaskUsesDynamicRendering" in outline
-    assert "m_outlineCompositeUsesDynamicRendering" in outline
+    assert "m_outlineMaskRenderPass" not in outline
+    assert "m_outlineCompositeRenderPass" not in outline
 
     assert "GetOrCreatePreviewMaterialPass" in core_header
     assert "GetOrCreatePreviewMaterialPass" in core
@@ -1046,6 +1116,91 @@ def test_player_window_skips_startup_maximize() -> None:
     assert "SDL_MaximizeWindow" in body
     assert "_INFERNUX_PLAYER_MODE" in body
     assert body.index("_INFERNUX_PLAYER_MODE") < body.index("SDL_MaximizeWindow")
+
+
+def test_touch_events_wake_the_frame_loop_and_request_ui_refresh() -> None:
+    source = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp"
+    ).read_text(encoding="utf-8")
+    process_events = _function_body(source, "void InxView::ProcessEvent")
+    process_one = _function_body(source, "bool InxView::ProcessOneEvent")
+    for event_name in (
+        "SDL_EVENT_FINGER_DOWN",
+        "SDL_EVENT_FINGER_MOTION",
+        "SDL_EVENT_FINGER_UP",
+        "SDL_EVENT_FINGER_CANCELED",
+    ):
+        assert event_name in process_events
+        assert event_name in process_one
+
+
+def test_play_mode_supports_an_explicit_frame_cap() -> None:
+    view_header = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.h"
+    ).read_text(encoding="utf-8")
+    view_source = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp"
+    ).read_text(encoding="utf-8")
+    process_events = _function_body(view_source, "void InxView::ProcessEvent")
+    engine = (ROOT / "python" / "Infernux" / "engine" / "engine.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "float playFpsCap = 0.0f" in view_header
+    assert "m_isPlayMode ? m_idling.playFpsCap" in process_events
+    assert "m_isPlayMode && targetFps <= 0.0f" in process_events
+    assert 'os.environ.get("INFERNUX_PLAYER_FPS_CAP")' in engine
+    assert "self._engine.set_play_fps_cap(fps)" in engine
+
+
+def test_renderer_honors_the_configured_frames_in_flight() -> None:
+    renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+    constructor = _function_body(renderer, "InxRenderer::InxRenderer")
+
+    assert "auto &config = EngineConfig::Get()" in renderer
+    assert "config.maxFramesInFlight" in renderer
+    assert 'std::getenv("INFERNUX_MAX_FRAMES_IN_FLIGHT")' in renderer
+    assert "ResolveMaxFramesInFlight()" in constructor
+
+
+def test_mobile_lifecycle_suspends_and_rebinds_vulkan_presentation() -> None:
+    view = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp"
+    ).read_text(encoding="utf-8")
+    renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+    core = (RENDERER / "InxVkCoreModular.cpp").read_text(encoding="utf-8")
+
+    assert "SDL_AddEventWatch(&InxView::WatchApplicationEvents" in view
+    assert "SDL_EVENT_WILL_ENTER_BACKGROUND" in view
+    assert "m_applicationInBackground.store(true" in view
+    assert "m_surfaceRecreationPending.store(true" in view
+    assert "SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED" in view
+    assert "m_hasCreatedSurface.load" in view
+    assert "NeedsSurfaceRecreation()" in renderer
+    assert "RecreatePresentationSurface" in renderer
+    assert core.index("m_backend.Presentation().Destroy()") < core.index(
+        "SDL_Vulkan_DestroySurface"
+    )
+    assert core.index("SDL_Vulkan_DestroySurface") < core.index(
+        "createSurface(m_instance"
+    )
+
+
+def test_vulkan_surface_loss_escalates_beyond_swapchain_recreation() -> None:
+    swapchain_h = (RENDERER / "vk" / "VkSwapchainManager.h").read_text(
+        encoding="utf-8"
+    )
+    swapchain_cpp = (RENDERER / "vk" / "VkSwapchainManager.cpp").read_text(
+        encoding="utf-8"
+    )
+    draw = (RENDERER / "VkCoreDraw.cpp").read_text(encoding="utf-8")
+    renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+
+    assert "SurfaceLost" in swapchain_h
+    assert swapchain_cpp.count("VK_ERROR_SURFACE_LOST_KHR") >= 2
+    assert "m_presentationSurfaceLost = true" in draw
+    assert "ConsumePresentationSurfaceLost()" in renderer
+    assert "RequestSurfaceRecreation()" in renderer
 
 
 def test_prepare_pipeline_pumps_between_engine_shader_compiles() -> None:

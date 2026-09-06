@@ -289,7 +289,7 @@ class ShaderProgram
     bool CreatePipelineLayout();
 
     /**
-     * @brief Extract material UBO layout (named "MaterialProperties" or binding 2)
+     * @brief Extract the canonical MaterialProperties UBO layout.
      */
     void ExtractMaterialUBOLayout();
 

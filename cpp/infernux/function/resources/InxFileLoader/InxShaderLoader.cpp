@@ -568,9 +568,6 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
     metaData.AddMetadata("shader_surface_type", desc.surfaceOptions.surfaceType);
     metaData.AddMetadata("shader_receive_shadows", desc.surfaceOptions.receiveShadows);
     metaData.AddMetadata("shader_cast_shadows", desc.surfaceOptions.castShadows);
-
-    INXLOG_DEBUG("Shader metadata created - type: ", type, ", shader_id: ", desc.shaderId,
-                 ", lighting_type: ", desc.shadingModel, ", properties: ", propertiesJson, " for file: ", filePath);
 }
 
 // ============================================================================
@@ -709,13 +706,11 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
     desc.hasVertexFunc = entryPoints.vertex;
     desc.hasShadingFunc = entryPoints.shading;
 
-    // Record the GLSL version and reject old annotation statements without
-    // interpreting them. Comments containing an at-sign remain ordinary GLSL.
+    // Record the GLSL version directive. All remaining source is owned by the
+    // current GLSL compiler path.
     std::istringstream stream(shaderCode);
     std::string line;
-    uint32_t lineNumber = 0;
     while (std::getline(stream, line)) {
-        ++lineNumber;
         // Check #version
         size_t start = line.find_first_not_of(" \t");
         std::string trimmedLine = (start != std::string::npos) ? line.substr(start) : "";
@@ -723,10 +718,6 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
             desc.versionDirective = line;
             continue;
         }
-
-        if (!trimmedLine.empty() && trimmedLine.front() == '@')
-            desc.errors.push_back(filePath + ":" + std::to_string(lineNumber) +
-                                  ":1: legacy @ shader syntax was removed; use ShaderInfo fields");
     }
 
     // A shading model is deliberately pipeline-agnostic. It exposes one fixed
@@ -735,8 +726,7 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
     if (desc.isShadingModel) {
         if (!desc.entries.empty())
             desc.errors.push_back(filePath +
-                                  ": ShadingModelInfo Entry declarations were removed; define the fixed shading() "
-                                  "function once");
+                                  ": ShadingModelInfo has one fixed shading() entry and does not accept Entry");
         if (!desc.hasShadingFunc)
             desc.errors.push_back(filePath + ": a shading model must define void shading(...)");
         if (desc.hasShadingFunc)
@@ -840,8 +830,6 @@ InxShaderLoader::LoadShadingModel(const std::string &modelName,
 
     // Cache the result
     s_shadingModelCache[modelName] = desc;
-
-    INXLOG_DEBUG("Loaded shading model '", modelName, "' from ", filePath, " with ", desc.targets.size(), " targets");
 
     return desc;
 }
@@ -1774,7 +1762,6 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
 
     std::string filePath = metaData.GetDataAs<std::string>("file_path");
     std::string type = metaData.GetDataAs<std::string>("type");
-    INXLOG_DEBUG("InxShaderLoader::Compile - Compiling shader: ", filePath);
     s_compiledVariantCache.erase(filePath);
 
     EShLanguage shaderType = GetShaderType(type);
@@ -2106,12 +2093,17 @@ std::vector<char> InxShaderLoader::CompileFragmentGlsl(const std::string &source
     return spirv;
 }
 
+std::string InxShaderLoader::PrepareAuthoredStageGlsl(const std::string &source, const std::string &filePath,
+                                                      ShaderCompileTarget target)
+{
+    CompilationGuard guard;
+    return PreprocessShaderSource(source, filePath, target);
+}
+
 void InxShaderLoader::CompileVariant(const char *content, const std::string &filePath, ShaderCompileTarget target,
                                      const std::string &variantName, EShLanguage shaderType)
 {
     std::string variantSource = PreprocessShaderSource(std::string(content), filePath, target);
-
-    INXLOG_DEBUG("Compiling ", variantName, " variant for: ", filePath, "\n", variantSource);
 
     std::vector<char> spirv;
     if (!CompileGLSL(variantSource, shaderType, filePath, spirv)) {

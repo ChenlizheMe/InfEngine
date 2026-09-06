@@ -12,8 +12,8 @@
 #include "Transform.h"
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
-#include <InxLog.h>
 #include <core/config/EngineConfig.h>
+#include <core/log/InxLog.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 

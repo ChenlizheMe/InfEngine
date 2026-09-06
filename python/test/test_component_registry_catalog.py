@@ -1,4 +1,7 @@
+import json
 import os
+
+import pytest
 
 from Infernux.components.registry import (
     get_component_constraints,
@@ -12,6 +15,10 @@ from Infernux.engine.bootstrap_inspector._helpers import (
     _get_add_component_entries,
     _get_component_script_error,
     _get_py_components_safe,
+)
+from Infernux.engine.bootstrap_hierarchy._helpers import (
+    _get_children,
+    _get_py_components,
 )
 
 
@@ -33,6 +40,89 @@ def test_project_component_source_is_registered_without_execution(tmp_path):
         assert player.component_type is None
     finally:
         unregister_component_script(str(script))
+
+
+def test_package_runtime_component_is_visible_but_editor_component_is_not(tmp_path):
+    package_root = tmp_path / "Packages" / "vendor" / "gameplay"
+    runtime = package_root / "runtime" / "runtime_component.py"
+    editor = package_root / "editor" / "editor_component.py"
+    runtime.parent.mkdir(parents=True)
+    editor.parent.mkdir(parents=True)
+    (package_root / "inx_package.json").write_text("{}", encoding="utf-8")
+    runtime.write_text(
+        "class PackageRuntimeComponent(InxComponent):\n    pass\n",
+        encoding="utf-8",
+    )
+    editor.write_text(
+        "class PackageEditorComponent(InxComponent):\n    pass\n",
+        encoding="utf-8",
+    )
+    try:
+        assert register_component_script(str(runtime))
+        assert register_component_script(str(editor))
+        names = {
+            entry.type_name
+            for entry in get_component_registrations(project_root=str(tmp_path))
+        }
+        assert "PackageRuntimeComponent" in names
+        assert "PackageEditorComponent" not in names
+    finally:
+        unregister_component_script(str(runtime))
+        unregister_component_script(str(editor))
+
+
+def test_manifestless_local_package_uses_first_packages_directory_as_boundary(tmp_path):
+    package_root = tmp_path / "Packages" / "abc"
+    runtime = package_root / "runtime" / "component.py"
+    editor = package_root / "editor" / "tool.py"
+    runtime.parent.mkdir(parents=True)
+    editor.parent.mkdir(parents=True)
+    runtime.write_text("class LocalRuntimeComponent(InxComponent):\n    pass\n", encoding="utf-8")
+    editor.write_text("class LocalEditorComponent(InxComponent):\n    pass\n", encoding="utf-8")
+    try:
+        assert register_component_script(str(runtime))
+        assert register_component_script(str(editor))
+        names = {
+            entry.type_name
+            for entry in get_component_registrations(project_root=str(tmp_path))
+        }
+        assert "LocalRuntimeComponent" in names
+        assert "LocalEditorComponent" not in names
+    finally:
+        unregister_component_script(str(runtime))
+        unregister_component_script(str(editor))
+
+
+def test_disabled_package_runtime_component_is_not_visible(tmp_path):
+    package_root = tmp_path / "Packages" / "vendor" / "disabled"
+    runtime = package_root / "runtime" / "component.py"
+    runtime.parent.mkdir(parents=True)
+    (package_root / "inx_package.json").write_text("{}", encoding="utf-8")
+    runtime.write_text(
+        "class DisabledPackageComponent(InxComponent):\n    pass\n",
+        encoding="utf-8",
+    )
+    settings = tmp_path / "ProjectSettings"
+    settings.mkdir()
+    (settings / "InxPlugins.json").write_text(
+        json.dumps(
+            {
+                "installed": [
+                    {"reference": "vendor/disabled", "enabled": False}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        assert register_component_script(str(runtime))
+        names = {
+            entry.type_name
+            for entry in get_component_registrations(project_root=str(tmp_path))
+        }
+        assert "DisabledPackageComponent" not in names
+    finally:
+        unregister_component_script(str(runtime))
 
 
 def test_add_component_menu_reads_registry_without_filesystem_scan(tmp_path, monkeypatch):
@@ -86,6 +176,29 @@ def test_inspector_reads_python_components_from_selected_object():
             return tuple(components)
 
     assert _get_py_components_safe(SelectedObject()) == components
+
+
+def test_inspector_component_query_does_not_hide_native_failure():
+    class SelectedObject:
+        def get_py_components(self):
+            raise RuntimeError("component query failed")
+
+    with pytest.raises(RuntimeError, match="component query failed"):
+        _get_py_components_safe(SelectedObject())
+
+
+def test_hierarchy_queries_do_not_replace_native_failures_with_empty_lists():
+    class SelectedObject:
+        def get_py_components(self):
+            raise RuntimeError("component query failed")
+
+        def get_children(self):
+            raise RuntimeError("child query failed")
+
+    with pytest.raises(RuntimeError, match="component query failed"):
+        _get_py_components(SelectedObject())
+    with pytest.raises(RuntimeError, match="child query failed"):
+        _get_children(SelectedObject())
 
 
 def test_missing_script_placeholder_does_not_replace_live_registered_type():

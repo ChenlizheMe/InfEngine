@@ -35,8 +35,6 @@ RuntimeAssetPayload AudioClipLoader::Load(const std::string &filePath, const std
 
     clip->SetGuid(guid);
 
-    INXLOG_INFO("AudioClipLoader: loaded '", clip->GetName(), "' (GUID: ", guid, ", ", clip->GetDuration(), "s, ",
-                clip->GetSampleRate(), " Hz, ", clip->GetChannels(), " ch)");
     return clip;
 }
 
@@ -63,7 +61,6 @@ bool AudioClipLoader::Reload(const RuntimeAssetPayload &existing, const std::str
     // Restore authoritative GUID
     clip->SetGuid(guid);
 
-    INXLOG_INFO("AudioClipLoader: reloaded '", clip->GetName(), "' in-place (GUID: ", guid, ")");
     return true;
 }
 

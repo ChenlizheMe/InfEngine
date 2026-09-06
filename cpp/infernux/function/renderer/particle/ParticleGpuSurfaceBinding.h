@@ -46,8 +46,14 @@ struct GpuBillboardTextureLease
     std::shared_ptr<const rhi::TextureGpuView> gpuView;
 };
 
-using GpuBillboardTextureResolver =
-    std::function<GpuBillboardTextureLease(const std::string &textureGuid, const std::string &bindingName)>;
+enum class GpuParticleTextureRequest : uint8_t
+{
+    Poll,
+    Prepare,
+};
+
+using GpuBillboardTextureResolver = std::function<GpuBillboardTextureLease(
+    const std::string &textureGuid, const std::string &bindingName, GpuParticleTextureRequest request)>;
 
 /// Owns the linked particle shader's surface descriptor domain.
 ///

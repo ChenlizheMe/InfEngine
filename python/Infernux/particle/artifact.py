@@ -289,7 +289,13 @@ class ParticleArtifactRegistry:
 
     @classmethod
     def source_needs_compile(cls, source_path: str, *, guid: str = "") -> bool:
-        """Return True when the Library artifact is missing or stale."""
+        """Return True when the Library artifact is missing or stale.
+
+        Source identity alone is not enough: generated GPU source and binary
+        contracts evolve with the particle compiler.  Validate the complete
+        persisted product so a build cannot ship an artifact produced by an
+        older lowering implementation after an engine upgrade.
+        """
         owner = cls._resolve_source_guid(source_path, guid)
         try:
             source = Path(source_path).read_text(encoding="utf-8")
@@ -317,12 +323,19 @@ class ParticleArtifactRegistry:
         ) or cls._artifact_path(owner or stable_id)
         if not artifact_path or not os.path.isfile(artifact_path):
             return True
-        try:
-            payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
-            embedded = str((payload or {}).get("source_hash") or "")
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
-            return True
-        return embedded.casefold() != current.casefold()
+        return (
+            cls._load_persisted(
+                artifact_path,
+                key=cls._source_key(source_path, owner),
+                source_hash=current,
+                source_kind=(
+                    "script"
+                    if source_path.casefold().endswith(".particle.py")
+                    else "graph"
+                ),
+            )
+            is None
+        )
 
     @classmethod
     def ensure_source_compiled(
@@ -331,7 +344,7 @@ class ParticleArtifactRegistry:
         """Compile one source when its Library artifact is missing or stale."""
         if not cls.source_needs_compile(source_path, guid=guid):
             return cls.get(source_path, guid=guid)
-        return cls.compile_path(source_path, guid=guid)
+        return cls.compile_path(source_path, guid=guid, force_recompile=True)
 
     @classmethod
     def ensure_project_compiled(
@@ -360,7 +373,7 @@ class ParticleArtifactRegistry:
                     if not cls.source_needs_compile(source_path, guid=guid):
                         skipped.append(source_path)
                         continue
-                    cls.compile_path(source_path, guid=guid)
+                    cls.compile_path(source_path, guid=guid, force_recompile=True)
                     compiled.append(source_path)
                 except Exception as exc:
                     failed.append(source_path)
@@ -376,7 +389,7 @@ class ParticleArtifactRegistry:
     def load_runtime_reference(
         cls, path: str = "", *, guid: str = ""
     ) -> ParticleArtifact | None:
-        """Load a shipped AOT artifact without requiring its authoring source."""
+        """Load a shipped AOT artifact by its imported asset GUID."""
         from Infernux.engine.project_context import get_project_root
 
         project_root = get_project_root()
@@ -402,21 +415,11 @@ class ParticleArtifactRegistry:
         ):
             raise ParticleArtifactError("particle runtime index is not current")
 
-        def reference_key(value: str) -> str:
-            candidate = str(value or "").strip()
-            if os.path.isabs(candidate):
-                try:
-                    candidate = relative_path(
-                        candidate,
-                        project_root,
-                        resolve=False,
-                    )
-                except ValueError:
-                    pass
-            return portable_path(candidate).casefold()
-
         wanted_guid = str(guid or "").strip()
-        wanted_path = reference_key(path)
+        if not wanted_guid:
+            raise ParticleArtifactError(
+                "shipped particle artifact lookup requires a non-empty GUID"
+            )
         selected = None
         for entry in index["entries"]:
             if (
@@ -425,21 +428,14 @@ class ParticleArtifactRegistry:
                 or any(type(entry.get(key)) is not str for key in entry)
             ):
                 raise ParticleArtifactError("particle runtime index entry is not current")
-            if wanted_guid and entry["guid"] == wanted_guid:
+            entry_guid = entry["guid"].strip()
+            if not entry_guid:
+                raise ParticleArtifactError(
+                    "particle runtime index entry has an empty GUID"
+                )
+            if entry_guid == wanted_guid:
                 selected = entry
                 break
-            if not wanted_guid and wanted_path and reference_key(entry["path_hint"]) == wanted_path:
-                selected = entry
-                break
-        if selected is None and wanted_path:
-            selected = next(
-                (
-                    entry
-                    for entry in index["entries"]
-                    if reference_key(entry["path_hint"]) == wanted_path
-                ),
-                None,
-            )
         if selected is None:
             return None
 
@@ -450,19 +446,10 @@ class ParticleArtifactRegistry:
             raise ParticleArtifactError(
                 f"particle runtime index has an invalid stable_id: {stable_id!r}"
             )
-        artifact_path = ""
-        for identity in (selected["guid"].strip(), stable_id):
-            if not identity:
-                continue
-            candidate = os.path.join(artifact_root, particle_artifact_filename(identity))
-            if os.path.isfile(candidate):
-                artifact_path = candidate
-                break
-        if not artifact_path:
-            artifact_path = os.path.join(
-                artifact_root,
-                particle_artifact_filename(selected["guid"].strip() or stable_id),
-            )
+        artifact_path = os.path.join(
+            artifact_root,
+            particle_artifact_filename(wanted_guid),
+        )
         try:
             payload = json.loads(Path(artifact_path).read_text(encoding="utf-8"))
             source_hash = payload["source_hash"]
@@ -958,14 +945,12 @@ class ParticleArtifactRegistry:
         stable_id: str = "",
     ) -> str:
         owner = cls._resolve_source_guid(source_path, guid)
-        candidates = []
         if owner:
-            candidates.append(cls._artifact_path(owner))
-        if stable_id and (not owner or particle_artifact_filename(stable_id) != particle_artifact_filename(owner)):
-            candidates.append(cls._artifact_path(stable_id))
-        for candidate in candidates:
-            if candidate and os.path.isfile(candidate):
-                return candidate
+            candidate = cls._artifact_path(owner)
+            return candidate if candidate and os.path.isfile(candidate) else ""
+        if stable_id:
+            candidate = cls._artifact_path(stable_id)
+            return candidate if candidate and os.path.isfile(candidate) else ""
         return ""
 
     @staticmethod

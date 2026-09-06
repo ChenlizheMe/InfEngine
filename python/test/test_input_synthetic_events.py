@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from Infernux.input import Input
 from Infernux.lib import (
     InputManager,
     InxGUIRenderable,
@@ -26,6 +27,7 @@ def _reset_semantic_capture_between_tests():
 def test_synthetic_events_follow_the_graphical_input_path(engine):
     """Automation input must reach InputManager through the graphical loop."""
     manager = InputManager.instance()
+    Input.set_game_focused(False)
     observed: dict[str, object] = {}
     frame = [0]
     first_sequence = int(engine.last_processed_synthetic_input_sequence) + 1
@@ -35,6 +37,8 @@ def test_synthetic_events_follow_the_graphical_input_path(engine):
         if frame[0] == 1:
             observed["down"] = {
                 "key": manager.get_key(26),
+                "game_key": Input.get_key(26),
+                "game_focused": Input.is_game_focused(),
                 "key_down": manager.get_key_down(26),
                 "mouse": manager.get_mouse_button(0),
                 "mouse_down": manager.get_mouse_button_down(0),
@@ -48,6 +52,8 @@ def test_synthetic_events_follow_the_graphical_input_path(engine):
         else:
             observed["up"] = {
                 "key": manager.get_key(26),
+                "game_key": Input.get_key(26),
+                "game_focused": Input.is_game_focused(),
                 "key_up": manager.get_key_up(26),
                 "mouse": manager.get_mouse_button(0),
                 "mouse_up": manager.get_mouse_button_up(0),
@@ -67,10 +73,13 @@ def test_synthetic_events_follow_the_graphical_input_path(engine):
         engine.run()
     finally:
         engine.set_pre_scene_update_callback(None)
+        Input.set_game_focused(True)
 
     assert sequences == (first_sequence, first_sequence + 1, first_sequence + 2, first_sequence + 3)
     assert observed["down"] == {
         "key": True,
+        "game_key": True,
+        "game_focused": False,
         "key_down": True,
         "mouse": True,
         "mouse_down": True,
@@ -80,6 +89,8 @@ def test_synthetic_events_follow_the_graphical_input_path(engine):
     assert observed["release_sequences"] == (first_sequence + 4, first_sequence + 5)
     assert observed["up"] == {
         "key": False,
+        "game_key": False,
+        "game_focused": False,
         "key_up": True,
         "mouse": False,
         "mouse_up": True,

@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tomllib
 import zipfile
 from pathlib import Path
 from typing import Mapping
 
 from installer.payload import HUB_PAYLOAD_ARCHIVE, create_payload_archive
+from hub_release import host_platform_id, project_version as _project_version
 from private_python_runtime import PYTHON_VERSION, runtime_archive_for_machine
+from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
 
 
 _VISUAL_STUDIO_GENERATOR_PREFIX = "Visual Studio "
@@ -32,10 +34,27 @@ _DEFAULT_TIMESTAMP_URL = "http://timestamp.digicert.com"
 
 def _validate_runtime_bundle(bundle_path: Path) -> None:
     archive = runtime_archive_for_machine()
-    marker_name = "python312/.infernux-private-python-runtime.json"
+    runtime_prefix = f"{DEFAULT_PYTHON_RUNTIME.directory_name}/"
+    marker_name = runtime_prefix + ".infernux-private-python-runtime.json"
     try:
         with zipfile.ZipFile(bundle_path) as bundle:
+            payload_members = [
+                name.replace("\\", "/")
+                for name in bundle.namelist()
+                if name and not name.endswith("/")
+            ]
+            if not payload_members or any(
+                not name.startswith(runtime_prefix) for name in payload_members
+            ):
+                raise RuntimeError(
+                    "The private Python runtime bundle contains files outside the "
+                    f"default Python {DEFAULT_PYTHON_RUNTIME.series} runtime. "
+                    "Clear the preset staging runtime directory and rebuild "
+                    "prepare_bundled_python_runtime."
+                )
             marker = json.loads(bundle.read(marker_name))
+    except RuntimeError:
+        raise
     except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
         raise RuntimeError(
             "The private Python runtime bundle is invalid or missing its provenance marker. "
@@ -46,6 +65,7 @@ def _validate_runtime_bundle(bundle_path: Path) -> None:
         marker.get("owner") == "Infernux Hub"
         and marker.get("kind") == "private-python-runtime"
         and marker.get("python_version") == PYTHON_VERSION
+        and marker.get("python_series") == DEFAULT_PYTHON_RUNTIME.series
         and marker.get("source_archive") == archive.name
         and marker.get("source_archive_sha256") == archive.sha256
     ):
@@ -64,13 +84,49 @@ def _run(
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
+def _nuitka_build_environment(
+    build_env: Mapping[str, str] | None,
+    build_dir: Path,
+) -> Mapping[str, str] | None:
+    if build_env is None:
+        return None
+
+    temp_dir = _nuitka_temp_directory(build_env, build_dir)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    env = dict(build_env)
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        env[name] = str(temp_dir)
+    return env
+
+
+def _nuitka_temp_directory(
+    build_env: Mapping[str, str],
+    build_dir: Path,
+) -> Path:
+    temp_dir = build_dir / "temp"
+    try:
+        str(temp_dir).encode("ascii")
+    except UnicodeEncodeError:
+        program_data = Path(build_env.get("ProgramData", r"C:\ProgramData"))
+        digest = hashlib.sha256(str(build_dir).encode("utf-8")).hexdigest()[:16]
+        temp_dir = program_data / "Infernux" / "BuildTemp" / digest
+    try:
+        str(temp_dir).encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise RuntimeError(
+            "Hub packaging needs an ASCII-only temporary directory. Set "
+            "ProgramData to an ASCII path and rebuild."
+        ) from exc
+    return temp_dir
+
+
 def _require_msbuild_generator(cmake_generator: str) -> None:
     if os.name == "nt" and not cmake_generator.startswith(
         _VISUAL_STUDIO_GENERATOR_PREFIX
     ):
         raise RuntimeError(
             "Windows Hub packaging must be launched by the Visual Studio/MSBuild "
-            "CMake preset. Run: cmake --build --preset packaging-installer"
+            "CMake preset. Run: cmake --build --preset windows-hub-installer"
         )
 
 
@@ -177,13 +233,6 @@ def _msvc_build_environment() -> tuple[dict[str, str], dict[str, str]]:
     return env, tools
 
 
-def _project_version(source_root: Path) -> str:
-    project = tomllib.loads(
-        (source_root / "pyproject.toml").read_text(encoding="utf-8")
-    )
-    return str(project["project"]["version"])
-
-
 def _windows_file_version(version: str) -> str:
     numeric = version.split("-", 1)[0].split("+", 1)[0]
     parts = numeric.split(".")
@@ -231,6 +280,7 @@ def _common_nuitka_command(
         "-m",
         "nuitka",
         "--enable-plugin=pyside6",
+        f"--user-package-configuration-file={source_root / 'packaging' / 'hub.nuitka-package.config.yml'}",
         "--assume-yes-for-downloads",
         f"--output-dir={output_dir}",
     ]
@@ -248,6 +298,15 @@ def _common_nuitka_command(
         )
     else:
         command.append(f"--output-filename={original_filename}")
+    if sys.platform.startswith("linux"):
+        for package in (
+            "libxcb-cursor0", "libxcb-icccm4", "libxcb-image0", "libxcb-keysyms1",
+            "libxcb-render-util0", "libxcb-util1", "libxkbcommon-x11-0",
+        ):
+            command.append(
+                f"--include-data-file=/usr/share/doc/{package}/copyright="
+                f"licenses/{package}.txt"
+            )
     return command
 
 
@@ -411,18 +470,13 @@ def _build_hub(
 ) -> None:
     packaging_dir = source_root / "packaging"
     runtime_bundle = package_dir / "runtime" / "runtime_bundle.zip"
-    notification_file = packaging_dir / "resources" / "hub_notifications.json"
+    linux_updater = packaging_dir / "hub_update_apply.py"
     if not runtime_bundle.is_file():
         raise RuntimeError(
             "The private Python runtime bundle is missing. Build the "
             "prepare_bundled_python_runtime target before packaging Infernux Hub."
         )
     _validate_runtime_bundle(runtime_bundle)
-    if not notification_file.is_file():
-        raise RuntimeError(
-            "The version-scoped Hub notification resource is missing: "
-            f"{notification_file}"
-        )
     output_dir = build_dir / "nuitka"
     shutil.rmtree(output_dir, ignore_errors=True)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -444,15 +498,20 @@ def _build_hub(
             "InfernuxHubData/runtime/runtime_bundle.zip"
         ),
         (
-            f"--include-data-file={notification_file}="
-            "InfernuxHubData/hub_notifications.json"
+            f"--include-data-file={linux_updater}="
+            "InfernuxHubData/updater/hub_update_apply.py"
+        ),
+        (
+            f"--include-data-file={packaging_dir / 'hub_uninstall.ps1'}="
+            "InfernuxHubData/uninstaller/hub_uninstall.ps1"
         ),
         "--nofollow-import-to=Infernux,numpy,scipy,pandas,matplotlib,cv2,PIL,tkinter",
     ]
     if sys.platform == "darwin":
         command.append("--macos-create-app-bundle")
     command.append(str(packaging_dir / "launcher.py"))
-    _run(command, cwd=packaging_dir, env=build_env)
+    process_env = _nuitka_build_environment(build_env, build_dir)
+    _run(command, cwd=packaging_dir, env=process_env)
     reports = _validate_msvc_reports(output_dir) if os.name == "nt" else []
 
     candidates = [output_dir / "launcher.dist", output_dir / "launcher.app"]
@@ -492,6 +551,7 @@ def _build_installer(
     build_dir: Path,
     package_dir: Path,
     *,
+    release_dir: Path,
     build_env: Mapping[str, str] | None,
 ) -> None:
     packaging_dir = source_root / "packaging"
@@ -524,12 +584,10 @@ def _build_installer(
         f"--include-data-file={payload_archive}=payload/{HUB_PAYLOAD_ARCHIVE}",
     ]
     if os.name == "nt":
-        # Avoid adding a second opaque compression layer around the already zipped
-        # payload. The larger but lower-entropy executable is easier for endpoint
-        # security products to inspect and is less packer-like.
-        command.extend(["--windows-uac-admin", "--onefile-no-compression"])
+        command.append("--windows-uac-admin")
     command.append(str(packaging_dir / "installer_gui.py"))
-    _run(command, cwd=packaging_dir, env=build_env)
+    process_env = _nuitka_build_environment(build_env, build_dir)
+    _run(command, cwd=packaging_dir, env=process_env)
     if os.name == "nt":
         _validate_msvc_reports(output_dir)
 
@@ -537,14 +595,14 @@ def _build_installer(
     produced = output_dir / filename
     if not produced.is_file():
         raise RuntimeError(f"Nuitka did not produce the Hub installer at {produced}")
-    destination_dir = package_dir / "installer"
-    shutil.rmtree(destination_dir, ignore_errors=True)
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(produced, destination_dir / filename)
     if os.name == "nt":
         assert build_env is not None
-        _sign_windows_binary(destination_dir / filename, build_env)
-        _validate_windows_pe(destination_dir / filename, build_env)
+        _sign_windows_binary(produced, build_env)
+        _validate_windows_pe(produced, build_env)
+    release_dir.mkdir(parents=True, exist_ok=True)
+    suffix = ".exe" if os.name == "nt" else ""
+    release_name = f"InfernuxHubInstaller-{_project_version(source_root)}-{host_platform_id()}{suffix}"
+    shutil.copy2(produced, release_dir / release_name)
 
 
 def main() -> int:
@@ -553,8 +611,11 @@ def main() -> int:
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--build-dir", required=True)
     parser.add_argument("--package-dir", required=True)
+    parser.add_argument("--release-dir")
     parser.add_argument("--cmake-generator", default="")
     args = parser.parse_args()
+    if args.target == "installer" and not args.release_dir:
+        parser.error("--release-dir is required for the installer target")
 
     source_root = Path(args.source_root).resolve()
     build_dir = Path(args.build_dir).resolve()
@@ -582,6 +643,7 @@ def main() -> int:
             source_root,
             build_dir,
             package_dir,
+            release_dir=Path(args.release_dir).resolve(),
             build_env=build_env,
         )
     return 0

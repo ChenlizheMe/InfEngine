@@ -1,0 +1,61 @@
+{
+  "_shader_property_order": [
+    "baseColor",
+    "metallic",
+    "smoothness",
+    "ambientOcclusion",
+    "emissionColor",
+    "normalScale",
+    "specularHighlights",
+    "texSampler",
+    "metallicMap",
+    "smoothnessMap",
+    "aoMap",
+    "normalMap"
+  ],
+  "builtin": false,
+  "name": "Render Probe",
+  "properties": {
+    "ambientOcclusion": {"type": 0, "value": 1.0},
+    "aoMap": {"guid": "", "type": 6},
+    "baseColor": {"type": 7, "value": [0.08, 0.55, 0.85, 1.0]},
+    "emissionColor": {"hdr": true, "type": 7, "value": [0.0, 0.0, 0.0, 0.0]},
+    "metallic": {"type": 0, "value": 0.35},
+    "metallicMap": {"guid": "", "type": 6},
+    "normalMap": {"guid": "", "type": 6},
+    "normalScale": {"type": 0, "value": 1.0},
+    "smoothness": {"type": 0, "value": 0.7},
+    "smoothnessMap": {"guid": "", "type": 6},
+    "specularHighlights": {"type": 0, "value": 1.0},
+    "texSampler": {"guid": "", "type": 6}
+  },
+  "renderState": {
+    "alphaBlendOp": 0,
+    "alphaClipEnabled": false,
+    "alphaClipThreshold": 0.5,
+    "blendEnable": false,
+    "colorBlendOp": 0,
+    "cullMode": 2,
+    "depthBiasClamp": 0.0,
+    "depthBiasConstantFactor": 0.0,
+    "depthBiasEnable": false,
+    "depthBiasSlopeFactor": 0.0,
+    "depthCompareOp": 1,
+    "depthTestEnable": true,
+    "depthWriteEnable": true,
+    "dstAlphaBlendFactor": 1,
+    "dstColorBlendFactor": 7,
+    "frontFace": 1,
+    "lineWidth": 1.0,
+    "polygonMode": 0,
+    "renderQueue": 2000,
+    "srcAlphaBlendFactor": 0,
+    "srcColorBlendFactor": 6,
+    "stencilTestEnable": false,
+    "topology": 3
+  },
+  "shaders": {
+    "fragment": {"guid": "", "path_hint": "", "shader_id": "Lit"},
+    "vertex": {"guid": "", "path_hint": "", "shader_id": "Standard"}
+  }
+}

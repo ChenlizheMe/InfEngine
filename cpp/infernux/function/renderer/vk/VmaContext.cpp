@@ -9,9 +9,15 @@
 // VMA_IMPLEMENTATION must be defined in exactly one .cpp file
 #define VMA_IMPLEMENTATION
 
-// Use static Vulkan function pointers (project links Vulkan::Vulkan)
+// Volk-backed targets resolve commands dynamically; native desktop builds use
+// the platform Vulkan loader directly.
+#if defined(INFERNUX_USE_VOLK)
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
+#else
 #define VMA_STATIC_VULKAN_FUNCTIONS 1
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+#endif
 
 #include "VmaContext.h"
 #include <core/log/InxLog.h>
@@ -28,6 +34,13 @@ VmaAllocator CreateVmaAllocator(VkInstance instance, VkPhysicalDevice physicalDe
     createInfo.physicalDevice = physicalDevice;
     createInfo.device = device;
     createInfo.vulkanApiVersion = VK_API_VERSION_1_2;
+
+#if defined(INFERNUX_USE_VOLK)
+    VmaVulkanFunctions vulkanFunctions{};
+    vulkanFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+    vulkanFunctions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+    createInfo.pVulkanFunctions = &vulkanFunctions;
+#endif
 
     // Enable VK_KHR_dedicated_allocation (promoted to Vulkan 1.1 core)
     // VMA uses this automatically for large allocations (shadow maps, etc.)

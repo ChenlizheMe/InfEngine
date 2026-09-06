@@ -1,63 +1,153 @@
 """Centralized product theme for Infernux Hub."""
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ThemePalette:
+    bg_base: str
+    bg_surface: str
+    bg_surface_hover: str
+    bg_surface_selected: str
+    bg_input: str
+    text_primary: str
+    text_secondary: str
+    text_muted: str
+    border: str
+    accent: str
+    accent_hover: str
+    accent_pressed: str
+    accent_text: str
+    danger: str
+    sidebar_bg: str
+    sidebar_border: str
+    nav_hover: str
+    nav_active: str
+    border_hover: str
+    button_surface: str
+    button_hover: str
+    button_pressed: str
+    disabled_surface: str
+    disabled_text: str
+
+
+_DARK_PALETTE = ThemePalette(
+    bg_base="#191919",
+    bg_surface="#252525",
+    bg_surface_hover="#2d2d2d",
+    bg_surface_selected="#353535",
+    bg_input="#191919",
+    text_primary="#f2f2f2",
+    text_secondary="#bdbdbd",
+    text_muted="#8f8f8f",
+    border="#363636",
+    accent="#eb5757",
+    accent_hover="#f26a6a",
+    accent_pressed="#b83f3f",
+    accent_text="#ffffff",
+    danger="#eb5757",
+    sidebar_bg="#232323",
+    sidebar_border="#303030",
+    nav_hover="#2c2c2c",
+    nav_active="#414141",
+    border_hover="#4a4a4a",
+    button_surface="#3a3a3a",
+    button_hover="#454545",
+    button_pressed="#303030",
+    disabled_surface="#212121",
+    disabled_text="#666666",
+)
+
+_LIGHT_PALETTE = ThemePalette(
+    bg_base="#eeeeee",
+    bg_surface="#f2f2f2",
+    bg_surface_hover="#e6e6e6",
+    bg_surface_selected="#dcdcdc",
+    bg_input="#f2f2f2",
+    text_primary="#202020",
+    text_secondary="#5f5f5f",
+    text_muted="#858585",
+    border="#cfcfcf",
+    accent="#eb5757",
+    accent_hover="#d83b46",
+    accent_pressed="#b8313b",
+    accent_text="#ffffff",
+    danger="#b8313b",
+    sidebar_bg="#e8e8e8",
+    sidebar_border="#cfcfcf",
+    nav_hover="#dedede",
+    nav_active="#d5d5d5",
+    border_hover="#999999",
+    button_surface="#dddddd",
+    button_hover="#d2d2d2",
+    button_pressed="#c8c8c8",
+    disabled_surface="#e4e4e4",
+    disabled_text="#999999",
+)
+
 class StyleManager:
     """Provides dynamic QSS stylesheets for light/dark modes."""
 
     @staticmethod
+    def palette(is_dark: bool) -> ThemePalette:
+        return _DARK_PALETTE if is_dark else _LIGHT_PALETTE
+
+    @staticmethod
     def get_stylesheet(is_dark: bool) -> str:
-        if is_dark:
-            # Keep the dark product surface strictly neutral.  Red is reserved
-            # for brand emphasis and an explicit action/state, never for a
-            # tinted background behind ordinary navigation.
-            bg_base = "#191919"             # 25, 25, 25
-            bg_surface = "#252525"
-            bg_surface_hover = "#2d2d2d"
-            bg_surface_selected = "#353535"
-            bg_input = "#191919"
-            text_primary = "#f2f2f2"
-            text_secondary = "#bdbdbd"
-            text_muted = "#8f8f8f"
-            border = "#363636"
-            accent = "#eb5757"
-            accent_hover = "#f26a6a"
-            accent_pressed = "#b83f3f"
-            accent_text = "#ffffff"
-            danger = "#eb5757"
-            sidebar_bg = "#232323"
-            sidebar_border = "#303030"
-            nav_hover = "#2c2c2c"
-            nav_active = "#414141"
-            border_hover = "#4a4a4a"
-            button_surface = "#3a3a3a"
-            button_hover = "#454545"
-            button_pressed = "#303030"
-            disabled_surface = "#212121"
-            disabled_text = "#666666"
-        else:
-            bg_base = "#eeeeee"
-            bg_surface = "#f2f2f2"
-            bg_surface_hover = "#e6e6e6"
-            bg_surface_selected = "#dcdcdc"
-            bg_input = "#f2f2f2"
-            text_primary = "#202020"
-            text_secondary = "#5f5f5f"
-            text_muted = "#858585"
-            border = "#cfcfcf"
-            accent = "#eb5757"
-            accent_hover = "#d83b46"
-            accent_pressed = "#b8313b"
-            accent_text = "#ffffff"
-            danger = "#b8313b"
-            sidebar_bg = "#e8e8e8"
-            sidebar_border = "#cfcfcf"
-            nav_hover = "#dedede"
-            nav_active = "#d5d5d5"
-            border_hover = "#999999"
-            button_surface = "#dddddd"
-            button_hover = "#d2d2d2"
-            button_pressed = "#c8c8c8"
-            disabled_surface = "#e4e4e4"
-            disabled_text = "#999999"
+        palette = StyleManager.palette(is_dark)
+        (
+            bg_base,
+            bg_surface,
+            bg_surface_hover,
+            bg_surface_selected,
+            bg_input,
+            text_primary,
+            text_secondary,
+            text_muted,
+            border,
+            accent,
+            accent_hover,
+            accent_pressed,
+            accent_text,
+            danger,
+            sidebar_bg,
+            sidebar_border,
+            nav_hover,
+            nav_active,
+            border_hover,
+            button_surface,
+            button_hover,
+            button_pressed,
+            disabled_surface,
+            disabled_text,
+        ) = (
+            palette.bg_base,
+            palette.bg_surface,
+            palette.bg_surface_hover,
+            palette.bg_surface_selected,
+            palette.bg_input,
+            palette.text_primary,
+            palette.text_secondary,
+            palette.text_muted,
+            palette.border,
+            palette.accent,
+            palette.accent_hover,
+            palette.accent_pressed,
+            palette.accent_text,
+            palette.danger,
+            palette.sidebar_bg,
+            palette.sidebar_border,
+            palette.nav_hover,
+            palette.nav_active,
+            palette.border_hover,
+            palette.button_surface,
+            palette.button_hover,
+            palette.button_pressed,
+            palette.disabled_surface,
+            palette.disabled_text,
+        )
 
         return f"""
             * {{
@@ -68,6 +158,19 @@ class StyleManager:
             }}
             QMainWindow, QWidget#central, QDialog {{
                 background-color: {bg_base};
+            }}
+            QAbstractItemView, QTextEdit {{
+                background-color: {bg_input};
+                alternate-background-color: {bg_surface};
+                color: {text_primary};
+                selection-background-color: {accent};
+                selection-color: {accent_text};
+            }}
+            QHeaderView::section {{
+                background-color: {bg_surface};
+                color: {text_secondary};
+                border: none;
+                padding: 4px;
             }}
             QToolTip {{
                 background-color: {bg_surface};
@@ -101,6 +204,24 @@ class StyleManager:
                 color: {danger};
                 font-size: 12px;
                 padding-top: 2px;
+            }}
+            /* ── Common prompts ──
+               Qt stylesheet pixels are device-independent under high-DPI
+               scaling, keeping these shared dimensions readable everywhere. */
+            QMessageBox {{
+                padding: 18px;
+            }}
+            QMessageBox QLabel {{
+                font-size: 15px;
+                min-width: 360px;
+                padding: 6px 4px 10px 4px;
+            }}
+            QMessageBox QPushButton {{
+                min-width: 88px;
+                min-height: 34px;
+                padding: 0 16px;
+                font-size: 14px;
+                font-weight: 600;
             }}
             QMenu {{
                 background-color: {bg_surface};
@@ -181,7 +302,10 @@ class StyleManager:
             QWidget#projectListContainer,
             QScrollArea#installScrollArea,
             QWidget#installViewport,
-            QWidget#installListContainer {{
+            QWidget#installListContainer,
+            QScrollArea#settingsScrollArea,
+            QWidget#settingsViewport,
+            QWidget#settingsContent {{
                 background-color: {bg_base};
             }}
 
@@ -234,7 +358,7 @@ class StyleManager:
             }}
             QPushButton#dangerBtn:pressed {{
                 background-color: {accent_pressed};
-                color: #ffffff;
+                color: {accent_text};
             }}
             QPushButton#iconBtn {{
                 background: transparent;
@@ -376,6 +500,24 @@ class StyleManager:
             QLabel#projectVersion[kind="warning"] {{ color: {accent_hover}; }}
             QLabel#projectVersion[kind="active"] {{ color: {accent}; }}
 
+            QTabWidget#installTabs::pane {{
+                border: none;
+                top: 12px;
+            }}
+            QTabWidget#installTabs QTabBar::tab {{
+                background: transparent;
+                color: {text_secondary};
+                padding: 10px 16px;
+                border-bottom: 2px solid transparent;
+            }}
+            QTabWidget#installTabs QTabBar::tab:selected {{
+                color: {text_primary};
+                border-bottom: 2px solid {accent};
+            }}
+            QTabWidget#installTabs QTabBar::tab:hover {{
+                background: {button_hover};
+            }}
+
             /* ── Version Card (Installs page) ── */
             QFrame#versionCard {{
                 background: transparent;
@@ -477,8 +619,35 @@ class StyleManager:
                 color: {text_muted};
                 font-size: 12px;
             }}
+            QLabel#communityFeedTitle {{
+                color: {text_primary};
+                font-size: 16px;
+                font-weight: 600;
+            }}
+            QFrame#communityTopic {{
+                background-color: {bg_surface};
+                border: 1px solid {border};
+                border-radius: 4px;
+            }}
+            QFrame#installQueuePanel, QFrame#installQueuePopup {{
+                background-color: {bg_surface};
+                border: 1px solid {border};
+                border-radius: 6px;
+            }}
+            QLabel#communityTopicTitle {{
+                color: {text_primary};
+                font-size: 14px;
+                font-weight: 600;
+            }}
+            QLabel#communityTopicStats, QLabel#communityFeedStatus {{
+                color: {text_muted};
+                font-size: 12px;
+            }}
+            QLabel#communityFeedStatus[kind="error"] {{
+                color: {danger};
+            }}
 
-            /* ── Header (legacy) ── */
+            /* ── Header ── */
             QLabel#mainTitle {{
                 font-size: 28px;
                 font-weight: 700;

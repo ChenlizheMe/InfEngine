@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from Infernux.engine.path_utils import resolved_path
+from Infernux.engine.path_utils import resolved_path, same_path
 
 
 def publish_player_asset_catalog(project_root: str, asset_database: Any) -> dict[str, Any]:
@@ -50,4 +50,45 @@ def publish_player_asset_catalog(project_root: str, asset_database: Any) -> dict
     return {"path": index_path, "entries": load_asset_index(root)}
 
 
-__all__ = ["publish_player_asset_catalog"]
+def publish_player_asset_catalog_for_host(project_root: str) -> dict[str, Any]:
+    """Publish a current catalog from either the active Editor or a headless host."""
+
+    root = resolved_path(project_root)
+    from Infernux.lib import AssetRegistry
+
+    active_database = AssetRegistry.instance().get_asset_database()
+    if active_database is not None:
+        active_root = str(getattr(active_database, "project_root", "") or "")
+        if active_root and same_path(active_root, root):
+            if active_database.is_owner_thread():
+                return publish_player_asset_catalog(root, active_database)
+            from Infernux.host.commands import MainThreadCommandQueue
+
+            # Background builds consume a snapshot; only its authoring
+            # publication runs on the engine owner. Compilation stays on the
+            # calling worker and never borrows the mutable AssetDatabase.
+            return MainThreadCommandQueue.instance().run_sync(
+                "player.build.publish_asset_catalog",
+                lambda: publish_player_asset_catalog(root, active_database),
+            )
+        if active_root:
+            raise RuntimeError(
+                "The active AssetDatabase belongs to another project; run this build "
+                "in an isolated headless process"
+            )
+
+    from Infernux.engine.engine import Engine
+    from Infernux.lib import LogLevel, RuntimeMode
+
+    engine = Engine(LogLevel.Info, mode=RuntimeMode.Headless)
+    try:
+        engine.init_headless(root)
+        return publish_player_asset_catalog(root, engine.get_asset_database())
+    finally:
+        engine.exit()
+
+
+__all__ = [
+    "publish_player_asset_catalog",
+    "publish_player_asset_catalog_for_host",
+]

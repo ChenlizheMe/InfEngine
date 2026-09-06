@@ -1,0 +1,15 @@
+if(NOT DEFINED TARGET_DIR OR TARGET_DIR STREQUAL "")
+    message(FATAL_ERROR "TARGET_DIR is required")
+endif()
+if(NOT DEFINED STATIC_RUNTIME)
+    message(FATAL_ERROR "STATIC_RUNTIME is required")
+endif()
+
+set(_contract_path "${TARGET_DIR}/PlayerNativeContract.json")
+if(STATIC_RUNTIME)
+    file(MAKE_DIRECTORY "${TARGET_DIR}")
+    file(WRITE "${_contract_path}"
+        "{\"contract\":\"infernux.player-native\",\"runtime_linkage\":\"static\"}\n")
+else()
+    file(REMOVE "${_contract_path}")
+endif()

@@ -1,0 +1,19 @@
+# Qt's X11 helpers are small runtime dependencies, not host graphics drivers.
+# Nuitka otherwise excludes these system libraries from standalone distributions.
+- module-name: 'PySide6.QtWidgets'
+  dlls:
+    - by_code:
+        setup_code: |
+          import subprocess
+          libraries = {}
+          for line in subprocess.check_output(['ldconfig', '-p'], text=True).splitlines():
+              if '=>' in line and 'x86-64' in line:
+                  libraries[line.split()[0]] = line.rsplit('=>', 1)[1].strip()
+          required = (
+              'libxcb-cursor.so.0', 'libxcb-icccm.so.4', 'libxcb-image.so.0',
+              'libxcb-keysyms.so.1', 'libxcb-render-util.so.0', 'libxcb-util.so.1',
+              'libxkbcommon-x11.so.0',
+          )
+        filename_code: '[libraries[name] for name in required]'
+      dest_path: 'PySide6'
+      when: 'linux'

@@ -343,7 +343,7 @@
 <p>UI 画布组件。所有 UI 元素的根容器——UI 的舞台。</p>
 <!-- USER CONTENT START -->
 <p>description
-<strong>状态：</strong> Preview · <strong>验证版本：</strong> 0.3.7</p>
+<strong>状态：</strong> Preview · <strong>验证版本：</strong> 0.4.0</p>
 <p>使用参考分辨率像素设计，然后为支持的宽高比选择缩放与屏幕匹配策略。装饰元素不应参与 Raycast。</p>
 <!-- USER CONTENT END -->
 
@@ -427,6 +427,10 @@
 <td>Compute <code>(scale_x, scale_y, text_scale)</code> for a viewport size.</td>
 </tr>
 <tr>
+<td><code>compute_logical_size(screen_w: float, screen_h: float) → Tuple[float, float]</code></td>
+<td>Return the live logical Canvas extent for the viewport.</td>
+</tr>
+<tr>
 <td><code>invalidate_element_cache() → None</code></td>
 <td>Mark the cached element list as stale.</td>
 </tr>
@@ -451,15 +455,14 @@
 <h2 id="_4">示例<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
 <!-- USER CONTENT START -->
 <p>example
-<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">GameObject</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.ui</span><span class="w"> </span><span class="kn">import</span> <span class="n">UICanvas</span><span class="p">,</span> <span class="n">UIScaleMode</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">ui_root</span> <span class="o">=</span> <span class="n">GameObject</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="s2">"UI"</span><span class="p">)</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">if</span> <span class="n">ui_root</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">canvas</span> <span class="o">=</span> <span class="n">ui_root</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">UICanvas</span><span class="p">)</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="k">if</span> <span class="n">canvas</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        <span class="n">canvas</span><span class="o">.</span><span class="n">ui_scale_mode</span> <span class="o">=</span> <span class="n">UIScaleMode</span><span class="o">.</span><span class="n">ScaleWithScreenSize</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="n">scale_x</span><span class="p">,</span> <span class="n">scale_y</span><span class="p">,</span> <span class="n">text_scale</span> <span class="o">=</span> <span class="n">canvas</span><span class="o">.</span><span class="n">compute_scale</span><span class="p">(</span><span class="mi">1280</span><span class="p">,</span> <span class="mi">720</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">ui_root</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">GameObject</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="s2">"UI"</span><span class="p">)</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">if</span> <span class="n">ui_root</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">canvas</span> <span class="o">=</span> <span class="n">ui_root</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">ui</span><span class="o">.</span><span class="n">UICanvas</span><span class="p">)</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="k">if</span> <span class="n">canvas</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        <span class="n">canvas</span><span class="o">.</span><span class="n">ui_scale_mode</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">ui</span><span class="o">.</span><span class="n">UIScaleMode</span><span class="o">.</span><span class="n">ScaleWithScreenSize</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        <span class="n">scale_x</span><span class="p">,</span> <span class="n">scale_y</span><span class="p">,</span> <span class="n">text_scale</span> <span class="o">=</span> <span class="n">canvas</span><span class="o">.</span><span class="n">compute_scale</span><span class="p">(</span><span class="mi">1280</span><span class="p">,</span> <span class="mi">720</span><span class="p">)</span>
 </code></pre></div></p>
 <!-- USER CONTENT END -->
 

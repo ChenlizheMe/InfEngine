@@ -235,10 +235,6 @@ class AssetMutationService:
         except ValueError:
             pass
 
-    # Compatibility aliases for existing editor observers.
-    add_listener = add_observer
-    remove_listener = remove_observer
-
     def add_component_listener(
         self,
         callback: Callable[[AssetMutationNotification], None],

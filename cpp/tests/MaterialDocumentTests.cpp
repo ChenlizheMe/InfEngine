@@ -10,6 +10,9 @@ namespace
 {
 
 using infernux::InxMaterial;
+using infernux::MaterialBlendFactor;
+using infernux::MaterialCompareOp;
+using infernux::MaterialCullMode;
 using infernux::RenderStateOverride;
 using infernux::ShaderAssetReference;
 using infernux::ShaderProgramArtifact;
@@ -66,7 +69,7 @@ void VerifyTransactionalFailure()
     assert(material.SerializeDocument() == before);
 
     invalid = before;
-    invalid["shaders"]["vertex"]["legacy_path"] = "Assets/Shaders/Legacy.vert";
+    invalid["shaders"]["vertex"]["unexpected"] = true;
     assert(!material.DeserializeDocument(invalid));
     assert(material.SerializeDocument() == before);
 }
@@ -125,21 +128,33 @@ void VerifyPropertyRemoval()
 
 void VerifyShaderDefaultsReplacePreviousShaderState()
 {
+    // Shader annotations only supply defaults for fields the material has not
+    // authored. SetRenderState is explicit authoring of every field, so
+    // annotation defaults must not touch the state while the shader stays.
     InxMaterial material("ShaderDefaults", "Particle Unlit");
     auto particleState = material.GetRenderState();
-    particleState.cullMode = VK_CULL_MODE_NONE;
+    particleState.cullMode = MaterialCullMode::None;
     particleState.depthWriteEnable = false;
     particleState.blendEnable = true;
     particleState.renderQueue = 3000;
-    particleState.stencilTestEnable = true;
-    particleState.stencilFront.compareOp = VK_COMPARE_OP_ALWAYS;
-    particleState.stencilBack.compareOp = VK_COMPARE_OP_ALWAYS;
     material.SetRenderState(particleState);
-    material.SetPassTag("particle");
+    assert(material.HasOverride(RenderStateOverride::CullMode));
+    assert(material.HasOverride(RenderStateOverride::RenderQueue));
 
+    material.ApplyShaderRenderMeta("back", "true", "", "off", 2000, "", "", "");
+    const auto &authored = material.GetRenderState();
+    assert(authored.cullMode == MaterialCullMode::None);
+    assert(!authored.depthWriteEnable);
+    assert(authored.blendEnable);
+    assert(authored.renderQueue == 3000);
+
+    // Switching to a different shader hands authorship back to the new
+    // shader's annotation defaults.
+    material.SetShader("Lit");
+    assert(material.GetRenderStateOverrides() == 0);
     material.ApplyShaderRenderMeta("", "", "", "", 2000, "", "", "");
     const auto &litState = material.GetRenderState();
-    assert(litState.cullMode == VK_CULL_MODE_BACK_BIT);
+    assert(litState.cullMode == MaterialCullMode::Back);
     assert(litState.depthWriteEnable);
     assert(!litState.blendEnable);
     assert(litState.renderQueue == 2000);
@@ -148,7 +163,7 @@ void VerifyShaderDefaultsReplacePreviousShaderState()
 
     material.ApplyShaderRenderMeta("none", "false", "", "alpha", 3000, "particle", "", "");
     const auto &nextParticleState = material.GetRenderState();
-    assert(nextParticleState.cullMode == VK_CULL_MODE_NONE);
+    assert(nextParticleState.cullMode == MaterialCullMode::None);
     assert(!nextParticleState.depthWriteEnable);
     assert(nextParticleState.blendEnable);
     assert(nextParticleState.renderQueue == 3000);
@@ -157,15 +172,33 @@ void VerifyShaderDefaultsReplacePreviousShaderState()
     material.ApplyShaderRenderMeta("none", "false", "", "premultiplied", 3000, "particle", "", "");
     const auto &premultipliedState = material.GetRenderState();
     assert(premultipliedState.blendEnable);
-    assert(premultipliedState.srcColorBlendFactor == VK_BLEND_FACTOR_ONE);
-    assert(premultipliedState.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+    assert(premultipliedState.srcColorBlendFactor == MaterialBlendFactor::One);
+    assert(premultipliedState.dstColorBlendFactor == MaterialBlendFactor::OneMinusSourceAlpha);
+
+    // Resolving the same shader to a concrete asset reference is not a
+    // switch: authored fields keep their override bits.
+    material.SetRenderState(material.GetRenderState());
+    assert(material.GetRenderStateOverrides() != 0);
+    material.SetFragShaderReference(ShaderAssetReference{"frag-guid", "Lit", "Assets/Shaders/Lit.frag"});
+    assert(material.GetRenderStateOverrides() != 0);
+
+    // Moving the file (new pathHint) or migrating a renamed shader id under
+    // the same GUID references the same asset: authorship survives.
+    material.SetFragShaderReference(ShaderAssetReference{"frag-guid", "Lit", "Assets/Moved/Lit.frag"});
+    assert(material.GetRenderStateOverrides() != 0);
+    material.SetFragShaderReference(ShaderAssetReference{"frag-guid", "Lit Renamed", "Assets/Moved/LitRenamed.frag"});
+    assert(material.GetRenderStateOverrides() != 0);
+
+    // A different GUID is a real switch even when the display id matches.
+    material.SetFragShaderReference(ShaderAssetReference{"other-guid", "Lit Renamed", "Assets/Other.frag"});
+    assert(material.GetRenderStateOverrides() == 0);
 }
 
 void VerifyMaterialOverridesSurviveShaderDefaults()
 {
     InxMaterial material("ShaderOverrides", "Lit");
     auto state = material.GetRenderState();
-    state.cullMode = VK_CULL_MODE_FRONT_BIT;
+    state.cullMode = MaterialCullMode::Front;
     state.depthWriteEnable = false;
     state.blendEnable = true;
     state.renderQueue = 3456;
@@ -177,7 +210,7 @@ void VerifyMaterialOverridesSurviveShaderDefaults()
 
     material.ApplyShaderRenderMeta("back", "true", "", "off", 2000, "", "", "");
     const auto &preserved = material.GetRenderState();
-    assert(preserved.cullMode == VK_CULL_MODE_FRONT_BIT);
+    assert(preserved.cullMode == MaterialCullMode::Front);
     assert(!preserved.depthWriteEnable);
     assert(preserved.blendEnable);
     assert(preserved.renderQueue == 3456);
@@ -199,12 +232,41 @@ void VerifyBuiltinSixWaySmokeMaterial()
 
     const auto &state = material->GetRenderState();
     assert(state.renderQueue == 3000);
-    assert(state.cullMode == VK_CULL_MODE_NONE);
+    assert(state.cullMode == MaterialCullMode::None);
     assert(state.depthTestEnable);
     assert(!state.depthWriteEnable);
     assert(state.blendEnable);
-    assert(state.srcColorBlendFactor == VK_BLEND_FACTOR_ONE);
-    assert(state.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
+    assert(state.srcColorBlendFactor == MaterialBlendFactor::One);
+    assert(state.dstColorBlendFactor == MaterialBlendFactor::OneMinusSourceAlpha);
+}
+
+void VerifyBackendNeutralRenderStateSchema()
+{
+    static_assert(static_cast<uint32_t>(MaterialCullMode::None) == 0);
+    static_assert(static_cast<uint32_t>(MaterialCullMode::Front) == 1);
+    static_assert(static_cast<uint32_t>(MaterialCullMode::Back) == 2);
+    static_assert(static_cast<uint32_t>(MaterialCompareOp::Always) == 7);
+    static_assert(static_cast<uint32_t>(MaterialBlendFactor::One) == 1);
+    static_assert(static_cast<uint32_t>(MaterialBlendFactor::OneMinusSourceAlpha) == 7);
+
+    InxMaterial material("PortableSchema", "Lit");
+    auto state = material.GetRenderState();
+    state.cullMode = MaterialCullMode::Front;
+    state.depthCompareOp = MaterialCompareOp::GreaterOrEqual;
+    state.srcColorBlendFactor = MaterialBlendFactor::One;
+    state.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
+    material.SetRenderState(state);
+
+    const auto document = material.SerializeDocument();
+    const auto &renderState = document.at("renderState");
+    assert(renderState.at("cullMode") == 1);
+    assert(renderState.at("depthCompareOp") == 6);
+    assert(renderState.at("srcColorBlendFactor") == 1);
+    assert(renderState.at("dstColorBlendFactor") == 7);
+
+    InxMaterial restored;
+    assert(restored.DeserializeDocument(document));
+    assert(restored.GetRenderState() == state);
 }
 
 void VerifySparseMaterialUsesLinkedShaderDefaults()
@@ -254,6 +316,7 @@ int main()
     VerifyShaderDefaultsReplacePreviousShaderState();
     VerifyMaterialOverridesSurviveShaderDefaults();
     VerifyBuiltinSixWaySmokeMaterial();
+    VerifyBackendNeutralRenderStateSchema();
     VerifySparseMaterialUsesLinkedShaderDefaults();
     std::cout << "Material document tests passed\n";
     return 0;

@@ -170,6 +170,9 @@ class InxGUI
     }
 
   private:
+    void RefreshDisplayScale();
+    void ReloadGUIFont();
+
     struct ImGuiTextureResource
     {
         std::shared_ptr<rhi::TextureResource> texture;
@@ -201,7 +204,6 @@ class InxGUI
     ImGuiContext *m_imguiContext_ptr = nullptr;
     float m_dpiScale = 1.0f;
     VkDescriptorPool m_descriptorPool_vk = VK_NULL_HANDLE;
-    VkRenderPass m_imguiRenderPass = VK_NULL_HANDLE;
 
     std::unordered_map<std::string, std::shared_ptr<InxGUIRenderable>> m_renderables_umap;
     std::vector<std::string> m_renderableOrder;

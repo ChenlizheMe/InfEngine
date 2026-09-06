@@ -317,7 +317,6 @@ bool InxResourceMeta::SaveToFile(const std::string &metaFilePath) const
     try {
         DocumentStore::Instance().WriteAndWait(metaFilePath, SerializeDocument().dump(4) + "\n");
 
-        INXLOG_DEBUG("Meta file saved: ", metaFilePath);
         return true;
     } catch (const std::exception &e) {
         INXLOG_ERROR("Exception while saving meta file: ", metaFilePath, " - ", e.what());
@@ -329,14 +328,12 @@ bool InxResourceMeta::LoadFromFile(const std::string &metaFilePath)
 {
     std::ifstream file(ToFsPath(metaFilePath));
     if (!file.is_open()) {
-        INXLOG_DEBUG("Meta file not found: ", metaFilePath);
         return false;
     }
 
     try {
         const nlohmann::json root = nlohmann::json::parse(file);
         DeserializeDocument(root);
-        INXLOG_DEBUG("Meta file loaded: ", metaFilePath);
         return true;
     } catch (const std::exception &e) {
         INXLOG_ERROR("Exception while loading meta file: ", metaFilePath, " - ", e.what());

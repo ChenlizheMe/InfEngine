@@ -7,8 +7,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
-from Infernux.debug import Debug
-
 from .contexts import FocusService, FocusSnapshot
 from .descriptors import SelectionSnapshot
 from .selection import SelectionService
@@ -162,11 +160,7 @@ class EditorCommandRegistry:
             return False
         if command.can_execute is None:
             return True
-        try:
-            return bool(command.can_execute(context or self.context()))
-        except Exception as exc:
-            Debug.log_suppressed(f"EditorCommand.can_execute[{command.command_id}]", exc)
-            return False
+        return bool(command.can_execute(context or self.context()))
 
     def is_checked(
         self,
@@ -176,11 +170,7 @@ class EditorCommandRegistry:
         command = self.get(command_id)
         if command is None or command.is_checked is None:
             return False
-        try:
-            return bool(command.is_checked(context or self.context()))
-        except Exception as exc:
-            Debug.log_suppressed(f"EditorCommand.is_checked[{command.command_id}]", exc)
-            return False
+        return bool(command.is_checked(context or self.context()))
 
     def disabled_reason(
         self,
@@ -195,15 +185,9 @@ class EditorCommandRegistry:
             return ""
         if command.disabled_reason is None:
             return "Command is unavailable in the current context"
-        try:
-            return str(command.disabled_reason(resolved_context) or "").strip() or (
-                "Command is unavailable in the current context"
-            )
-        except Exception as exc:
-            Debug.log_suppressed(
-                f"EditorCommand.disabled_reason[{command.command_id}]", exc
-            )
-            return "Command is unavailable in the current context"
+        return str(command.disabled_reason(resolved_context) or "").strip() or (
+            "Command is unavailable in the current context"
+        )
 
     def execute(
         self,
@@ -263,7 +247,6 @@ class EditorCommandRegistry:
                 ):
                     value = command.execute(context)
         except Exception as exc:
-            Debug.log_suppressed(f"EditorCommand.execute[{identifier}]", exc)
             return CommandResult(identifier, CommandStatus.FAILED, str(exc))
         if isinstance(value, CommandResult):
             if value.command_id and value.command_id != identifier:

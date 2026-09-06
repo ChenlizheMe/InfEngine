@@ -38,23 +38,8 @@ def is_dangerous_install_target(path: str) -> bool:
     return looks_like_infernux_project(path) or looks_like_infernux_user_data(path)
 
 
-def looks_like_legacy_hub_install_dir(path: str) -> bool:
-    if not path or not os.path.isdir(path) or is_dangerous_install_target(path):
-        return False
-    normalized_name = os.path.basename(os.path.normpath(path)).lower()
-    if "infernux" not in normalized_name or "hub" not in normalized_name:
-        return False
-    return bool(
-        os.path.isfile(os.path.join(path, "Infernux Hub.exe"))
-        and (
-            os.path.isdir(os.path.join(path, "InfernuxHubData"))
-            or os.path.isdir(os.path.join(path, "_internal"))
-        )
-    )
-
-
 def is_recognized_install_dir(path: str) -> bool:
-    return is_marked_install_dir(path) or looks_like_legacy_hub_install_dir(path)
+    return is_marked_install_dir(path)
 
 
 def write_install_marker(install_dir: str) -> None:
