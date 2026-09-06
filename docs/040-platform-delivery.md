@@ -48,7 +48,7 @@ and a green, mergeable engine PR. Publishing exporter-only plugins is not enough
 
 - [ ] Update affected engine/Hub/platform repositories and public release artifacts.
 - [x] Verify source-free exports with the InfernuxMultiPlatform040 project.
-- [ ] Verify its button reads packaged TXT content and displays it in game UI.
+- [x] Verify its button reads packaged TXT content and displays it in game UI.
 - [x] Keep cooked assets in binary packages; do not expose an editable Assets/Library tree.
 - [ ] Verify install, update, uninstall and centralized storage ownership.
 - [ ] Keep documentation consistent with the actual released payloads.
@@ -82,6 +82,59 @@ The installed editor's official catalog is currently a wheel-bundled snapshot.
 Installed plugins have reload/uninstall actions but no version update operation.
 
 ## Iteration log
+
+### 2026-09-06: frozen Linux Hub dependency and remaining plugin lifecycle checks
+
+- Desktop, Player, browser and kit workflows passed at `3612c0a9`.
+- The downloaded Linux Hub distribution could not start on X11 when the host
+  lacked `libxcb-cursor.so.0`. Supplying that library from an isolated extracted
+  Ubuntu package allowed the real frozen Hub to display its installation tabs.
+  No system package was installed, and this diagnostic is not final-artifact
+  acceptance. WSL compositor grabs were black; a foreground Windows capture
+  confirmed the actual Linux Hub interface.
+- Added a Nuitka library declaration for the seven small Qt X11 helper libraries
+  and included their upstream/distribution notices in Hub and installer builds.
+  They are packaged by the existing CMake/Nuitka flow, not copied into user
+  installations or substituted at runtime. Graphics drivers remain host-owned.
+  The configuration passes Nuitka parsing; new distribution builds remain to be
+  verified. Hub tests: 331 passed, 3 skipped; WSL toolchain tests: 19 passed.
+- Web v0.2.0 uninstall/reinstall removed 21 owned files and restored 20 GUIDs.
+  Android v0.2.2 removed 60 owned files and restored 59 GUIDs. Both retained an
+  author-added file, and the original desktop project was not modified.
+- After the API quota reset, the Windows public channel download started using
+  the same sequential-range installer as Linux. Both transfers remain in progress.
+
+### 2026-09-06: Android sample runtime and package button
+
+- Ran the exact v0.2.2 installed-export APK on the existing local API 36 x86_64
+  emulator. Its native emulator failed to create temporary disk backing under
+  the host's non-ASCII TEMP path; a process-local ASCII TEMP/TMP directory allowed
+  startup. No system environment, AVD snapshot, driver or engine code was changed.
+- The first Back probe was blocked by Android's first-use full-screen explanation.
+  Dismissed that visible system dialog and repeated the same acceptance. Startup,
+  three background/resume cycles, landscape surfaces and gameplay Back passed in
+  12.398 seconds, with zero fatal logs or abandoned buffers.
+- A real touch on READ PACKAGE TXT displayed `BUTTON READ #1: Package resource
+  reached UIText on every Player target.` Both the runtime log marker and the
+  captured 2400x1080 frame confirm the result. This completes sample TXT-button
+  coverage on Windows, Linux, Web and the local Android emulator; it does not
+  claim Xiaomi or other additional physical-device acceptance.
+- Independent official catalog publication at `1edfe14b` now advertises Android
+  v0.2.2. The latest installed-editor refresh attempt hit a connection reset;
+  earlier pin-preservation evidence remains recorded, not relabeled as this run.
+- Windows channel validation hit the public API's unauthenticated rate limit
+  before downloading. Linux's real range download continues. These installation
+  gates and final engine/Hub publication remain open.
+- Linux public v0.2.0 uninstall/reinstall removed 11 owned files and restored
+  all 10 asset GUIDs while retaining the author's added file. This used the
+  installed Linux wheel and the isolated project, not the original desktop copy.
+- A Windows automatic-path export using the existing Hub kit resolved the SDK,
+  JDK, Gradle and target Python, but first failed at remote Android Gradle Plugin
+  resolution. A subsequent diagnostic Gradle invocation downloaded the official
+  Maven dependencies into Hub's shared cache and succeeded. The automatic-path
+  export then passed with all 33 Gradle tasks executed. Only Hub's shared root
+  was supplied; SDK/JDK/Gradle/target Python paths resolved automatically and no
+  CMake invocation was recorded. It is not fresh-channel or cold-cache acceptance.
 
 ### 2026-09-06: Android patch publication and bounded channel transfers
 

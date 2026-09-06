@@ -280,6 +280,7 @@ def _common_nuitka_command(
         "-m",
         "nuitka",
         "--enable-plugin=pyside6",
+        f"--user-package-configuration-file={source_root / 'packaging' / 'hub.nuitka-package.config.yml'}",
         "--assume-yes-for-downloads",
         f"--output-dir={output_dir}",
     ]
@@ -297,6 +298,15 @@ def _common_nuitka_command(
         )
     else:
         command.append(f"--output-filename={original_filename}")
+    if sys.platform.startswith("linux"):
+        for package in (
+            "libxcb-cursor0", "libxcb-icccm4", "libxcb-image0", "libxcb-keysyms1",
+            "libxcb-render-util0", "libxcb-util1", "libxkbcommon-x11-0",
+        ):
+            command.append(
+                f"--include-data-file=/usr/share/doc/{package}/copyright="
+                f"licenses/{package}.txt"
+            )
     return command
 
 

@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path, PureWindowsPath
 
 import pytest
+import yaml
 
 
 PACKAGING_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,41 @@ clang_mode=False
 msvc_mode=True
 mingw_mode=False
 """
+
+
+def test_hub_and_installer_use_declared_qt_runtime_dependencies(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_hub.os, "name", "posix")
+    monkeypatch.setattr(build_hub.sys, "platform", "linux")
+    command = build_hub._common_nuitka_command(
+        tmp_path / "out", tmp_path, product_name="Hub",
+        description="Hub", original_filename="Hub",
+    )
+    assert f"--user-package-configuration-file={tmp_path / 'packaging/hub.nuitka-package.config.yml'}" in command
+    assert "--include-data-file=/usr/share/doc/libxcb-cursor0/copyright=licenses/libxcb-cursor0.txt" in command
+    assert len([argument for argument in command if argument.startswith("--include-data-file=/usr/share/doc/")]) == 7
+
+
+def test_linux_qt_helpers_are_explicit_libraries_not_data_files(monkeypatch):
+    config = yaml.safe_load((PACKAGING_ROOT / "hub.nuitka-package.config.yml").read_text())
+    rule = config[0]["dlls"][0]
+    assert config[0]["module-name"] == "PySide6.QtWidgets"
+    assert rule["when"] == "linux"
+    assert rule["dest_path"] == "PySide6"
+    required = (
+        "libxcb-cursor.so.0", "libxcb-icccm.so.4", "libxcb-image.so.0",
+        "libxcb-keysyms.so.1", "libxcb-render-util.so.0", "libxcb-util.so.1",
+        "libxkbcommon-x11.so.0",
+    )
+    import subprocess
+    monkeypatch.setattr(subprocess, "check_output", lambda *_a, **_k: "\n".join(
+        f"{name} (libc6,x86-64) => /lib/x86_64-linux-gnu/{name}" for name in required))
+    namespace = {}
+    exec(rule["by_code"]["setup_code"], namespace)
+    assert eval(rule["by_code"]["filename_code"], namespace) == [
+        f"/lib/x86_64-linux-gnu/{name}" for name in required]
+    del namespace["libraries"]["libxcb-cursor.so.0"]
+    with pytest.raises(KeyError):
+        eval(rule["by_code"]["filename_code"], namespace)
 
 
 def test_installer_publishes_only_its_versioned_file(tmp_path, monkeypatch):
