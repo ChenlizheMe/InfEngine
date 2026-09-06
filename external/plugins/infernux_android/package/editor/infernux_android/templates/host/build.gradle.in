@@ -1,3 +1,0 @@
-plugins {
-    id "com.android.application" version "@ANDROID_GRADLE_PLUGIN_VERSION@" apply false
-}

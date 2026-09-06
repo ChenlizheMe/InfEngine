@@ -264,7 +264,7 @@ def test_rejects_unsafe_release_tags(tmp_path, tag):
         )
 
 
-def test_release_workflow_uses_the_versioned_assets_without_hash_manifest():
+def test_platform_releases_are_owned_by_independent_repositories():
     workflow = (
         Path(__file__).parents[2]
         / ".github"
@@ -272,10 +272,23 @@ def test_release_workflow_uses_the_versioned_assets_without_hash_manifest():
         / "platform-plugin-release.yml"
     ).read_text(encoding="utf-8")
     assert "release:\n    types: [published]" in workflow
-    assert "infernux-*-cp313-cp313-win_amd64.whl" in workflow
-    assert "build_release_assets.py" in workflow
+    assert "build_release_assets.py" not in workflow
+    assert "publish-platform-plugins" not in workflow
+    assert "package_android_support.py" in workflow
     assert "$env:RELEASE_INPUT_TAG" in workflow
     assert "${{ inputs.release_tag }}'" not in workflow
+    sources = Path(__file__).parents[2] / "external/plugins"
+    catalog = json.loads((sources / "plugins.json").read_text(encoding="utf-8"))
+    platforms = [item for item in catalog["plugins"] if item["category"] == "Platform"]
+    assert len(platforms) == 4
+    for item in platforms:
+        assert item["repository"] == f"https://github.com/ChenlizheMe/{item['path']}"
+        assert "revision" not in item and "subdirectory" not in item
+        release = (sources / item["path"] / ".github/workflows/release.yml").read_text(
+            encoding="utf-8"
+        )
+        assert "python release.py" in release
+        assert "gh release create" in release
 
 
 @pytest.mark.parametrize(

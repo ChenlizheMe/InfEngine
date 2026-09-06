@@ -48,30 +48,5 @@ add_custom_target(infernux_official_plugins ALL
     VERBATIM
 )
 
-set(INFERNUX_PLUGIN_RELEASE_TAG "" CACHE STRING
-    "GitHub release tag used when staging official platform plugin assets")
-if(INFERNUX_PLUGIN_RELEASE_TAG)
-    set(INFERNUX_PLUGIN_RELEASE_ASSET_DIR
-        "${CMAKE_BINARY_DIR}/release/plugin-assets")
-    add_custom_target(infernux_plugin_release_assets
-        COMMAND ${CMAKE_COMMAND} -E rm -rf
-            "${INFERNUX_PLUGIN_RELEASE_ASSET_DIR}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory
-            "${INFERNUX_PLUGIN_RELEASE_ASSET_DIR}"
-        COMMAND ${CMAKE_COMMAND} -E env
-            "PYTHONPATH=${CMAKE_SOURCE_DIR}/python"
-            "INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
-            "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/build_release_assets.py"
-            --package-root "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}"
-            --output-root "${INFERNUX_PLUGIN_RELEASE_ASSET_DIR}"
-            --catalog "${CMAKE_CURRENT_SOURCE_DIR}/plugins.json"
-            --repository "https://github.com/ChenlizheMe/Infernux"
-            --release-tag "${INFERNUX_PLUGIN_RELEASE_TAG}"
-        DEPENDS
-            infernux_official_plugins
-            "${CMAKE_CURRENT_SOURCE_DIR}/build_release_assets.py"
-        COMMENT "Staging official platform plugin release assets"
-        VERBATIM
-    )
-endif()
+# Platform plugin releases are built and published by each plugin repository.
+# The engine owns only catalog generation and its bundled default packages.

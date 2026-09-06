@@ -60,7 +60,9 @@
 [证据与发布边界](SUPPORT.md#platform-support)区分 CI 验收、公开发行和设备覆盖范围。
 macOS 和原生 iOS 不属于受支持目标。
 
-平台导出器是独立于核心引擎 wheel 的官方 InxPackage。较小的可复用运行时与构建载荷随插件分发，体积较大的共享 Android SDK/NDK 由 Hub Library 管理。安装安卓插件前，需要先在 Hub 安装安卓支持。OpenGL、OpenGL ES 和 WebGL 都不是产品 fallback。
+平台导出器是拥有独立仓库和 Release 的官方 InxPackage：[Windows](https://github.com/ChenlizheMe/infernux_windows)、[Linux](https://github.com/ChenlizheMe/infernux_linux)、[Android](https://github.com/ChenlizheMe/infernux_android)、[Web](https://github.com/ChenlizheMe/infernux_web)。各仓库提供配图安装文档和可导入的 `.inxpkg` 发布制品。
+
+Windows/Linux 使用对应宿主引擎自带的原生运行时。Android/Web 当前仍需引擎源码和平台工具链，仅下载插件不代表已具备这些依赖。大型共享 Android SDK/NDK 由 Hub 管理，安装安卓兼容后才能导入安卓插件；Hub 安卓兼容套件与插件 Release 分开发布。OpenGL、OpenGL ES 和 WebGL 都不是产品 fallback。
 
 MCP 不再焊在引擎里。它是官方默认插件 `infernux/mcp`。新项目会带上，不想用就关掉或卸掉。
 

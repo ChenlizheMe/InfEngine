@@ -25,3 +25,15 @@
 [submodule "external/plugins/infernux_mcp"]
 	path = external/plugins/infernux_mcp
 	url = https://github.com/ChenlizheMe/infernux_mcp.git
+[submodule "external/plugins/infernux_windows"]
+	path = external/plugins/infernux_windows
+	url = https://github.com/ChenlizheMe/infernux_windows.git
+[submodule "external/plugins/infernux_linux"]
+	path = external/plugins/infernux_linux
+	url = https://github.com/ChenlizheMe/infernux_linux.git
+[submodule "external/plugins/infernux_android"]
+	path = external/plugins/infernux_android
+	url = https://github.com/ChenlizheMe/infernux_android.git
+[submodule "external/plugins/infernux_web"]
+	path = external/plugins/infernux_web
+	url = https://github.com/ChenlizheMe/infernux_web.git

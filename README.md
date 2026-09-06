@@ -61,7 +61,9 @@ This table follows the [auditable support matrix](docs/platform-support.json).
 acceptance from public release availability and device coverage. macOS and native
 iOS are not supported targets.
 
-Platform exporters are official InxPackages, separate from the core engine wheel. Small reusable runtimes and build payloads travel with the plugin; large shared Android SDK/NDK installations belong to the Hub Library. Install Android support in Hub before importing the Android plugin. OpenGL, OpenGL ES, and WebGL are not fallback product paths.
+Platform exporters are official InxPackages with independent repositories and releases: [Windows](https://github.com/ChenlizheMe/infernux_windows), [Linux](https://github.com/ChenlizheMe/infernux_linux), [Android](https://github.com/ChenlizheMe/infernux_android), and [Web](https://github.com/ChenlizheMe/infernux_web). Each repository includes illustrated setup documentation and an installable `.inxpkg` release asset.
+
+Windows/Linux use their matching host engine's native runtime. Android/Web currently require an engine source checkout and their platform toolchains; downloading the plugin alone does not provide those dependencies. Large shared Android SDK/NDK installations belong to Hub and must be installed before the Android plugin can be imported. The Hub Android kit is published separately from plugin releases. OpenGL, OpenGL ES, and WebGL are not fallback product paths.
 
 MCP is no longer welded into the engine. It is the official default plugin `infernux/mcp`. New projects include it. Turn it off or uninstall it if you do not want it.
 

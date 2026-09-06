@@ -1,4 +1,4 @@
-name: Platform Plugin Release Assets
+name: Hub Android Platform Kit Release
 
 on:
   release:
@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 jobs:
-  publish-platform-plugins:
+  resolve-release:
     runs-on: windows-latest
     outputs:
       release-tag: ${{ steps.release.outputs.tag }}
@@ -35,69 +35,14 @@ jobs:
           }
           "tag=$tag" >> $env:GITHUB_OUTPUT
 
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.release.outputs.tag }}
-          submodules: recursive
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install the released Windows wheel
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          New-Item -ItemType Directory -Force out/release-wheel | Out-Null
-          gh release download '${{ steps.release.outputs.tag }}' `
-            --repo '${{ github.repository }}' `
-            --pattern 'infernux-*-cp313-cp313-win_amd64.whl' `
-            --dir out/release-wheel
-          $wheels = @(Get-ChildItem out/release-wheel -Filter '*.whl')
-          if ($wheels.Count -ne 1) {
-            throw "The release must contain exactly one cp313 Windows wheel"
-          }
-          python -m pip install $wheels[0].FullName
-
-      - name: Build current official packages
-        shell: pwsh
-        run: |
-          $native = python -c "import pathlib, Infernux.lib; print(pathlib.Path(Infernux.lib.__file__).parent)"
-          $env:INFERNUX_NATIVE_MODULE_DIR = $native.Trim()
-          python external/plugins/build_official_plugins.py `
-            --source-root external/plugins `
-            --output-root out/official-plugins `
-            --catalog external/plugins/plugins.json
-          python external/plugins/build_release_assets.py `
-            --package-root out/official-plugins `
-            --output-root out/platform-plugin-release `
-            --catalog external/plugins/plugins.json `
-            --repository 'https://github.com/ChenlizheMe/Infernux' `
-            --release-tag '${{ steps.release.outputs.tag }}'
-
-      - name: Upload platform plugin assets
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $assets = @(Get-ChildItem out/platform-plugin-release -File)
-          if ($assets.Count -ne 8) {
-            throw "Expected four platform packages and four release manifests"
-          }
-          gh release upload '${{ steps.release.outputs.tag }}' `
-            --repo '${{ github.repository }}' `
-            --clobber `
-            @($assets.FullName)
-
   build-android-python-support:
-    needs: publish-platform-plugins
+    needs: resolve-release
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.publish-platform-plugins.outputs.release-tag }}
+          ref: ${{ needs.resolve-release.outputs.release-tag }}
 
       - uses: android-actions/setup-android@v3
 
@@ -139,7 +84,7 @@ jobs:
           retention-days: 1
 
   publish-android-support:
-    needs: [publish-platform-plugins, build-android-python-support]
+    needs: [resolve-release, build-android-python-support]
     strategy:
       fail-fast: false
       matrix:
@@ -153,7 +98,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.publish-platform-plugins.outputs.release-tag }}
+          ref: ${{ needs.resolve-release.outputs.release-tag }}
 
       - uses: actions/setup-python@v5
         with:
@@ -215,7 +160,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload '${{ needs.publish-platform-plugins.outputs.release-tag }}' \
+          gh release upload '${{ needs.resolve-release.outputs.release-tag }}' \
             --repo '${{ github.repository }}' \
             --clobber \
             '${{ steps.android-kit.outputs.asset }}'
