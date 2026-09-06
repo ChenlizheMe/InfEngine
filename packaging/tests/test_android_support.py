@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
+import textwrap
 import zipfile
 from pathlib import Path
 
@@ -17,6 +19,37 @@ if str(PACKAGING_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGING_DIR))
 
 import android_support
+
+
+@pytest.mark.parametrize("tag", ["", "v0.4.0"])
+def test_kit_workflow_resolves_verification_ref_or_explicit_release(tmp_path, tag):
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("PowerShell is required to execute the release resolver")
+    workflow = (PACKAGING_DIR.parent / ".github/workflows/platform-plugin-release.yml").read_text(
+        encoding="utf-8"
+    )
+    step = workflow.split("      - name: Resolve release tag\n", 1)[1].split(
+        "\n  build-android-python-support:", 1
+    )[0]
+    script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+    output = tmp_path / "outputs"
+    check = tmp_path / "resolve.ps1"
+    check.write_text(
+        "function gh { $global:LASTEXITCODE = 0; Write-Output 'checked-release' }\n" + script,
+        encoding="utf-8",
+    )
+    environment = dict(os.environ, RELEASE_EVENT_TAG="", RELEASE_INPUT_TAG=tag,
+                       SOURCE_COMMIT="a" * 40, GITHUB_OUTPUT=str(output))
+    result = subprocess.run([pwsh, "-NoProfile", "-File", str(check)],
+                            env=environment, capture_output=True, text=True, check=True)
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        f"tag={tag}", f"source-ref={tag or 'a' * 40}",
+    ]
+    assert ("checked-release" in result.stdout) == bool(tag)
+    assert "if: needs.resolve-release.outputs.release-tag != ''" in workflow
+    assert "name: android-support-${{ matrix.host }}" in workflow
+    assert "--clobber" not in workflow
 
 
 def test_release_kit_resolves_gradle_from_the_installed_launcher(tmp_path):

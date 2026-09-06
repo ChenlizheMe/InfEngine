@@ -1,13 +1,21 @@
 name: Hub Android Platform Kit Release
 
 on:
+  push:
+    paths:
+      - .github/workflows/platform-plugin-release.yml
+      - packaging/android_support.py
+      - scripts/setup/package_android_support.py
+      - scripts/setup/build_android_python_runtime.sh
+      - scripts/setup/android_python_runtime.py
+      - scripts/setup/android_numpy_cross.ini
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing Infernux GitHub release tag
-        required: true
+        description: Existing release tag to publish to; leave empty to verify the selected ref
+        required: false
         type: string
 
 permissions:
@@ -18,6 +26,7 @@ jobs:
     runs-on: windows-latest
     outputs:
       release-tag: ${{ steps.release.outputs.tag }}
+      source-ref: ${{ steps.release.outputs.source-ref }}
     steps:
       - name: Resolve release tag
         id: release
@@ -25,15 +34,24 @@ jobs:
         env:
           RELEASE_EVENT_TAG: ${{ github.event.release.tag_name }}
           RELEASE_INPUT_TAG: ${{ inputs.release_tag }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $tag = $env:RELEASE_EVENT_TAG
           if (-not $tag) {
             $tag = $env:RELEASE_INPUT_TAG
           }
-          if ($tag -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+          if ($tag -and $tag -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
             throw "Invalid release tag: $tag"
           }
+          $sourceRef = $env:SOURCE_COMMIT
+          if ($tag) {
+            gh release view $tag --repo $env:GITHUB_REPOSITORY --json tagName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $sourceRef = $tag
+          }
           "tag=$tag" >> $env:GITHUB_OUTPUT
+          "source-ref=$sourceRef" >> $env:GITHUB_OUTPUT
 
   build-android-python-support:
     needs: resolve-release
@@ -42,7 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-release.outputs.release-tag }}
+          ref: ${{ needs.resolve-release.outputs.source-ref }}
 
       - uses: android-actions/setup-android@v3
 
@@ -98,7 +116,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.resolve-release.outputs.release-tag }}
+          ref: ${{ needs.resolve-release.outputs.source-ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -157,12 +175,20 @@ jobs:
             --output "out/$asset_name"
           echo "asset=out/$asset_name" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-support-${{ matrix.host }}
+          path: ${{ steps.android-kit.outputs.asset }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
       - name: Upload the Android Platform Kit
+        if: needs.resolve-release.outputs.release-tag != ''
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload '${{ needs.resolve-release.outputs.release-tag }}' \
             --repo '${{ github.repository }}' \
-            --clobber \
             '${{ steps.android-kit.outputs.asset }}'

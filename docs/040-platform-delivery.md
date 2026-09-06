@@ -83,6 +83,18 @@ Installed plugins have reload/uninstall actions but no version update operation.
 
 ## Iteration log
 
+### 2026-09-06: verify Hub kits before channel publication
+
+- Hub kit builds can verify the selected source commit without an existing
+  public release. Changes to kit inputs trigger that build; an explicit existing
+  release tag remains necessary for channel publication. Both host `.inxkit`
+  outputs are retained as CI artifacts, and published release assets are not
+  silently overwritten.
+- Executed the PowerShell resolver for both verification and publication modes.
+  Kit/release regression: 20 passed, 2 skipped. Complete Hub regression before
+  this workflow change: 317 passed, 3 skipped. Real dual-host kit builds and
+  channel download/install acceptance remain open.
+
 ### 2026-09-06: installed Web export and cook-host ownership
 
 - Completed Windows shader tools through the plugin CMake target: glslang
