@@ -15,7 +15,7 @@ one active listener; additional enabled listeners remain registered but can
 be standby instead of immediately replacing the active listener.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.7
+**Status:** Preview · **Verified with:** 0.4.0
 
 Place one intended active listener at the scene's listening position, normally on the active Camera or player head. Source distance is measured relative to it.
 <!-- USER CONTENT END -->

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import ast
 from pathlib import Path
 import tomllib
 
@@ -11,6 +12,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _matrix():
     return json.loads((ROOT / "docs/platform-support.json").read_text(encoding="utf-8"))
+
+
+def test_engine_and_current_release_metadata_use_one_version():
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    runtime = ast.parse((ROOT / "python/Infernux/version.py").read_text(encoding="utf-8"))
+    assignment = next(node for node in runtime.body if isinstance(node, ast.Assign) and node.targets[0].id == "ENGINE_VERSION")
+    assert ast.literal_eval(assignment.value) == version
+    for filename, key in (
+        ("release.json", "version"),
+        ("hub-catalog.json", "stable"),
+        ("docs-manifest.json", "documented_release"),
+        ("release-notes.json", "version"),
+        ("platform-support.json", "released_version"),
+    ):
+        assert json.loads((ROOT / "docs" / filename).read_text(encoding="utf-8"))[key] == version
 
 
 def test_wheel_classifiers_match_supported_host_targets():

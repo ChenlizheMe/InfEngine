@@ -72,6 +72,17 @@ def test_packaged_hub_version_requires_the_current_document(
         hub_updater.current_hub_version()
 
 
+def test_unpublished_release_does_not_offer_downloads(monkeypatch):
+    release = _catalog("0.4.0", "windows-x64", "linux-x64")
+    release["releases"][0]["published_at"] = None
+    monkeypatch.setattr(hub_updater, "_request_bytes", lambda *_args: json.dumps(release).encode())
+
+    result = check_for_update("0.3.7", platform_id="windows-x64")
+
+    assert result.status is HubUpdateStatus.UP_TO_DATE
+    assert result.update is None
+
+
 def test_check_selects_the_standalone_update(monkeypatch):
     release = _catalog("1.1.0", "windows-x64", "linux-x64")
     monkeypatch.setattr(

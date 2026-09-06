@@ -9,7 +9,7 @@
 用于读取键盘、鼠标和触摸输入的接口。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.3.7
+**状态：** Preview · **验证版本：** 0.4.0
 
 连续动作使用按住状态，一帧边沿操作使用 down/up。游戏鼠标逻辑应使用 Game 视口坐标并尊重 Game 焦点。
 <!-- USER CONTENT END -->
@@ -18,6 +18,7 @@
 
 | 名称 | 类型 | 描述 |
 |------|------|------|
+| frame_index | `int` | Monotonic identity of the current native input frame. |
 | mouse_position | `Tuple[float, float]` | 当前鼠标在屏幕坐标中的位置。 |
 | game_mouse_position | `Tuple[float, float]` | 当前鼠标在游戏视口坐标中的位置。 |
 | mouse_scroll_delta | `Tuple[float, float]` | 当前帧的鼠标滚轮增量。 |
@@ -25,6 +26,13 @@
 | any_key | `bool` | 当任意键或鼠标按钮被按住时返回 True。 |
 | any_key_down | `bool` | 当任意键或鼠标按钮首次按下时返回 True。 |
 | touch_count | `int` | 当前活动的触摸数量。 |
+| touches | `Tuple[Touch, ...]` | All touch contacts in stable first-contact order. |
+| accelerometer_supported | `bool` | Whether the current device exposes an accelerometer. |
+| gyroscope_supported | `bool` | Whether the current device exposes a gyroscope. |
+| acceleration | `Tuple[float, float, float]` | Latest linear acceleration in g-force units. |
+| gyroscope_rotation_rate | `Tuple[float, float, float]` | Latest angular velocity in radians per second. |
+| acceleration_event_count | `int` | Number of accelerometer samples captured during this input frame. |
+| acceleration_events | `Tuple[AccelerationEvent, ...]` | Accelerometer samples captured during this input frame. |
 | mouse_sensitivity | `float` | Mouse sensitivity multiplier (default 0.1). |
 
 <!-- USER CONTENT START --> properties
@@ -44,6 +52,10 @@
 | `static Input.get_mouse_button(button: int) → bool` | 当鼠标按钮被按住时返回 True。 |
 | `static Input.get_mouse_button_down(button: int) → bool` | 当鼠标按钮按下的那一帧返回 True。 |
 | `static Input.get_mouse_button_up(button: int) → bool` | 当鼠标按钮松开的那一帧返回 True。 |
+| `static Input.get_touch(index: int) → Touch` | Return one touch from the current frame snapshot. |
+| `static Input.begin_text_input(initial_value: str = ..., input_type: str = ...) → bool` | Begin platform text input and show a software keyboard when available. |
+| `static Input.end_text_input() → None` | End platform text input and dismiss its software keyboard. |
+| `static Input.is_text_input_active() → bool` | Return whether gameplay requested platform text input. |
 | `static Input.get_mouse_frame_state(button: int = ...) → Tuple[float, float, float, float, bool, bool, bool]` | Get comprehensive mouse state for the current frame. |
 | `static Input.get_game_mouse_frame_state(button: int = ...) → Tuple[float, float, float, float, bool, bool, bool]` | Get comprehensive game-viewport mouse state for the current frame. |
 | `static Input.set_cursor_locked(locked: bool) → None` | Lock or unlock the cursor. |

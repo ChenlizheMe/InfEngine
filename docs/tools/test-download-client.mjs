@@ -7,11 +7,13 @@ const docsRoot = path.resolve("docs");
 const source = await readFile(path.join(docsRoot, "js", "download.js"), "utf8");
 const html = await readFile(path.join(docsRoot, "download.html"), "utf8");
 const catalog = JSON.parse(await readFile(path.join(docsRoot, "hub-catalog.json"), "utf8"));
+const release = catalog.releases.find(item => item.version === catalog.stable);
+release.published_at = "2026-09-06T00:00:00Z";
 const listeners = new Map();
 
 function makeSelect(id, initialUrl) {
-    const link = { href: "" };
-    const options = [{ value: initialUrl, textContent: "0.3.7" }];
+    const link = makeLink();
+    const options = [{ value: initialUrl, textContent: catalog.stable }];
     const select = {
         id,
         value: initialUrl,
@@ -52,7 +54,7 @@ function makeLabel(chinese) {
     };
 }
 
-const wheel = "https://example.invalid/infernux-0.3.7.whl";
+const wheel = `https://example.invalid/releases/download/v${catalog.stable}/infernux-${catalog.stable}.whl`;
 const en = makeSelect("engine-version-en", wheel);
 const zh = makeSelect("engine-version-zh", wheel);
 const windowsLinks = [makeLink(), makeLink()];
@@ -89,17 +91,37 @@ new vm.Script(source, { filename: "download.js" }).runInContext(sandbox);
 listeners.get("DOMContentLoaded")();
 await new Promise((resolve) => setImmediate(resolve));
 
-const windowsInstaller = catalog.releases[0].platforms["windows-x64"].installer.url;
+const windowsInstaller = release.platforms["windows-x64"].installer.url;
 assert.equal(en.link.href, wheel);
 assert.equal(zh.link.href, wheel);
 assert.deepEqual(windowsLinks.map((link) => link.href), [windowsInstaller, windowsInstaller]);
 assert.equal(windowsLinks[0].classList.contains("is-disabled"), false);
+assert.equal(linuxLinks[0].href, release.platforms["linux-x64"].installer.url);
+assert.equal(linuxLinks[0].classList.contains("is-disabled"), false);
+assert.equal(windowsLabels[0].textContent, `Windows x64 · ${catalog.stable}`);
+assert.equal(windowsLabels[1].textContent, `Windows x64 · ${catalog.stable}`);
+
+release.published_at = null;
+listeners.get("DOMContentLoaded")();
+await new Promise((resolve) => setImmediate(resolve));
+assert.equal(windowsLinks[0].href, "");
+assert.equal(linuxLinks[0].href, "");
+assert.equal(en.link.href, "");
+assert.equal(zh.link.attributes.get("aria-disabled"), "true");
+assert.match(windowsLabels[0].textContent, /release files pending publication/);
+assert.match(windowsLabels[1].textContent, /制品待发布/);
+
+en.select.value = "https://example.invalid/releases/download/v0.3.7/old.whl";
+listeners.get("engine-version-en:change")();
+assert.equal(en.link.href, en.select.value);
+assert.equal(en.link.classList.contains("is-disabled"), false);
+
+release.published_at = "2026-09-06T00:00:00Z";
+delete release.platforms["linux-x64"];
+listeners.get("DOMContentLoaded")();
+await new Promise((resolve) => setImmediate(resolve));
 assert.equal(linuxLinks[0].href, "");
 assert.equal(linuxLinks[0].attributes.get("aria-disabled"), "true");
-assert.match(windowsLabels[0].textContent, /latest public release 0\.3\.7/);
-assert.match(windowsLabels[1].textContent, /最新公开版本 0\.3\.7/);
-assert.match(linuxLabels[0].textContent, /not publicly released yet/);
-assert.match(linuxLabels[1].textContent, /尚未公开发布/);
 
 assert.match(html, /InfernuxHub/, "the primary download must be presented as InfernuxHub");
 assert.match(html, /data-hub-link="windows-x64"/, "the Windows Hub must have its own path");

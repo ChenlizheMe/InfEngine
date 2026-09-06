@@ -5,16 +5,16 @@
 <h1 align="center">Infernux · 熔炉</h1>
 
 <p align="center">
-  <strong>C++ / Vulkan runtime. Python is the real development interface.</strong>
+  <strong>C++ / Vulkan / WebGPU runtime. Python is the real development interface.</strong>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/version-0.4.0-orange.svg" alt="Version 0.4.0" />
   <img src="https://img.shields.io/badge/status-active_development-yellow.svg" alt="Active development" />
-  <img src="https://img.shields.io/badge/current_platform-Windows-lightgrey.svg" alt="Current platform: Windows" />
+  <img src="https://img.shields.io/badge/platforms-Windows_|_Linux_|_Android_|_Web-lightgrey.svg" alt="Windows, Linux, Android and Web" />
   <img src="https://img.shields.io/badge/python-3.13-brightgreen.svg" alt="Python 3.13" />
-  <img src="https://img.shields.io/badge/graphics-Vulkan-red.svg" alt="Vulkan" />
+  <img src="https://img.shields.io/badge/graphics-Vulkan_|_WebGPU-red.svg" alt="Vulkan and WebGPU" />
 </p>
 
 <p align="center">
@@ -35,35 +35,37 @@ This is a real editor capture from the 0.3.4 showcase: 65,536 ordinary GameObjec
 
 A general-purpose game engine. Not a chat box glued onto someone else's editor.
 
-The runtime is C++17 and Vulkan. Gameplay, components, editor tools, assets, and render setup are written in Python 3.13.
+The runtime is C++17, with Vulkan on native platforms and WebGPU in browsers. Gameplay, components, editor tools, assets, and render setup are written in Python 3.13.
 
-This development tree targets **0.4.0**. Windows x64 remains the released platform. Linux Editor/Player and Android/Web Players now build and run from this tree against the same acceptance project, but they remain development targets until the 0.4.0 platform gates and CI matrix are complete. The PyTorch stack follows in a later release.
+**0.4.0** brings Windows and Linux Editors, Windows/Linux/Android/Web Player builds, self-contained plugin payloads, packed runtime assets, and Hub-managed build environments. The same project is used to exercise gameplay, UI, input, and packaged file access across the four Player targets.
 
 ## What you can do now
 
 - Scenes, components, physics, audio, UI, animation, particles, prefabs
 - Vulkan Forward / Forward+ / Deferred, PBR, RenderGraph, RenderStack
-- Hub, installer, and standalone Windows Player builds
-- Development builds of the Linux Player, Android APK/AAB, and Web Player through the same build service
-- Plugins, same idea as Unity packages
+- Windows and Linux Hub, Editor, and standalone Player builds
+- Android APK/AAB and Web Player exports through the same build service
+- InxPackage plugins with runtime/editor separation and live asset and script refresh
+- Path-based asset access backed by GUIDs and packed Player content
+- Hub-managed Python and Android support, with background installation queues
 
 | Target | Editor | Player | Graphics | 0.4.0 status |
 |---|---:|---:|---|---|
-| Windows x64 | Yes | Yes | Vulkan | Released baseline |
-| Linux x86_64 | Yes | Yes | Vulkan | Source and clean-wheel validation in progress |
-| Android arm64/x86_64 | No | APK/AAB | Vulkan | Emulator and physical-device validation in progress |
-| Web | No | HTML/JS/WASM | WebGPU | Desktop and mobile-browser validation in progress |
+| Windows x64 | Yes | Yes | Vulkan | Build and CI passed |
+| Linux x86_64 | Yes | Yes | Vulkan | Build and CI passed |
+| Android arm64/x86_64 | No | APK/AAB | Vulkan | Build and CI passed |
+| Web | No | HTML/JS/WASM | WebGPU | Build and CI passed |
 
 This table follows the [auditable support matrix](docs/platform-support.json).
 [Evidence and release boundaries](SUPPORT.md#platform-support) distinguish CI
-acceptance from the remaining device and installation gates. macOS and native
+acceptance from public release availability and device coverage. macOS and native
 iOS are not supported targets.
 
-Android and Web exporters are official InxPackages; their SDKs, templates, and target runtimes are not bundled into the core engine wheel. OpenGL, OpenGL ES, and WebGL are not fallback product paths.
+Platform exporters are official InxPackages, separate from the core engine wheel. Small reusable runtimes and build payloads travel with the plugin; large shared Android SDK/NDK installations belong to the Hub Library. Install Android support in Hub before importing the Android plugin. OpenGL, OpenGL ES, and WebGL are not fallback product paths.
 
 MCP is no longer welded into the engine. It is the official default plugin `infernux/mcp`. New projects include it. Turn it off or uninstall it if you do not want it.
 
-In 0.3.7, animation-only FBX files can drive a matching skinned model without geometrically guessing joint correspondence; Assimp pivot helpers are handled, while incompatible rigs fail explicitly.
+Animation-only FBX files can drive a matching skinned model without geometrically guessing joint correspondence; Assimp pivot helpers are handled, while incompatible rigs fail explicitly.
 
 ## Plugins
 
@@ -87,17 +89,23 @@ becomes the default name and reference. Repository builds archive only
 
 Runtime code and regular assets go into a Player build. Editor scripts stay in the Editor.
 
+Package assets have explicit `.meta` identities and participate in the same refresh process as project assets. Packages can carry materials, shaders, text, web pages, and native or other runtime files, not just Python scripts.
+
+Player content stays in `Content.inxpkg` instead of exposing an unpacked `Assets/` and `Library/` tree. Engine asset APIs resolve authored paths through the cooked GUID index. Files that need a real filesystem path can be materialized with their relative layout preserved. This is binary asset packaging, not a promise of cryptographic protection.
+
 [Plugin guide](https://infernux-engine.com/wiki/site/en/plugin-package-content.html)
 
 ## Get started
 
-Download the Windows x64 installer from [GitHub Releases](https://github.com/ChenlizheMe/Infernux/releases/latest) and let InfernuxHub manage engine versions.
+Download the published Windows x64 installer from [GitHub Releases](https://github.com/ChenlizheMe/Infernux/releases/latest) and let InfernuxHub manage engine versions.
 
 A fresh Hub installation includes its isolated Python 3.13 runtime. Each
 Infernux release is bound to the Python ABI encoded by its wheel. Hub checks
 that matching managed runtime before it allows the engine version to be
 installed; additional runtimes for older releases are installed explicitly
 from the Hub's Installs page.
+
+Hub groups engine versions, Python runtimes, and Android support into separate tabs under **Installs**. Installations run in the background, with a compact progress strip and a hover-to-expand queue. Hub can remain in the system tray. Using the managed installation does not require prior Python or Conda experience.
 
 From source you need Windows 10/11 x64, Python 3.13, Vulkan SDK 1.3+, CMake 3.25+, Visual Studio 2022, and MSVC v143:
 
@@ -124,7 +132,9 @@ cmake --preset linux-clang-release
 cmake --build --preset linux-clang-release
 ```
 
-```bash
+Run the Python tests on either host. The native test example below uses Windows presets; on Linux, use `linux-clang-dev` instead.
+
+```powershell
 python -m pytest python/test/ -v
 cmake --preset windows-msvc-dev
 cmake --build --preset windows-msvc-dev

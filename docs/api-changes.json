@@ -1,14 +1,139 @@
 {
   "schema_version": 1,
-  "current_release": "0.3.7",
-  "previous_release": "0.3.6",
+  "current_release": "0.4.0",
+  "previous_release": "0.3.7",
   "comparison_available": true,
   "counts": {
     "added": 0,
     "removed": 0,
-    "changed": 0
+    "changed": 3
   },
   "added": [],
   "removed": [],
-  "changed": []
+  "changed": [
+    {
+      "symbol_key": "Infernux.core.Shader",
+      "changed_fields": [
+        "signatures"
+      ],
+      "before": {
+        "signatures": [
+          "Shader.is_loaded(name: str, shader_type: str = ...) → bool",
+          "Shader.invalidate(shader_id: str) → None",
+          "Shader.reload(shader_id: str) → bool",
+          "Shader.refresh_materials(shader_id: str, engine: Optional[object] = ...) → bool",
+          "Shader.load_spirv(name: str, spirv_code: bytes, shader_type: str = ...) → None"
+        ]
+      },
+      "after": {
+        "signatures": [
+          "Shader.is_loaded(name: str, shader_type: str = ...) → bool",
+          "Shader.reload(shader_id: str, shader_type: str | None = ...) → bool"
+        ]
+      },
+      "canonical_url": "https://infernux-engine.com/wiki/site/en/api/Shader.html"
+    },
+    {
+      "symbol_key": "Infernux.input.Input",
+      "changed_fields": [
+        "signatures"
+      ],
+      "before": {
+        "signatures": [
+          "Tuple[float, float]",
+          "str",
+          "bool",
+          "int",
+          "float",
+          "static Input.set_game_focused(focused: bool) → None",
+          "static Input.set_game_viewport_origin(x: float, y: float) → None",
+          "static Input.is_game_focused() → bool",
+          "static Input.get_key(key: Union[str, int]) → bool",
+          "static Input.get_key_down(key: Union[str, int]) → bool",
+          "static Input.get_key_up(key: Union[str, int]) → bool",
+          "static Input.get_mouse_button(button: int) → bool",
+          "static Input.get_mouse_button_down(button: int) → bool",
+          "static Input.get_mouse_button_up(button: int) → bool",
+          "static Input.get_mouse_frame_state(button: int = ...) → Tuple[float, float, float, float, bool, bool, bool]",
+          "static Input.get_game_mouse_frame_state(button: int = ...) → Tuple[float, float, float, float, bool, bool, bool]",
+          "static Input.set_cursor_locked(locked: bool) → None",
+          "static Input.is_cursor_locked() → bool",
+          "static Input.get_axis(axis_name: str) → float",
+          "static Input.get_axis_raw(axis_name: str) → float",
+          "static Input.reset_input_axes() → None"
+        ]
+      },
+      "after": {
+        "signatures": [
+          "int",
+          "Tuple[float, float]",
+          "str",
+          "bool",
+          "Tuple[Touch, ...]",
+          "Tuple[float, float, float]",
+          "Tuple[AccelerationEvent, ...]",
+          "float",
+          "static Input.set_game_focused(focused: bool) → None",
+          "static Input.set_game_viewport_origin(x: float, y: float) → None",
+          "static Input.is_game_focused() → bool",
+          "static Input.get_key(key: Union[str, int]) → bool",
+          "static Input.get_key_down(key: Union[str, int]) → bool",
+          "static Input.get_key_up(key: Union[str, int]) → bool",
+          "static Input.get_mouse_button(button: int) → bool",
+          "static Input.get_mouse_button_down(button: int) → bool",
+          "static Input.get_mouse_button_up(button: int) → bool",
+          "static Input.get_touch(index: int) → Touch",
+          "static Input.begin_text_input(initial_value: str = ..., input_type: str = ...) → bool",
+          "static Input.end_text_input() → None",
+          "static Input.is_text_input_active() → bool",
+          "static Input.get_mouse_frame_state(button: int = ...) → Tuple[float, float, float, float, bool, bool, bool]",
+          "static Input.get_game_mouse_frame_state(button: int = ...) → Tuple[float, float, float, float, bool, bool, bool]",
+          "static Input.set_cursor_locked(locked: bool) → None",
+          "static Input.is_cursor_locked() → bool",
+          "static Input.get_axis(axis_name: str) → float",
+          "static Input.get_axis_raw(axis_name: str) → float",
+          "static Input.reset_input_axes() → None"
+        ]
+      },
+      "canonical_url": "https://infernux-engine.com/wiki/site/en/api/Input.html"
+    },
+    {
+      "symbol_key": "Infernux.ui.UICanvas",
+      "changed_fields": [
+        "signatures"
+      ],
+      "before": {
+        "signatures": [
+          "RenderMode",
+          "int",
+          "UIScaleMode",
+          "ScreenMatchMode",
+          "float",
+          "bool",
+          "compute_scale(screen_w: float, screen_h: float) → Tuple[float, float, float]",
+          "invalidate_element_cache() → None",
+          "iter_ui_elements() → Iterator[InxUIScreenComponent]",
+          "raycast(canvas_x: float, canvas_y: float, tolerance: float = ...) → Optional[InxUIScreenComponent]",
+          "raycast_all(canvas_x: float, canvas_y: float, tolerance: float = ...) → List[InxUIScreenComponent]"
+        ]
+      },
+      "after": {
+        "signatures": [
+          "RenderMode",
+          "int",
+          "UIScaleMode",
+          "ScreenMatchMode",
+          "float",
+          "bool",
+          "compute_scale(screen_w: float, screen_h: float) → Tuple[float, float, float]",
+          "compute_logical_size(screen_w: float, screen_h: float) → Tuple[float, float]",
+          "invalidate_element_cache() → None",
+          "iter_ui_elements() → Iterator[InxUIScreenComponent]",
+          "raycast(canvas_x: float, canvas_y: float, tolerance: float = ...) → Optional[InxUIScreenComponent]",
+          "raycast_all(canvas_x: float, canvas_y: float, tolerance: float = ...) → List[InxUIScreenComponent]"
+        ]
+      },
+      "canonical_url": "https://infernux-engine.com/wiki/site/en/api/UICanvas.html"
+    }
+  ]
 }

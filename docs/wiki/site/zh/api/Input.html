@@ -342,7 +342,7 @@
 <p>用于读取键盘、鼠标和触摸输入的接口。</p>
 <!-- USER CONTENT START -->
 <p>description
-<strong>状态：</strong> Preview · <strong>验证版本：</strong> 0.3.7</p>
+<strong>状态：</strong> Preview · <strong>验证版本：</strong> 0.4.0</p>
 <p>连续动作使用按住状态，一帧边沿操作使用 down/up。游戏鼠标逻辑应使用 Game 视口坐标并尊重 Game 焦点。</p>
 <!-- USER CONTENT END -->
 
@@ -356,6 +356,11 @@
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>frame_index</td>
+<td><code>int</code></td>
+<td>Monotonic identity of the current native input frame.</td>
+</tr>
 <tr>
 <td>mouse_position</td>
 <td><code>Tuple[float, float]</code></td>
@@ -390,6 +395,41 @@
 <td>touch_count</td>
 <td><code>int</code></td>
 <td>当前活动的触摸数量。</td>
+</tr>
+<tr>
+<td>touches</td>
+<td><code>Tuple[Touch, ...]</code></td>
+<td>All touch contacts in stable first-contact order.</td>
+</tr>
+<tr>
+<td>accelerometer_supported</td>
+<td><code>bool</code></td>
+<td>Whether the current device exposes an accelerometer.</td>
+</tr>
+<tr>
+<td>gyroscope_supported</td>
+<td><code>bool</code></td>
+<td>Whether the current device exposes a gyroscope.</td>
+</tr>
+<tr>
+<td>acceleration</td>
+<td><code>Tuple[float, float, float]</code></td>
+<td>Latest linear acceleration in g-force units.</td>
+</tr>
+<tr>
+<td>gyroscope_rotation_rate</td>
+<td><code>Tuple[float, float, float]</code></td>
+<td>Latest angular velocity in radians per second.</td>
+</tr>
+<tr>
+<td>acceleration_event_count</td>
+<td><code>int</code></td>
+<td>Number of accelerometer samples captured during this input frame.</td>
+</tr>
+<tr>
+<td>acceleration_events</td>
+<td><code>Tuple[AccelerationEvent, ...]</code></td>
+<td>Accelerometer samples captured during this input frame.</td>
 </tr>
 <tr>
 <td>mouse_sensitivity</td>
@@ -446,6 +486,22 @@
 <tr>
 <td><code>static Input.get_mouse_button_up(button: int) → bool</code></td>
 <td>当鼠标按钮松开的那一帧返回 True。</td>
+</tr>
+<tr>
+<td><code>static Input.get_touch(index: int) → Touch</code></td>
+<td>Return one touch from the current frame snapshot.</td>
+</tr>
+<tr>
+<td><code>static Input.begin_text_input(initial_value: str = ..., input_type: str = ...) → bool</code></td>
+<td>Begin platform text input and show a software keyboard when available.</td>
+</tr>
+<tr>
+<td><code>static Input.end_text_input() → None</code></td>
+<td>End platform text input and dismiss its software keyboard.</td>
+</tr>
+<tr>
+<td><code>static Input.is_text_input_active() → bool</code></td>
+<td>Return whether gameplay requested platform text input.</td>
 </tr>
 <tr>
 <td><code>static Input.get_mouse_frame_state(button: int = ...) → Tuple[float, float, float, float, bool, bool, bool]</code></td>

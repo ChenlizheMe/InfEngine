@@ -2,10 +2,22 @@
     "use strict";
 
     const catalogUrl = "hub-catalog.json";
+    let currentRelease = null;
 
     function syncVersionLink(select) {
         const link = select.closest(".version-picker")?.querySelector("[data-version-link]");
-        if (link) link.href = select.value;
+        if (!link || !currentRelease) return;
+        const pending = currentRelease && !currentRelease.published_at
+            && select.value.includes(`/v${currentRelease.version}/`);
+        if (pending) {
+            link.removeAttribute("href");
+            link.setAttribute("aria-disabled", "true");
+            link.classList.add("is-disabled");
+        } else {
+            link.href = select.value;
+            link.removeAttribute("aria-disabled");
+            link.classList.remove("is-disabled");
+        }
     }
 
     function stableRelease(catalog) {
@@ -27,7 +39,7 @@
         const platformRelease = release.platforms?.[platform];
         const links = document.querySelectorAll(`[data-hub-link='${platform}']`);
         const labels = document.querySelectorAll(`[data-hub-meta='${platform}']`);
-        const available = Boolean(platformRelease?.installer?.url);
+        const available = Boolean(release.published_at && platformRelease?.installer?.url);
 
         links.forEach((link) => {
             if (available) {
@@ -44,8 +56,8 @@
             const isChinese = label.closest("[data-page-language='zh']") !== null;
             const platformLabel = platform === "windows-x64" ? "Windows x64" : "Linux x64";
             label.textContent = available
-                ? `${platformLabel} · ${isChinese ? "最新公开版本" : "latest public release"} ${release.version}`
-                : `${platformLabel} · ${isChinese ? "尚未公开发布" : "not publicly released yet"}`;
+                ? `${platformLabel} · ${release.version}`
+                : `${platformLabel} · ${release.version} · ${isChinese ? "制品待发布" : "release files pending publication"}`;
         });
     }
 
@@ -61,8 +73,10 @@
             select.addEventListener("change", () => syncVersionLink(select));
         });
         loadHubCatalog().then((release) => {
+            currentRelease = release;
             applyPlatform(release, "windows-x64");
             applyPlatform(release, "linux-x64");
+            document.querySelectorAll("[data-version-select]").forEach(syncVersionLink);
         });
     });
 })();

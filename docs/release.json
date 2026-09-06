@@ -1,25 +1,40 @@
 {
   "schema_version": 2,
-  "version": "0.3.7",
-  "tag": "v0.3.7",
-  "name": "Infernux v0.3.7",
+  "version": "0.4.0",
+  "tag": "v0.4.0",
+  "name": "Infernux v0.4.0",
   "channel": "stable",
-  "published_at": "2026-08-27T11:35:29Z",
-  "platforms": ["Windows 10/11 x64"],
-  "python_abi": "CPython 3.12 x64",
-  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.3.7",
+  "published_at": null,
+  "platforms": [
+    "Windows 10/11 x64",
+    "Linux x86_64"
+  ],
+  "python_abi": "CPython 3.13 x64",
+  "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.0",
   "assets": [
     {
       "kind": "hub-installer",
-      "name": "InfernuxHubInstaller-0.3.7.exe",
-      "size_bytes": 262786048,
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/InfernuxHubInstaller-0.3.7.exe"
+      "name": "InfernuxHubInstaller-0.4.0-windows-x64.exe",
+      "size_bytes": 204870656,
+      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHubInstaller-0.4.0-windows-x64.exe"
     },
     {
       "kind": "python-wheel",
-      "name": "infernux-0.3.7-cp312-cp312-win_amd64.whl",
-      "size_bytes": 108946318,
-      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.3.7/infernux-0.3.7-cp312-cp312-win_amd64.whl"
+      "name": "infernux-0.4.0-cp313-cp313-win_amd64.whl",
+      "size_bytes": 104590430,
+      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-cp313-cp313-win_amd64.whl"
+    },
+    {
+      "kind": "hub-installer",
+      "name": "InfernuxHubInstaller-0.4.0-linux-x64",
+      "size_bytes": 468687064,
+      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHubInstaller-0.4.0-linux-x64"
+    },
+    {
+      "kind": "python-wheel",
+      "name": "infernux-0.4.0-cp313-cp313-linux_x86_64.whl",
+      "size_bytes": 188364303,
+      "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-cp313-cp313-linux_x86_64.whl"
     }
   ]
 }

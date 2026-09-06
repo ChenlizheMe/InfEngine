@@ -17,18 +17,6 @@ const pyproject = await readFile(path.resolve("pyproject.toml"), "utf8");
 const packageVersion = pyproject.match(/^version\s*=\s*"([^"]+)"/m)?.[1] || "";
 const currentVersion = String(release.version || "").trim();
 
-function parseVersion(value) {
-    const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(String(value || "").trim());
-    return match ? match.slice(1).map(Number) : null;
-}
-
-function compareVersions(left, right) {
-    for (let index = 0; index < 3; index += 1) {
-        if (left[index] !== right[index]) return left[index] - right[index];
-    }
-    return 0;
-}
-
 if (!currentVersion) fail("release.json: missing the current release version");
 if (release.tag !== `v${currentVersion}`) fail(`release.json: tag '${release.tag}' does not match version ${currentVersion}`);
 for (const asset of release.assets || []) {
@@ -39,14 +27,8 @@ for (const asset of release.assets || []) {
 if (docsManifest.documented_release !== currentVersion) {
     fail(`docs-manifest.json: documented_release ${docsManifest.documented_release} does not match release.json ${currentVersion}`);
 }
-const packageVersionParts = parseVersion(packageVersion);
-const currentVersionParts = parseVersion(currentVersion);
-if (!packageVersionParts) {
-    fail(`pyproject.toml: package version ${packageVersion || "<missing>"} is invalid`);
-} else if (!currentVersionParts) {
-    fail(`release.json: release version ${currentVersion || "<missing>"} is invalid`);
-} else if (compareVersions(packageVersionParts, currentVersionParts) < 0) {
-    fail(`pyproject.toml: package version ${packageVersion} is older than published release ${currentVersion}`);
+if (packageVersion !== currentVersion) {
+    fail(`release.json: version ${currentVersion} does not match engine version ${packageVersion}`);
 }
 if (releaseNotes.version !== currentVersion || releaseNotes.tag !== `v${currentVersion}`) {
     fail(`release-notes.json: version/tag does not match current release ${currentVersion}`);
@@ -134,7 +116,7 @@ if (!roadmap.includes(`<strong>v${currentVersion}</strong>`)) {
 
 const i18nSource = JSON.parse(await readFile(path.join(docsRoot, "tools", "i18n-source.json"), "utf8"));
 for (const language of ["en", "zh"]) {
-    for (const key of ["brand.ribbonKicker", "home.hero.badge", "home.hero.platform", "home.capabilities.kicker", "roadmap.hero.badge"]) {
+    for (const key of ["brand.ribbonKicker", "roadmap.hero.badge", "home.hero.badge", "home.hero.platform", "home.capabilities.kicker"]) {
         if (!String(i18nSource[language]?.[key] || "").includes(currentVersion)) {
             fail(`i18n-source.json: ${language}.${key} does not contain current release ${currentVersion}`);
         }
@@ -199,11 +181,10 @@ const download = await readFile(path.join(docsRoot, "download.html"), "utf8");
 for (const contract of ["InfernuxHub", "<details class=\"advanced-download\">", "data-version-select", "data-hub-link=\"windows-x64\"", "data-hub-link=\"linux-x64\"", ".whl", currentVersion, "0.3.4", "0.2.9", "0.2.1", "js/download.js?v=6"]) {
     if (!download.includes(contract)) fail(`download.html: missing '${contract}'`);
 }
-if (!download.includes(`/download/v${currentVersion}/InfernuxHubInstaller-${currentVersion}.exe`)) {
-    fail(`download.html: offline Hub fallback does not target v${currentVersion}`);
-}
-if (!download.includes(`/download/v${currentVersion}/infernux-${currentVersion}-cp312-cp312-win_amd64.whl`)) {
-    fail(`download.html: offline wheel fallback does not target v${currentVersion}`);
+for (const wheel of release.assets.filter(asset => asset.kind === "python-wheel")) {
+    if (!download.includes(`value="${wheel.url}"`)) {
+        fail(`download.html: missing current wheel ${wheel.name}`);
+    }
 }
 if (/SHA-?256|checksum|校验码|publisher signature|data-pwa-install|pwa-install\.js/i.test(download)) {
     fail("download.html: verification or documentation-app installation clutter was restored");

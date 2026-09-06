@@ -342,7 +342,7 @@ class in <b>Infernux.input</b>
 <p>Interface for reading input from keyboard, mouse, and touch.</p>
 <!-- USER CONTENT START -->
 <p>description
-<strong>Status:</strong> Preview · <strong>Verified with:</strong> 0.3.7</p>
+<strong>Status:</strong> Preview · <strong>Verified with:</strong> 0.4.0</p>
 <p>Use held-state queries for continuous actions and down/up queries for one-frame edges. Gameplay mouse work should use Game viewport coordinates and respect Game focus.</p>
 <!-- USER CONTENT END -->
 
@@ -356,6 +356,11 @@ class in <b>Infernux.input</b>
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>frame_index</td>
+<td><code>int</code></td>
+<td>Monotonic identity of the current native input frame.</td>
+</tr>
 <tr>
 <td>mouse_position</td>
 <td><code>Tuple[float, float]</code></td>
@@ -389,7 +394,42 @@ class in <b>Infernux.input</b>
 <tr>
 <td>touch_count</td>
 <td><code>int</code></td>
-<td>Number of active touch contacts.</td>
+<td>Number of touch contacts in the current frame snapshot.</td>
+</tr>
+<tr>
+<td>touches</td>
+<td><code>Tuple[Touch, ...]</code></td>
+<td>All touch contacts in stable first-contact order.</td>
+</tr>
+<tr>
+<td>accelerometer_supported</td>
+<td><code>bool</code></td>
+<td>Whether the current device exposes an accelerometer.</td>
+</tr>
+<tr>
+<td>gyroscope_supported</td>
+<td><code>bool</code></td>
+<td>Whether the current device exposes a gyroscope.</td>
+</tr>
+<tr>
+<td>acceleration</td>
+<td><code>Tuple[float, float, float]</code></td>
+<td>Latest linear acceleration in g-force units.</td>
+</tr>
+<tr>
+<td>gyroscope_rotation_rate</td>
+<td><code>Tuple[float, float, float]</code></td>
+<td>Latest angular velocity in radians per second.</td>
+</tr>
+<tr>
+<td>acceleration_event_count</td>
+<td><code>int</code></td>
+<td>Number of accelerometer samples captured during this input frame.</td>
+</tr>
+<tr>
+<td>acceleration_events</td>
+<td><code>Tuple[AccelerationEvent, ...]</code></td>
+<td>Accelerometer samples captured during this input frame.</td>
 </tr>
 <tr>
 <td>mouse_sensitivity</td>
@@ -446,6 +486,22 @@ class in <b>Infernux.input</b>
 <tr>
 <td><code>static Input.get_mouse_button_up(button: int) → bool</code></td>
 <td>Returns True during the frame the mouse button was released.</td>
+</tr>
+<tr>
+<td><code>static Input.get_touch(index: int) → Touch</code></td>
+<td>Return one touch from the current frame snapshot.</td>
+</tr>
+<tr>
+<td><code>static Input.begin_text_input(initial_value: str = ..., input_type: str = ...) → bool</code></td>
+<td>Begin platform text input and show a software keyboard when available.</td>
+</tr>
+<tr>
+<td><code>static Input.end_text_input() → None</code></td>
+<td>End platform text input and dismiss its software keyboard.</td>
+</tr>
+<tr>
+<td><code>static Input.is_text_input_active() → bool</code></td>
+<td>Return whether gameplay requested platform text input.</td>
 </tr>
 <tr>
 <td><code>static Input.get_mouse_frame_state(button: int = ...) → Tuple[float, float, float, float, bool, bool, bool]</code></td>

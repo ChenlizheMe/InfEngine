@@ -1,3 +1,35 @@
+# Infernux v0.4.0 · Multiplatform Builds and Distribution
+
+0.4.0 adds Windows, Linux, Android, and Web Player builds, expands InxPackage authoring and runtime asset delivery, and puts shared build environments under Hub management.
+
+[简体中文更新日志](UpdateLog-zh.md)
+
+**Baseline for comparison:** [`v0.3.7...v0.4.0`](https://github.com/ChenlizheMe/Infernux/compare/v0.3.7...v0.4.0)
+
+### Multiplatform
+
+- Build Windows and Linux Editors and Players, Android APK/AAB packages, and Web Players from the shared build service.
+- Run native targets on Vulkan and browser targets on WebGPU, including Python gameplay, rendering, input, UI, audio, and particles.
+- Exercise the same MultiPlatform040 project across targets, including button-triggered reads of packaged text assets.
+- Add Windows/Linux desktop and platform Player CI builds, plus Web browser acceptance.
+
+### Plugins and Assets
+
+- Package only a repository's `package/` directory using a standalone `package.py`; keep README and language-specific build configuration outside the archive.
+- Preserve direct local-folder authoring and generate default package metadata from the output filename when no manifest is supplied.
+- Include scripts, materials, shaders, and arbitrary runtime files in plugins, with explicit asset metadata and live refresh under `Packages/`.
+- Keep Player assets in `Content.inxpkg` instead of expanding the project's authoring directory tree. Resolve engine asset paths through cooked GUID identities and provide filesystem access for payloads that need it.
+- Separate editor-only content from Player payloads and distribute platform build support as optional packages.
+
+### Hub and Build Environments
+
+- Provide Windows and Linux Hub distributions and managed Python 3.13 environments.
+- Manage shared Android SDK/NDK installations in Hub; require installed Android support before enabling Android plugin import.
+- Reuse downloads through the Hub Library while keeping project build caches inside the project.
+- Group engine, Python, and Android installations into tabs under Installs, with background jobs, a compact progress strip, an expandable queue, and system-tray support.
+
+---
+
 # Infernux v0.3.7 · Plugins and Skeletal Animation
 
 0.3.7 adds the InxPackage plugin system, moves MCP out of the engine core, and fixes skeletal animation imported from separate FBX files.

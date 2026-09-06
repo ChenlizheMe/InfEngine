@@ -29,7 +29,7 @@ A handle to a running coroutine.
 | is_finished | `bool` | Returns True if the coroutine has completed. *(read-only)* |
 | creation_epoch | `Any` |  *(read-only)* |
 | creation_epoch_id | `int` |  *(read-only)* |
-| is_legacy | `bool` |  *(read-only)* |
+| is_stale_epoch | `bool` |  *(read-only)* |
 
 <!-- USER CONTENT START --> properties
 
@@ -38,7 +38,7 @@ A handle to a running coroutine.
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.3.7. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+> **Example status:** No curated example has been verified for this symbol in 0.4.0. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
 <!-- USER CONTENT END -->
 
 ## See Also

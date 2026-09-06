@@ -135,8 +135,9 @@ def _catalog_release(document: object) -> dict[str, object]:
     } or release["channel"] != "stable":
         raise ValueError("Stable Hub release does not match the current contract")
     if (
-        not isinstance(release["published_at"], str)
-        or not release["published_at"]
+        (release["published_at"] is not None and (
+            not isinstance(release["published_at"], str) or not release["published_at"]
+        ))
         or not isinstance(release["release_url"], str)
         or not release["release_url"]
         or not isinstance(release["minimum_updatable_version"], str)
@@ -170,6 +171,8 @@ def check_for_update(
             detail=str(exc),
         )
     target = str(release["version"])
+    if release["published_at"] is None:
+        return HubUpdateCheck(HubUpdateStatus.UP_TO_DATE, current)
     if _version_key(target) <= _version_key(current):
         return HubUpdateCheck(HubUpdateStatus.UP_TO_DATE, current, target)
     target_platform = platform_id or host_platform_id()

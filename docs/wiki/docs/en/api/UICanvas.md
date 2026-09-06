@@ -27,7 +27,7 @@ Attributes:
     reference_pixels_per_unit: Sprite pixel density hint.
 
 <!-- USER CONTENT START --> description
-**Status:** Preview · **Verified with:** 0.3.7
+**Status:** Preview · **Verified with:** 0.4.0
 
 Design in reference-resolution pixels, then select a scale and screen-match policy for the supported aspect ratios. Decorative elements should not be raycast targets.
 <!-- USER CONTENT END -->
@@ -56,6 +56,7 @@ Design in reference-resolution pixels, then select a scale and screen-match poli
 | Method | Description |
 |------|------|
 | `compute_scale(screen_w: float, screen_h: float) → Tuple[float, float, float]` | Compute ``(scale_x, scale_y, text_scale)`` for a viewport size. |
+| `compute_logical_size(screen_w: float, screen_h: float) → Tuple[float, float]` | Return the live logical Canvas extent for the viewport. |
 | `invalidate_element_cache() → None` | Mark the cached element list as stale. |
 | `iter_ui_elements() → Iterator[InxUIScreenComponent]` | Yield all screen-space UI components on child GameObjects (depth-first). |
 | `raycast(canvas_x: float, canvas_y: float, tolerance: float = ...) → Optional[InxUIScreenComponent]` | Return the front-most element hit at ``(canvas_x, canvas_y)``, or ``None``. |

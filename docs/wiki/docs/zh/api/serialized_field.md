@@ -5,13 +5,13 @@
 </div>
 
 ```python
-serialized_field(default: _SerializedValue = ..., field_type: Optional[FieldType] = ..., element_type: Optional[FieldType] = ..., element_class: Optional[Type] = ..., serializable_class: Optional[Type] = ..., component_type: Optional[str] = ..., asset_type: Optional[str] = ..., range: Optional[Tuple[float, float]] = ..., tooltip: str = ..., display_name_key: str = ..., enum_labels: Optional[List[str]] = ..., readonly: bool = ..., header: str = ..., space: float = ..., group: str = ..., info_text: str = ..., multiline: bool = ..., slider: bool = ..., drag_speed: Optional[float] = ..., required_component: Optional[str] = ..., visible_when: Optional[Callable] = ..., hdr: bool = ..., hidden: bool = ...) → _SerializedValue
+serialized_field(default: _SerializedValue = ..., field_type: Optional[FieldType] = ..., element_type: Optional[FieldType] = ..., element_class: Optional[Type] = ..., serializable_class: Optional[Type] = ..., component_type: Optional[str] = ..., asset_type: Optional[str] = ..., range: Optional[Tuple[float, float]] = ..., tooltip: str = ..., display_name_key: str = ..., enum_labels: Optional[List[str]] = ..., readonly: bool = ..., header: str = ..., space: float = ..., group: str = ..., info_text: str = ..., multiline: bool = ..., slider: bool = ..., drag_speed: Optional[float] = ..., required_component: Optional[str] = ..., visible_when: Optional[Callable] = ..., hdr: bool = ..., curve_non_negative: bool = ..., hidden: bool = ...) → _SerializedValue
 ```
 
 ## 描述
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.3.7
+**状态：** Preview · **验证版本：** 0.4.0
 
 每个序列化字段都应保留明确类型标注。元数据用于 Inspector 展示与校验，不能替代对缺失对象或资源引用的运行时检查。
 <!-- USER CONTENT END -->
@@ -42,6 +42,7 @@ serialized_field(default: _SerializedValue = ..., field_type: Optional[FieldType
 | required_component | `Optional[str]` |  (default: `...`) |
 | visible_when | `Optional[Callable]` |  (default: `...`) |
 | hdr | `bool` |  (default: `...`) |
+| curve_non_negative | `bool` |  (default: `...`) |
 | hidden | `bool` |  (default: `...`) |
 
 ## 示例

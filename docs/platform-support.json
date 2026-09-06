@@ -1,12 +1,12 @@
 {
   "$schema": "infernux.platform_support",
   "development_version": "0.4.0",
-  "released_version": "0.3.7",
+  "released_version": "0.4.0",
   "python_abi": "cp313",
   "evidence": {
-    "commit": "22464e91cc4adec874dc04a5aae0baad849d5437",
-    "desktop_ci": "https://github.com/ChenlizheMe/Infernux/actions/runs/33950440144",
-    "player_ci": "https://github.com/ChenlizheMe/Infernux/actions/runs/33950440171",
+    "commit": "66c174cff72ba9afd97f7324bdb52832347b1117",
+    "desktop_ci": "https://github.com/ChenlizheMe/Infernux/actions/runs/33999073194",
+    "player_ci": "https://github.com/ChenlizheMe/Infernux/actions/runs/33999073193",
     "scope": "CI builds and automated acceptance only; not proof of the complete physical-device, clean-install, or mixed-DPI release gates."
   },
   "platforms": [
@@ -18,8 +18,8 @@
       "graphics": "Vulkan",
       "classifier": "Operating System :: Microsoft :: Windows",
       "released": true,
-      "status_en": "Released baseline",
-      "status_zh": "已发布基线"
+      "status_en": "Build and CI passed",
+      "status_zh": "构建与 CI 通过"
     },
     {
       "id": "linux-x64",
@@ -28,9 +28,9 @@
       "player": "Yes",
       "graphics": "Vulkan",
       "classifier": "Operating System :: POSIX :: Linux",
-      "released": false,
-      "status_en": "Source and clean-wheel validation in progress",
-      "status_zh": "源码与纯净 wheel 验收中"
+      "released": true,
+      "status_en": "Build and CI passed",
+      "status_zh": "构建与 CI 通过"
     },
     {
       "id": "android",
@@ -39,8 +39,8 @@
       "player": "APK/AAB",
       "graphics": "Vulkan",
       "released": false,
-      "status_en": "Emulator and physical-device validation in progress",
-      "status_zh": "模拟器与真机验收中"
+      "status_en": "Build and CI passed",
+      "status_zh": "构建与 CI 通过"
     },
     {
       "id": "web",
@@ -49,8 +49,8 @@
       "player": "HTML/JS/WASM",
       "graphics": "WebGPU",
       "released": false,
-      "status_en": "Desktop and mobile-browser validation in progress",
-      "status_zh": "桌面与移动浏览器验收中"
+      "status_en": "Build and CI passed",
+      "status_zh": "构建与 CI 通过"
     }
   ],
   "unsupported": ["macos", "ios-native", "headless-player"],

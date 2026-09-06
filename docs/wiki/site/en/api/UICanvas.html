@@ -357,7 +357,7 @@ that all positions, sizes and font sizes adapt proportionally.</p>
     reference_pixels_per_unit: Sprite pixel density hint.</p>
 <!-- USER CONTENT START -->
 <p>description
-<strong>Status:</strong> Preview · <strong>Verified with:</strong> 0.3.7</p>
+<strong>Status:</strong> Preview · <strong>Verified with:</strong> 0.4.0</p>
 <p>Design in reference-resolution pixels, then select a scale and screen-match policy for the supported aspect ratios. Decorative elements should not be raycast targets.</p>
 <!-- USER CONTENT END -->
 
@@ -439,6 +439,10 @@ that all positions, sizes and font sizes adapt proportionally.</p>
 <tr>
 <td><code>compute_scale(screen_w: float, screen_h: float) → Tuple[float, float, float]</code></td>
 <td>Compute <code>(scale_x, scale_y, text_scale)</code> for a viewport size.</td>
+</tr>
+<tr>
+<td><code>compute_logical_size(screen_w: float, screen_h: float) → Tuple[float, float]</code></td>
+<td>Return the live logical Canvas extent for the viewport.</td>
 </tr>
 <tr>
 <td><code>invalidate_element_cache() → None</code></td>

@@ -11,7 +11,7 @@
 UI 画布组件。所有 UI 元素的根容器——UI 的舞台。
 
 <!-- USER CONTENT START --> description
-**状态：** Preview · **验证版本：** 0.3.7
+**状态：** Preview · **验证版本：** 0.4.0
 
 使用参考分辨率像素设计，然后为支持的宽高比选择缩放与屏幕匹配策略。装饰元素不应参与 Raycast。
 <!-- USER CONTENT END -->
@@ -40,6 +40,7 @@ UI 画布组件。所有 UI 元素的根容器——UI 的舞台。
 | 方法 | 描述 |
 |------|------|
 | `compute_scale(screen_w: float, screen_h: float) → Tuple[float, float, float]` | Compute ``(scale_x, scale_y, text_scale)`` for a viewport size. |
+| `compute_logical_size(screen_w: float, screen_h: float) → Tuple[float, float]` | Return the live logical Canvas extent for the viewport. |
 | `invalidate_element_cache() → None` | Mark the cached element list as stale. |
 | `iter_ui_elements() → Iterator[InxUIScreenComponent]` | Yield all screen-space UI components on child GameObjects (depth-first). |
 | `raycast(canvas_x: float, canvas_y: float, tolerance: float = ...) → Optional[InxUIScreenComponent]` | Return the front-most element hit at ``(canvas_x, canvas_y)``, or ``None``. |
