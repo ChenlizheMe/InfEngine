@@ -1,7 +1,7 @@
 # 040 platform delivery closure
 
-Status: active. This is an implementation and delivery gate, not a statement
-that the following capabilities have already shipped.
+Delivery: published. The live [PR #77 checks](https://github.com/ChenlizheMe/Infernux/pull/77/checks)
+remain authoritative for the latest revision's merge readiness.
 
 Completion requires all five sections below, updated public release artifacts,
 and a green, mergeable engine PR. Publishing exporter-only plugins is not enough.
@@ -46,13 +46,14 @@ and a green, mergeable engine PR. Publishing exporter-only plugins is not enough
 
 ## 5. Delivery and acceptance
 
-- [ ] Update affected engine/Hub/platform repositories and public release artifacts.
+- [x] Update affected engine/Hub/platform repositories and public release artifacts.
 - [x] Verify source-free exports with the InfernuxMultiPlatform040 project.
 - [x] Verify its button reads packaged TXT content and displays it in game UI.
 - [x] Keep cooked assets in binary packages; do not expose an editable Assets/Library tree.
 - [x] Verify install, update, uninstall and centralized storage ownership.
-- [ ] Keep documentation consistent with the actual released payloads.
-- [ ] Required PR checks are green and the PR is mergeable.
+- [x] Keep documentation consistent with the actual released payloads.
+- Final merge gate: required checks on the latest PR revision must be green and
+  the PR must be mergeable; consult the live checks linked above.
 
 The user's pause on additional-machine acceptance remains in effect. Record
 unavailable device coverage explicitly; do not substitute mocked checks for
@@ -668,22 +669,41 @@ that the overall goal or public runtime releases are complete.
 - The remaining gates are publication of the new matching engine/Hub artifacts,
   final release documentation, and green checks on the final PR revision.
 
-### 2026-09-07: standalone Linux Hub library placement
+### 2026-09-07: standalone Hub acceptance and diagnostic correction
 
 - All checks passed at `dce69593`; its eight original desktop CI files replaced
   the Release draft. The downloaded Windows Hub passed an isolated GUI launch
   without Conda directories on PATH or in its loaded modules, including the
   Android support page.
-- The exact new Linux Hub failed X11 startup without LD_LIBRARY_PATH. All seven
-  declared helpers were present under `PySide6/`, but `libQt6XcbQpa.so.6` resolves
-  dependencies from the distribution root via `$ORIGIN`. The earlier successful
-  Linux capture is not sufficient evidence for this clean-launch boundary.
-- Corrected the existing Nuitka library destination to the distribution root,
-  matching Qt's loader contract. No runtime path fallback, user package install,
-  or manual release-payload copy was added. The Release remains unpublished;
-  rebuilt Linux Hub and installer artifacts must pass standalone launch before
-  final publication.
-- Added a CI artifact check that uses the native loader without LD_LIBRARY_PATH
-  and requires all seven helpers to resolve from the distribution root. Running
-  that exact check against the downloaded old layout reproduces the cursor
-  dependency failure. Hub tests remain green: 338 passed, 3 skipped.
+- The Qt error during Linux screenshot collection belonged to the separate
+  Conda-based capture helper, not the frozen Hub. The original Hub process (PID
+  383) remained alive with an empty error log; its actual memory mappings resolve
+  the X11 helpers from its own `PySide6/` directory. It was launched without
+  LD_LIBRARY_PATH, with only `/usr/bin:/bin` on PATH.
+- Identified that exact process's X11 window and captured its visible WSLg window
+  from the Windows desktop. Both the runtime-environment and Android-support
+  tabs render correctly; an actual click switches to Android support.
+- Reverted the unnecessary library relocation and the static `ldd` check added
+  during the mistaken diagnosis. Plain `ldd` does not model Nuitka's runtime
+  loading. No product fallback, extra library-path setup, or user dependency
+  installation is needed. A separate manually relocated diagnostic copy is not
+  a release artifact and is not used for acceptance.
+- Both original CI Hub downloads now have actual standalone GUI evidence.
+  The complete code gates passed at `dce69593`; remaining work is public release
+  metadata and the final PR checks. Hub tests: 338 passed, 3 skipped.
+
+### 2026-09-07: public 0.4.0 delivery
+
+- Published the eight original desktop CI artifacts as v0.4.0 at
+  `2026-09-06T17:56:54Z`, from source revision `dce69593`. Both desktop jobs,
+  all four Player jobs, Web browser acceptance, website checks and Android kit
+  jobs passed for that code. The final documentation/correction revision restores
+  the exact tested product code; it does not rebuild or replace this public tag.
+- Public plugin releases are Windows/Linux/Web v0.2.0 and Android v0.2.2;
+  shared Android support kits are v0.1.0 for both build hosts. The website's
+  release and Hub catalogs record the actual published dates and artifact sizes.
+- GitHub Pages publishes `master/docs`; website changes become live when the
+  user merges the PR. No direct main-branch update or automatic PR merge was made.
+- Additional physical-machine acceptance remains paused. The recorded Linux
+  GUI evidence uses local WSLg and Android runtime evidence uses the local API 36
+  emulator; neither is presented as additional physical-device coverage.

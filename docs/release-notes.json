@@ -5,7 +5,7 @@
   "title": "Infernux v0.4.0 · Multiplatform Builds and Distribution",
   "codename": "Multiplatform Builds and Distribution",
   "language": "en",
-  "published_at": null,
+  "published_at": "2026-09-06T17:56:54Z",
   "release_url": "https://github.com/ChenlizheMe/Infernux/releases/tag/v0.4.0",
   "source": "UpdateLog.md",
   "summary": "0.4.0 adds Windows, Linux, Android, and Web Player builds, expands InxPackage authoring and runtime asset delivery, and puts shared build environments under Hub management.",

@@ -45,7 +45,7 @@ def test_linux_qt_helpers_are_explicit_libraries_not_data_files(monkeypatch):
     rule = config[0]["dlls"][0]
     assert config[0]["module-name"] == "PySide6.QtWidgets"
     assert rule["when"] == "linux"
-    assert rule["dest_path"] == "."  # Matches the bundled Qt libraries' $ORIGIN RPATH.
+    assert rule["dest_path"] == "PySide6"
     required = (
         "libxcb-cursor.so.0", "libxcb-icccm.so.4", "libxcb-image.so.0",
         "libxcb-keysyms.so.1", "libxcb-render-util.so.0", "libxcb-util.so.1",

@@ -15,6 +15,5 @@
               'libxkbcommon-x11.so.0',
           )
         filename_code: '[libraries[name] for name in required]'
-      # Qt6XcbQpa resolves its dependencies beside itself ($ORIGIN).
-      dest_path: '.'
+      dest_path: 'PySide6'
       when: 'linux'

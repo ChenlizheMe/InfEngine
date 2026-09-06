@@ -231,32 +231,6 @@ jobs:
           cmake --build --preset linux-clang-wheel
           cmake --build --preset linux-hub-installer
 
-      - name: Verify bundled Linux Hub X11 dependency resolution
-        run: |
-          conda activate infernux
-          python - <<'PY'
-          import os
-          from pathlib import Path
-          import subprocess
-
-          root = Path("out/stage/linux-clang-release/hub").resolve()
-          environment = dict(os.environ)
-          environment.pop("LD_LIBRARY_PATH", None)
-          output = subprocess.check_output(
-              ["/usr/bin/ldd", str(root / "libQt6XcbQpa.so.6")],
-              text=True, env=environment,
-          )
-          libraries = dict(line.strip().split(" => ", 1) for line in output.splitlines() if " => " in line)
-          for name in (
-              "libxcb-cursor.so.0", "libxcb-icccm.so.4", "libxcb-image.so.0",
-              "libxcb-keysyms.so.1", "libxcb-render-util.so.0", "libxcb-util.so.1",
-              "libxkbcommon-x11.so.0",
-          ):
-              resolved = Path(libraries[name].split(" (", 1)[0]).resolve()
-              assert resolved == root / name, (name, resolved)
-          print("All seven X11 helpers resolve from the Hub distribution without LD_LIBRARY_PATH.")
-          PY
-
       - name: Upload Linux desktop distribution
         uses: actions/upload-artifact@v4
         with:
