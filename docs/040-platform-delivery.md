@@ -95,13 +95,21 @@ Installed plugins have reload/uninstall actions but no version update operation.
 - Installed-only Web export passed in 27.685 seconds. Both Python and native
   engine origins are under Conda site-packages; no engine compilation occurred.
   Output contains the immutable runtime plus an 18,325,376-byte project `.inxpkg`,
-  not loose Assets/Library directories. Browser/TXT interaction remains open.
+  not loose Assets/Library directories. Local Edge WebGPU software-adapter
+  acceptance subsequently rendered the scene and clicked READ PACKAGE TXT:
+  `BUTTON READ #1` displayed the expected resource, with no script/page errors.
+  Evidence: `out/acceptance/web-installed040-{build,button}.json` and the button
+  screenshot. This is a local browser run, not physical Android acceptance.
 - That real export exposed a temporary cook host shutting down the caller's
   plugin manager. Engine exit now unloads only its own manager. Eight focused
   shutdown/preflight tests passed. Rebuilt and installed the updated wheel.
 - Full Python regression before that ownership fix: 5,339 passed, 11 skipped.
   Also fixed explicit UTF-8 reads in the CMake workflow tests: Windows CI's
   locale-dependent decoding had failed on workflow comments. Six tests passed.
+- Web release CI independently reproduced the MSVC runtime mismatch and caught
+  clang-format splitting JavaScript strict-equality tokens inside EM_JS. Protected
+  the JavaScript bodies from C++ formatting and rebuilt the native runtime locally.
+  The public Web release still awaits the corrected remote build.
 
 ### 2026-09-06: complete public Linux payload and Web runtime separation
 
