@@ -14,6 +14,7 @@ import platform
 import re
 import shutil
 import stat
+import time
 import urllib.request
 import uuid
 import zipfile
@@ -292,6 +293,24 @@ def android_support_environment(root: Path) -> dict[str, str]:
     }
 
 
+def _replace_support_directory(source: Path, destination: Path) -> None:
+    # Windows readers can briefly deny a directory rename after SDK extraction.
+    # Keep this bounded OS compatibility wait on the installation worker.
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as exc:
+            if (
+                os.name != "nt"
+                or getattr(exc, "winerror", None) not in (5, 32)
+                or time.monotonic() >= deadline
+            ):
+                raise
+            time.sleep(0.1)
+
+
 class AndroidSupportManager:
     def __init__(self, root: str | os.PathLike[str] | None = None) -> None:
         self.root = Path(root).expanduser().resolve() if root else default_android_support_root()
@@ -414,12 +433,12 @@ class AndroidSupportManager:
                         destination.chmod((member.external_attr >> 16) & 0o777)
             validate_android_support(staging)
             if self.root.exists():
-                os.replace(self.root, backup)
+                _replace_support_directory(self.root, backup)
             try:
-                os.replace(staging, self.root)
+                _replace_support_directory(staging, self.root)
             except BaseException:
                 if backup.exists() and not self.root.exists():
-                    os.replace(backup, self.root)
+                    _replace_support_directory(backup, self.root)
                 raise
             if backup.exists():
                 shutil.rmtree(backup)

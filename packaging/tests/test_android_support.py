@@ -15,6 +15,7 @@ import sys
 import textwrap
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,38 @@ if str(PACKAGING_DIR) not in sys.path:
     sys.path.insert(0, str(PACKAGING_DIR))
 
 import android_support
+
+
+@pytest.mark.parametrize("host,code,release_after,expected_calls", [
+    ("nt", 5, 24, 25), ("nt", 32, 24, 25),
+    ("nt", 32, None, 52), ("posix", 5, None, 1),
+    ("nt", 87, None, 1), ("nt", None, None, 1),
+])
+def test_directory_publication_bounds_only_windows_sharing_errors(
+    monkeypatch, host, code, release_after, expected_calls,
+):
+    error = PermissionError("SDK directory is held open")
+    error.winerror = code
+    clock, calls = [0.0], []
+
+    def replace(source, destination):
+        calls.append((source, destination))
+        if release_after is None or len(calls) <= release_after:
+            raise error
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(android_support, "os", SimpleNamespace(name=host, replace=replace))
+    monkeypatch.setattr(android_support, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+    if release_after is None:
+        with pytest.raises(PermissionError) as raised:
+            android_support._replace_support_directory("staging", "installed")
+        assert raised.value is error
+    else:
+        android_support._replace_support_directory("staging", "installed")
+    assert calls == [("staging", "installed")] * expected_calls
+    assert clock[0] < 5.11
 
 
 @pytest.fixture(autouse=True)

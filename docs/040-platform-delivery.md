@@ -25,7 +25,7 @@ and a green, mergeable engine PR. Publishing exporter-only plugins is not enough
 - [ ] Installation prepares paths and official build dependencies without manual
   environment variables, source checkouts, or Conda knowledge.
 - [x] Installation remains asynchronous with the compact queue UI.
-- [ ] Editor import availability refreshes after Hub installation finishes.
+- [x] Editor import availability refreshes after Hub installation finishes.
 
 ## 3. Explicit plugin updates
 
@@ -567,3 +567,74 @@ that the overall goal or public runtime releases are complete.
 - Plugin regression: 140 passed, 5 skipped. This source change still requires
   rebuilt distribution artifacts; earlier release-candidate binaries do not
   contain the documentation-preview fix.
+
+### 2026-09-07: full-resolution documentation and fresh Linux Android delivery
+
+- Removed the raw-preview path's hard-coded 200-pixel clamp and applied UI/sRGB
+  import settings to documentation images. Real Windows editor captures show all
+  four platform illustrations at their original 1440x640 resolution. Switching
+  packages selects their first page once; the Versions tab remains selectable.
+  Three focused regression tests passed, alongside the recorded visual checks.
+- Replaced the Windows acceptance project's old Linux prototype package, which
+  contained no illustration, with the public v0.2.0 package after backing up the
+  prototype. This is a fixture replacement, not an implicit GUID-remapping update.
+- Completed a fresh Linux Hub channel installation of the public Android v0.1.0
+  kit. The 1,742,442,681-byte download installed JDK, SDK, NDK, Gradle and target
+  Python dependencies under one Shared root; the dependency gate became ready.
+- Restored the Linux fixture's exact v0.2.1 archive baseline from its former
+  Windows cache after verifying all 59 owned files. Normal v0.2.2 update then
+  preserved all 59 GUIDs and the enabled state without overwriting local edits.
+- Removed the resource-probe dependency from the Linux acceptance copy as well.
+  Its installed-only Android x64 export used only the fresh Hub root, resolved
+  tool paths automatically and completed in 115.9 seconds with no CMake command.
+  The resulting APK is 63,047,885 bytes.
+- On the local Android 16/API 36 emulator, that APK passed Back and three resume
+  cycles with zero fatal logs or abandoned buffers. A real touch on READ ASSET
+  TXT displayed `BUTTON READ #1: Project resource reached UIText on every Player
+  target.` The runtime marker and captured frame both confirm the read.
+  Android's first-run fullscreen tutorial was dismissed before input acceptance;
+  this is emulator coverage, not physical-device acceptance.
+- The generic-TXT Linux desktop export also passed (5.6 seconds); its real Player
+  button returned the expected text in a captured frame. Rendering used WSL
+  software Vulkan, so this result is not a GPU-performance measurement.
+- Commit `e93334d0` passed both desktop suites and all four Player build jobs plus
+  Web browser acceptance; PR #77 was green and mergeable at this revision. All
+  eight desktop distribution files from CI run `34042547111` replaced the older
+  Release draft assets. The draft remains unpublished. Its Linux wheel installed
+  successfully and passed the three plugin image/tab regression tests.
+- Windows channel installation and final release publication remain pending.
+
+### 2026-09-07: generic Web asset read and Windows publication diagnosis
+
+- The updated Linux-installed wheel exported the generic-TXT project to Web in
+  4.9 seconds. A real Edge/SwiftShader browser click displayed `BUTTON READ #1:
+  Project resource reached UIText on every Player target.` with no page or
+  console errors; the captured frame was reviewed. This is software-browser
+  acceptance, not hardware GPU performance evidence.
+- The Windows public kit download completed with its exact advertised bytes and
+  digest, but publishing the extracted directory failed with Windows error 5.
+  The final kit directory remained absent, so the editor correctly kept Android
+  import disabled. The full download remains in Hub's resumable cache.
+- Reproduced the publication failure and retained diagnostic staging trees.
+  No Python or native regular-file handle in the installation process points
+  into the extracted tree; later directory renames succeed. A two-second Windows
+  wait did not solve the actual failure and was removed, including its tests.
+  No unproven retry mechanism is included in the product. Windows installation
+  and final Release publication remain open while this failure is investigated.
+
+### 2026-09-07: Windows directory-publication compatibility
+
+- A timing diagnostic measured Windows releasing the extracted directory after
+  2.4 seconds. The installer now allows at most five seconds for Windows access/
+  sharing errors at directory rename only. Other errors and non-Windows failures
+  remain immediate. No download, extraction, source-selection or hashing retry
+  was added; existing installation rollback remains unchanged.
+- Normal channel installation then passed from the complete resumable download:
+  64.4 seconds for cached verification, extraction, publication and tool checks,
+  not including the earlier network transfer. JDK, adb and Gradle ran from the
+  resulting 3,431,498,532-byte Shared kit.
+- A separately running installed editor observed Android import change from
+  disabled to enabled without restart. The public Android plugin was installed
+  afterwards, and APK build acceptance is running against that fresh kit.
+- Hub regression: 338 passed, 3 skipped. Targeted compatibility tests also passed
+  on Linux. New Hub distribution artifacts and final release gates remain open.
