@@ -15,25 +15,25 @@
     {
       "kind": "hub-installer",
       "name": "InfernuxHubInstaller-0.4.0-windows-x64.exe",
-      "size_bytes": 204870656,
+      "size_bytes": 205081600,
       "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHubInstaller-0.4.0-windows-x64.exe"
     },
     {
       "kind": "python-wheel",
       "name": "infernux-0.4.0-cp313-cp313-win_amd64.whl",
-      "size_bytes": 104590430,
+      "size_bytes": 20823496,
       "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-cp313-cp313-win_amd64.whl"
     },
     {
       "kind": "hub-installer",
       "name": "InfernuxHubInstaller-0.4.0-linux-x64",
-      "size_bytes": 468687064,
+      "size_bytes": 468842712,
       "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/InfernuxHubInstaller-0.4.0-linux-x64"
     },
     {
       "kind": "python-wheel",
       "name": "infernux-0.4.0-cp313-cp313-linux_x86_64.whl",
-      "size_bytes": 188364303,
+      "size_bytes": 36335189,
       "url": "https://github.com/ChenlizheMe/Infernux/releases/download/v0.4.0/infernux-0.4.0-cp313-cp313-linux_x86_64.whl"
     }
   ]

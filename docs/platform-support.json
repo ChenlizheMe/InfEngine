@@ -4,9 +4,9 @@
   "released_version": "0.4.0",
   "python_abi": "cp313",
   "evidence": {
-    "commit": "66c174cff72ba9afd97f7324bdb52832347b1117",
-    "desktop_ci": "https://github.com/ChenlizheMe/Infernux/actions/runs/33999073194",
-    "player_ci": "https://github.com/ChenlizheMe/Infernux/actions/runs/33999073193",
+    "commit": "dce69593f7c4fd98f112d1c1c35b05b70f9da2d0",
+    "desktop_ci": "https://github.com/ChenlizheMe/Infernux/actions/runs/34046700946",
+    "player_ci": "https://github.com/ChenlizheMe/Infernux/actions/runs/34046700977",
     "scope": "CI builds and automated acceptance only; not proof of the complete physical-device, clean-install, or mixed-DPI release gates."
   },
   "platforms": [

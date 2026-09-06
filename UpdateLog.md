@@ -9,6 +9,7 @@
 ### Multiplatform
 
 - Build Windows and Linux Editors and Players, Android APK/AAB packages, and Web Players from the shared build service.
+- Deliver precompiled Players, runtimes, and target tools in the four platform plugins; normal exports require no engine checkout, submodules, CMake, or native engine compilation.
 - Run native targets on Vulkan and browser targets on WebGPU, including Python gameplay, rendering, input, UI, audio, and particles.
 - Exercise the same MultiPlatform040 project across targets, including button-triggered reads of packaged text assets.
 - Add Windows/Linux desktop and platform Player CI builds, plus Web browser acceptance.
@@ -20,13 +21,16 @@
 - Include scripts, materials, shaders, and arbitrary runtime files in plugins, with explicit asset metadata and live refresh under `Packages/`.
 - Keep Player assets in `Content.inxpkg` instead of expanding the project's authoring directory tree. Resolve engine asset paths through cooked GUID identities and provide filesystem access for payloads that need it.
 - Separate editor-only content from Player payloads and distribute platform build support as optional packages.
+- Check compatible GitHub releases and explicitly select plugin updates while preserving GUIDs, enabled state, and user-added files; require consent before replacing local edits.
+- Refresh the independent official catalog without upgrading project-pinned packages, and resolve former platform sources to their independent repositories.
 
 ### Hub and Build Environments
 
 - Provide Windows and Linux Hub distributions and managed Python 3.13 environments.
-- Manage shared Android SDK/NDK installations in Hub; require installed Android support before enabling Android plugin import.
+- Install Android support from the Hub channel on Windows and Linux, sharing SDK, NDK, JDK, Gradle, and target Python dependencies; supply toolchain paths automatically and require installed support before enabling Android plugin import.
 - Reuse downloads through the Hub Library while keeping project build caches inside the project.
 - Group engine, Python, and Android installations into tabs under Installs, with background jobs, a compact progress strip, an expandable queue, and system-tray support.
+- Keep interrupted Android kit downloads in Hub's shared cache so an explicitly restarted installation resumes the download; remove the download cache after successful installation.
 
 ---
 

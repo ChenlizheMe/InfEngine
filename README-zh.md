@@ -62,7 +62,7 @@ macOS 和原生 iOS 不属于受支持目标。
 
 平台导出器是拥有独立仓库和 Release 的官方 InxPackage：[Windows](https://github.com/ChenlizheMe/infernux_windows)、[Linux](https://github.com/ChenlizheMe/infernux_linux)、[Android](https://github.com/ChenlizheMe/infernux_android)、[Web](https://github.com/ChenlizheMe/infernux_web)。各仓库提供配图安装文档和可导入的 `.inxpkg` 发布制品。
 
-Windows/Linux 使用对应宿主引擎自带的原生运行时。Android/Web 当前仍需引擎源码和平台工具链，仅下载插件不代表已具备这些依赖。大型共享 Android SDK/NDK 由 Hub 管理，安装安卓兼容后才能导入安卓插件；Hub 安卓兼容套件与插件 Release 分开发布。OpenGL、OpenGL ES 和 WebGL 都不是产品 fallback。
+各平台插件携带预编译 Player，以及对应目标的运行时或构建工具。普通游戏导出使用已安装的引擎与插件，不需要引擎源码、Git 子模块、CMake 或原生引擎编译。构建 Android 时，先在 Hub 的“安装”页面安装“安卓支持”，再导入安卓插件。Hub 统一管理 SDK、NDK、JDK、Gradle 和目标 Python 依赖，并向编辑器提供路径。OpenGL、OpenGL ES 和 WebGL 都不是产品 fallback。
 
 MCP 不再焊在引擎里。它是官方默认插件 `infernux/mcp`。新项目会带上，不想用就关掉或卸掉。
 
@@ -71,6 +71,8 @@ MCP 不再焊在引擎里。它是官方默认插件 `infernux/mcp`。新项目�
 ## 插件
 
 插件就是一个 InxPackage。丢 `.inxpkg`、选本地目录、贴 GitHub 地址，或从官方列表里装。
+
+“刷新官方列表”只更新发现目录，不升级已安装插件。GitHub 插件可在“版本”页检查兼容 Release，再显式选择更新。更新保留资产 GUID、启用状态和用户新增文件；覆盖本地修改前会征求确认。已安装插件可继续离线使用。
 
 ```text
 MyPluginRepository/

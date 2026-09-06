@@ -22,7 +22,7 @@ and a green, mergeable engine PR. Publishing exporter-only plugins is not enough
 
 - [x] Publish channel-installable kits for Windows and Linux build hosts.
 - [x] Hub owns the SDK, NDK, JDK, Gradle and reusable target Python dependencies.
-- [ ] Installation prepares paths and official build dependencies without manual
+- [x] Installation prepares paths and official build dependencies without manual
   environment variables, source checkouts, or Conda knowledge.
 - [x] Installation remains asynchronous with the compact queue UI.
 - [x] Editor import availability refreshes after Hub installation finishes.
@@ -50,7 +50,7 @@ and a green, mergeable engine PR. Publishing exporter-only plugins is not enough
 - [x] Verify source-free exports with the InfernuxMultiPlatform040 project.
 - [x] Verify its button reads packaged TXT content and displays it in game UI.
 - [x] Keep cooked assets in binary packages; do not expose an editable Assets/Library tree.
-- [ ] Verify install, update, uninstall and centralized storage ownership.
+- [x] Verify install, update, uninstall and centralized storage ownership.
 - [ ] Keep documentation consistent with the actual released payloads.
 - [ ] Required PR checks are green and the PR is mergeable.
 
@@ -638,3 +638,52 @@ that the overall goal or public runtime releases are complete.
   afterwards, and APK build acceptance is running against that fresh kit.
 - Hub regression: 338 passed, 3 skipped. Targeted compatibility tests also passed
   on Linux. New Hub distribution artifacts and final release gates remain open.
+
+### 2026-09-07: fresh Windows kit and four-target generic asset acceptance
+
+- The Windows channel kit passed normal installation and tool execution. The
+  running editor enabled Android import without restart. Installing public
+  Android v0.2.2 preserved 59 GUIDs and the enabled state.
+- The installed-only Windows exporter resolved SDK, JDK, Gradle and target
+  Python from the fresh Hub Shared root without individually supplied tool paths
+  or CMake. Its x86_64 development APK is 55,209,189 bytes and built in 118.2
+  seconds (7 Gradle tasks executed, 26 up-to-date; not a cold-project timing).
+- This exact APK passed startup, Back and three resume cycles on the local API
+  36 emulator with zero fatal logs or abandoned buffers. A real touch displayed
+  `BUTTON READ #1: Project resource reached UIText on every Player target.`;
+  both the log and reviewed frame confirm the read. Replacing the earlier
+  Linux-signed test APK required uninstalling only that emulator's test app.
+  No physical Android device was modified.
+- The Windows CI wheel installed into the development Conda environment and
+  passed all three plugin-image/page tests. Its desktop export completed in
+  26.3 seconds and passed the actual TXT-button click and screenshot check.
+  Together with the Linux desktop, Linux-built Web and both host-built Android
+  results above, generic packaged-TXT reads are verified on all four targets.
+- Public-package uninstall/reinstall retained author-added files: Windows and
+  Linux removed 11 owned files each, Web 21, Android 60. Formal Linux and Android
+  updates preserved their recorded GUIDs and enabled state. Successful Windows
+  kit installation removed its resumable download; Shared contains only the
+  installed kit. Four diagnostic kit trees were moved out of Shared into a
+  recoverable acceptance backup, not deleted or counted as reclaimed disk space.
+- The remaining gates are publication of the new matching engine/Hub artifacts,
+  final release documentation, and green checks on the final PR revision.
+
+### 2026-09-07: standalone Linux Hub library placement
+
+- All checks passed at `dce69593`; its eight original desktop CI files replaced
+  the Release draft. The downloaded Windows Hub passed an isolated GUI launch
+  without Conda directories on PATH or in its loaded modules, including the
+  Android support page.
+- The exact new Linux Hub failed X11 startup without LD_LIBRARY_PATH. All seven
+  declared helpers were present under `PySide6/`, but `libQt6XcbQpa.so.6` resolves
+  dependencies from the distribution root via `$ORIGIN`. The earlier successful
+  Linux capture is not sufficient evidence for this clean-launch boundary.
+- Corrected the existing Nuitka library destination to the distribution root,
+  matching Qt's loader contract. No runtime path fallback, user package install,
+  or manual release-payload copy was added. The Release remains unpublished;
+  rebuilt Linux Hub and installer artifacts must pass standalone launch before
+  final publication.
+- Added a CI artifact check that uses the native loader without LD_LIBRARY_PATH
+  and requires all seven helpers to resolve from the distribution root. Running
+  that exact check against the downloaded old layout reproduces the cursor
+  dependency failure. Hub tests remain green: 338 passed, 3 skipped.

@@ -63,7 +63,7 @@ iOS are not supported targets.
 
 Platform exporters are official InxPackages with independent repositories and releases: [Windows](https://github.com/ChenlizheMe/infernux_windows), [Linux](https://github.com/ChenlizheMe/infernux_linux), [Android](https://github.com/ChenlizheMe/infernux_android), and [Web](https://github.com/ChenlizheMe/infernux_web). Each repository includes illustrated setup documentation and an installable `.inxpkg` release asset.
 
-Windows/Linux use their matching host engine's native runtime. Android/Web currently require an engine source checkout and their platform toolchains; downloading the plugin alone does not provide those dependencies. Large shared Android SDK/NDK installations belong to Hub and must be installed before the Android plugin can be imported. The Hub Android kit is published separately from plugin releases. OpenGL, OpenGL ES, and WebGL are not fallback product paths.
+Each platform plugin carries its precompiled Player and target-specific runtime or build tools. Normal game exports use the installed engine and plugins; they do not require an engine source checkout, Git submodules, CMake, or native engine compilation. For Android, first install **Android support** under Hub's **Installs** page, then import the Android plugin. Hub owns the shared SDK, NDK, JDK, Gradle, and target Python dependencies and supplies their paths to the Editor. OpenGL, OpenGL ES, and WebGL are not fallback product paths.
 
 MCP is no longer welded into the engine. It is the official default plugin `infernux/mcp`. New projects include it. Turn it off or uninstall it if you do not want it.
 
@@ -72,6 +72,8 @@ Animation-only FBX files can drive a matching skinned model without geometricall
 ## Plugins
 
 An Infernux plugin is an InxPackage. Drop a `.inxpkg`, point at a folder, paste a GitHub URL, or install from the official list.
+
+**Refresh catalog** updates the official list without upgrading installed packages. For a GitHub package, use **Versions** to check compatible releases and explicitly choose an update. Updates preserve asset GUIDs, enabled state, and user-added files; replacing local edits requires your consent. Already installed plugins remain usable offline.
 
 ```text
 MyPluginRepository/

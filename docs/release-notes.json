@@ -15,7 +15,7 @@
     "url": "https://github.com/ChenlizheMe/Infernux/compare/v0.3.7...v0.4.0"
   },
   "section_count": 3,
-  "item_count": 13,
+  "item_count": 17,
   "sections": [
     {
       "id": "multiplatform",
@@ -26,6 +26,11 @@
           "title": "Build Windows and Linux Editors and Players, Android APK/AAB packages, and Web Players from the shared build service.",
           "detail": "",
           "text": "Build Windows and Linux Editors and Players, Android APK/AAB packages, and Web Players from the shared build service."
+        },
+        {
+          "title": "Deliver precompiled Players, runtimes, and target tools in the four platform plugins; normal exports require no engine checkout, submodules, CMake, or native engine compilation.",
+          "detail": "",
+          "text": "Deliver precompiled Players, runtimes, and target tools in the four platform plugins; normal exports require no engine checkout, submodules, CMake, or native engine compilation."
         },
         {
           "title": "Run native targets on Vulkan and browser targets on WebGPU, including Python gameplay, rendering, input, UI, audio, and particles.",
@@ -73,6 +78,16 @@
           "title": "Separate editor-only content from Player payloads and distribute platform build support as optional packages.",
           "detail": "",
           "text": "Separate editor-only content from Player payloads and distribute platform build support as optional packages."
+        },
+        {
+          "title": "Check compatible GitHub releases and explicitly select plugin updates while preserving GUIDs, enabled state, and user-added files; require consent before replacing local edits.",
+          "detail": "",
+          "text": "Check compatible GitHub releases and explicitly select plugin updates while preserving GUIDs, enabled state, and user-added files; require consent before replacing local edits."
+        },
+        {
+          "title": "Refresh the independent official catalog without upgrading project-pinned packages, and resolve former platform sources to their independent repositories.",
+          "detail": "",
+          "text": "Refresh the independent official catalog without upgrading project-pinned packages, and resolve former platform sources to their independent repositories."
         }
       ]
     },
@@ -87,9 +102,9 @@
           "text": "Provide Windows and Linux Hub distributions and managed Python 3.13 environments."
         },
         {
-          "title": "Manage shared Android SDK/NDK installations in Hub; require installed Android support before enabling Android plugin import.",
+          "title": "Install Android support from the Hub channel on Windows and Linux, sharing SDK, NDK, JDK, Gradle, and target Python dependencies; supply toolchain paths automatically and require installed support before enabling Android plugin import.",
           "detail": "",
-          "text": "Manage shared Android SDK/NDK installations in Hub; require installed Android support before enabling Android plugin import."
+          "text": "Install Android support from the Hub channel on Windows and Linux, sharing SDK, NDK, JDK, Gradle, and target Python dependencies; supply toolchain paths automatically and require installed support before enabling Android plugin import."
         },
         {
           "title": "Reuse downloads through the Hub Library while keeping project build caches inside the project.",
@@ -100,6 +115,11 @@
           "title": "Group engine, Python, and Android installations into tabs under Installs, with background jobs, a compact progress strip, an expandable queue, and system-tray support.",
           "detail": "",
           "text": "Group engine, Python, and Android installations into tabs under Installs, with background jobs, a compact progress strip, an expandable queue, and system-tray support."
+        },
+        {
+          "title": "Keep interrupted Android kit downloads in Hub's shared cache so an explicitly restarted installation resumes the download; remove the download cache after successful installation.",
+          "detail": "",
+          "text": "Keep interrupted Android kit downloads in Hub's shared cache so an explicitly restarted installation resumes the download; remove the download cache after successful installation."
         }
       ]
     }

@@ -11,10 +11,10 @@ Players. macOS, native iOS and a Headless
 Player package are not supported. Headless is a Windows/Linux host mode;
 iPhone/iPad browser testing concerns the Web Player, not a native iOS export.
 
-For the exact commit `66c174cff72ba9afd97f7324bdb52832347b1117`, the
-[desktop CI](https://github.com/ChenlizheMe/Infernux/actions/runs/33999073194)
+For the exact commit `dce69593f7c4fd98f112d1c1c35b05b70f9da2d0`, the
+[desktop CI](https://github.com/ChenlizheMe/Infernux/actions/runs/34046700946)
 passed both host suites and built their wheel/Hub distributions, and the
-[Player CI](https://github.com/ChenlizheMe/Infernux/actions/runs/33999073193)
+[Player CI](https://github.com/ChenlizheMe/Infernux/actions/runs/34046700977)
 passed Windows, Linux, Android, Web build and Web browser jobs. These public
 results cover the linked revision and automated test environments, not every
 physical device, clean installation, browser, or display configuration.
