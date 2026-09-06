@@ -40,6 +40,10 @@ For a session without a display, set `QT_QPA_PLATFORM=offscreen` first
 `export QT_QPA_PLATFORM=offscreen` in Bash). These tests use temporary projects and
 controlled launch workers; they do not download an engine or launch a real Editor.
 No skips are expected in this selected lane on Windows x64 or Linux x64.
+On minimal Ubuntu/Debian hosts, Qt still needs its shared libraries even in
+offscreen mode: run `sudo apt-get update` and then
+`sudo apt-get install --yes --no-install-recommends libegl1 libopengl0 libgl1`.
+This does not install or build the Infernux native renderer.
 `test_regression_guide.py` checks that mapped modules exist and the documented
 portable command stays synchronized with CI.
 
