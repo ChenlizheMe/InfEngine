@@ -94,6 +94,26 @@ Installed plugins have reload/uninstall actions but no version update operation.
   Kit/release regression: 20 passed, 2 skipped. Complete Hub regression before
   this workflow change: 317 passed, 3 skipped. Real dual-host kit builds and
   channel download/install acceptance remain open.
+- Cold CI preparation exposed the runner's default JDK 11; selected JDK 17 and
+  Python 3.13 before SDK setup. The next cold NumPy build exposed missing Android
+  libpython linkage. Added explicit C/C++ `-lpython3.13` cross-link arguments.
+  Actual arm64 and x86_64 NDK link probes succeeded with undefined-symbol checks
+  enabled and both recorded `DT_NEEDED=libpython3.13.so`. Full cold kit CI is still
+  the required validation, not replaced by those probes.
+
+### 2026-09-06: public Windows package consumer acceptance
+
+- Downloaded actual public Windows v0.2.0 through the installed engine's GitHub
+  release resolver, updated the isolated MultiPlatform040 project, and retained
+  all ten asset GUIDs and its enabled state.
+- Installed-only Release export passed in 36.753 seconds. A separate development
+  export then passed the authenticated Player control/button test: `UIText.text`
+  equaled `BUTTON READ #1: Package resource reached UIText on every Player target.`
+  Fatal count was zero. Evidence: `out/acceptance/windows-public020-*.json`.
+- Verified uninstall/reinstall of that public package preserves a user-added
+  note and restores the same GUIDs. The shared archive remains under the Hub's
+  plugin library; project staging and transaction directories are empty.
+- Complete engine regression after the cook-host fix: 5,341 passed, 11 skipped.
 
 ### 2026-09-06: installed Web export and cook-host ownership
 
