@@ -83,6 +83,32 @@ Installed plugins have reload/uninstall actions but no version update operation.
 
 ## Iteration log
 
+### 2026-09-06: desktop publication and Android native ownership
+
+- Pushed the desktop implementation to the engine and both platform repositories.
+  Dispatched complete Windows/Linux plugin builds in their own release workflows;
+  their outcome and public release publication remain pending.
+- Added the Android plugin's outer `native/CMakeLists.txt` to engine CMake. Its
+  `prebuild_android_player` target builds the host against the same SDL target as
+  the engine and publishes libraries and SDL Java sources directly into the
+  plugin's `package/editor/infernux_android/player/` directory, without ZIP transfer.
+- Cross-built the arm64-v8a RelWithDebInfo payload locally using the existing NDK
+  cache. The generated host is ELF64 AArch64, linked to SDL3 and CPython 3.13.
+  This is native publication evidence, not an installed APK or complete plugin
+  release. Android consumer migration and the x86_64 payload remain outstanding.
+- Moved Android orientation from a C++ compile-time constant to authored Android
+  manifest metadata passed by the Java activity. One precompiled host can now
+  apply different project orientation policies. All 54 Android exporter tests pass.
+- Installed-only update acceptance found generated file observations being
+  mistaken for author edits. Update comparison now ignores the default loaders'
+  derived file observations while retaining GUID and authored-setting protection.
+  An isolated MultiPlatform040 copy downgraded to the actual public 0.1.0 archive
+  and upgraded to the locally built complete 0.2.0 archive. Six shared member GUIDs
+  survived the downgrade, all ten survived the upgrade, and disabled state and a
+  user-added file were preserved. Exact-tag download did not change the pin.
+  The fixture was re-enabled afterward. This covers the current archive format,
+  not the development-era archive-layout migration noted below.
+
 ### 2026-09-06: CMake-owned desktop plugin payloads (in progress)
 
 - Desktop game assembly now selects its platform plugin's precompiled Player;

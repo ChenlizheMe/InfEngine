@@ -1859,7 +1859,15 @@ class PluginManager:
 
         def settings(payload: bytes) -> dict[str, object]:
             document = json.loads(payload)
-            document["metadata"].pop("content_hash", None)
+            # InxResourceMeta and the default file loaders regenerate these
+            # observations on import. They are not authored importer settings.
+            for key in (
+                "content_hash", "file_path", "last_modified", "resource_type",
+                "file_type", "file_extension", "file_size", "is_readable",
+                "line_count", "character_count", "encoding", "binary_type",
+                "size_category",
+            ):
+                document["metadata"].pop(key, None)
             return document
 
         def local_meta(path: str, guid: str) -> tuple[bytes | None, bool]:

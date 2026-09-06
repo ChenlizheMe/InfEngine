@@ -466,7 +466,11 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "SDL_OPENGL OFF" in cmake
     assert "SDL_OPENGLES OFF" in cmake
     assert "SDL_VULKAN ON" in cmake
-    assert 'INFERNUX_ANDROID_ORIENTATIONS="LandscapeLeft LandscapeRight"' in cmake
+    assert 'INFERNUX_ANDROID_ORIENTATIONS=' not in cmake
+    assert 'android:name="infernux.orientations"' in manifest
+    assert 'android:value="LandscapeLeft LandscapeRight"' in manifest
+    assert 'SDL_getenv("INFERNUX_ANDROID_ORIENTATIONS")' in host_source
+    assert 'Os.setenv("INFERNUX_ANDROID_ORIENTATIONS", orientations, true)' in activity
     assert '"${CMAKE_CURRENT_SOURCE_DIR}/../python/include/' in cmake
     assert '"${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/' in cmake
     assert "android.hardware.vulkan.version" in manifest

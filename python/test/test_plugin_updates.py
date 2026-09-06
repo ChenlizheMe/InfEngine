@@ -121,11 +121,15 @@ def test_update_registry_failure_restores_previous_files_and_pin(installed, monk
     assert Path(manager.registry.path).read_bytes() == registry_before
 
 
-def test_removed_local_edits_and_importer_settings_require_consent(installed):
+@pytest.mark.parametrize("setting_location", ["top_level", "metadata"])
+def test_removed_local_edits_and_importer_settings_require_consent(installed, setting_location):
     manager, source, root = installed
     meta = root / "runtime/retired.txt.meta"
     document = json.loads(meta.read_bytes())
-    document["importer_settings"] = {"custom": True}
+    if setting_location == "top_level":
+        document["importer_settings"] = {"custom": True}
+    else:
+        document["metadata"]["author_setting"] = {"type": "bool", "value": True}
     meta.write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(PackageUpdateConflict) as caught:
         manager.install_package(next_package(source), update=True, install_dependencies=False)
@@ -141,6 +145,32 @@ def test_retained_local_importer_settings_survive_update(installed):
     meta.write_text(json.dumps(document), encoding="utf-8")
     manager.install_package(next_package(source), update=True, install_dependencies=False)
     assert json.loads(meta.read_bytes())["importer_settings"] == {"custom": True}
+
+
+def test_editor_generated_file_observations_are_not_author_edits(installed):
+    manager, source, root = installed
+    publisher_document = json.loads((root / "runtime/note.txt.meta").read_bytes())
+    for name in ("note.txt", "retired.txt"):
+        path = root / "runtime" / name
+        meta = Path(str(path) + ".meta")
+        document = json.loads(meta.read_bytes())
+        for key, value in {
+            "file_path": str(path), "last_modified": "1788678820",
+            "resource_type": "DefaultText", "file_type": "text",
+            "file_extension": ".txt", "file_size": path.stat().st_size,
+            "is_readable": True, "line_count": 1,
+            "character_count": len(path.read_text()), "encoding": "ascii",
+        }.items():
+            document["metadata"][key] = {"type": type(value).__name__, "value": value}
+        meta.write_text(json.dumps(document), encoding="utf-8")
+    publisher_meta = source / "runtime/note.txt.meta"
+    publisher_document["importer_settings"] = {"publisher": "new default"}
+    publisher_meta.write_text(json.dumps(publisher_document), encoding="utf-8")
+    manager.install_package(next_package(source), update=True, install_dependencies=False)
+    assert not (root / "runtime/retired.txt.meta").exists()
+    assert json.loads((root / "runtime/note.txt.meta").read_bytes())["importer_settings"] == {
+        "publisher": "new default",
+    }
 
 
 def test_missing_original_cache_does_not_silently_overwrite(installed):
