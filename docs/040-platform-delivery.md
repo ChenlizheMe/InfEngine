@@ -38,11 +38,11 @@ and a green, mergeable engine PR. Publishing exporter-only plugins is not enough
 
 ## 4. Independently refreshed official catalog
 
-- [ ] Refresh official repository discovery without reinstalling the engine.
-- [ ] Separate catalog discovery, available releases and project-installed versions.
-- [ ] Migrate old official monorepo source descriptors to the independent repositories.
-- [ ] Refreshing discovery does not upgrade or modify installed package content.
-- [ ] Already installed packages remain usable without network access.
+- [x] Refresh official repository discovery without reinstalling the engine.
+- [x] Separate catalog discovery, available releases and project-installed versions.
+- [x] Migrate old official monorepo source descriptors to the independent repositories.
+- [x] Refreshing discovery does not upgrade or modify installed package content.
+- [x] Already installed packages remain usable without network access.
 
 ## 5. Delivery and acceptance
 
@@ -116,3 +116,22 @@ catalog refresh, complete release artifacts and final acceptance remain open.
 Section 3 implementation is present. Interactive editor acceptance and the final
 source-free platform deliveries are still part of section 5; this is not a claim
 that the overall goal or public runtime releases are complete.
+
+### 2026-09-06: independently published official discovery
+
+- Added an explicit background Refresh catalog action, reusing the existing
+  progress service and catalog JSON format. The shared Hub plugin library retains
+  the downloaded catalog; startup remains offline and uses the wheel only to seed
+  a library that has never been refreshed.
+- Published the initial catalog channel on `codex/plugin-catalog` and added a
+  metadata-only publishing workflow. The engine default branch still serves the
+  incompatible 0.3.7 catalog until this PR is merged; it is not a runtime fallback.
+- Old official platform repository URLs resolve to the independent repositories
+  without rewriting installed version locks. Official bundled packages can find
+  their publisher; local author/fork catalog overrides remain authoritative.
+- Registry-based dependency installation reuses installed versions rather than
+  acquiring a newly discovered version implicitly.
+- Real channel refresh returned MCP plus the four platform repositories, preserved
+  all three existing acceptance-project installations, and reused all five entries
+  without the wheel catalog. Eleven focused refresh/migration tests passed.
+- Broader plugin, UI, namespace and localization regression: 331 passed, 6 skips.

@@ -6,9 +6,12 @@ import argparse
 import json
 import os
 from typing import Mapping
+from urllib.request import Request, urlopen
 
+from Infernux.core.document_store import write_document_text
 from Infernux.engine.path_utils import resolved_path
 
+from .cache import package_cache_root
 from .content import normalize_page_descriptor
 from .manager import PluginManager, PluginState
 from .package import (
@@ -23,8 +26,25 @@ from .registry import PluginRegistry
 OFFICIAL_REGISTRY_FILENAME = "official-registry.json"
 DEFAULT_LIBRARIES_FILENAME = "default-libraries.json"
 OFFICIAL_REGISTRY_SCHEMA = "infernux.official_plugin_registry"
+OFFICIAL_REGISTRY_URL = (
+    "https://raw.githubusercontent.com/ChenlizheMe/Infernux/codex/plugin-catalog/"
+    "python/Infernux/resources/official_packages/official-registry.json"
+)
 DEFAULT_LIBRARIES_SCHEMA = "infernux.default_libraries"
 _REMOTE_SOURCE_TYPES = {"git", "github", "url"}
+
+
+def migrate_official_repository(reference: str, location: str) -> str:
+    """Compatibility mapping for the four former engine-subdirectory plugins."""
+    platform = reference.casefold().removeprefix("infernux/platform-")
+    if (
+        platform in {"windows", "linux", "android", "web"}
+        and reference.casefold().startswith("infernux/platform-")
+        and location.rstrip("/").removesuffix(".git").casefold()
+        == "https://github.com/chenlizheme/infernux"
+    ):
+        return f"https://github.com/ChenlizheMe/infernux_{platform}"
+    return location
 
 
 class OfficialCatalogError(RuntimeError):
@@ -55,12 +75,16 @@ def _read_document(path: str, schema: str, collection: str) -> dict[str, object]
         raise OfficialCatalogError(
             f"Official plugin catalog is unavailable: {path}"
         ) from exc
+    return _validate_document(document, schema, collection, path)
+
+
+def _validate_document(document, schema: str, collection: str, origin: str) -> dict[str, object]:
     if (
         not isinstance(document, dict)
         or document.get("$schema") != schema
         or set(document) != {"$schema", collection}
     ):
-        raise OfficialCatalogError(f"Unsupported official plugin catalog: {path}")
+        raise OfficialCatalogError(f"Unsupported official plugin catalog: {origin}")
     return document
 
 
@@ -77,7 +101,10 @@ def _remote_source(raw: object, *, reference: str) -> dict[str, object]:
             f"Official plugin source is invalid: {reference}"
         )
     source["type"] = source_type
-    source["location"] = location
+    source["location"] = migrate_official_repository(reference, location)
+    if source["location"] != location:
+        source.pop("subdirectory", None)
+        source.pop("revision", None)
     source["official"] = True
     return source
 
@@ -87,15 +114,47 @@ def sync_official_registry(
     *,
     resources_root: str | None = None,
 ) -> tuple[dict[str, object], ...]:
-    """Merge the engine's official catalog into one project registry."""
+    """Load the shared catalog offline; the wheel seeds a not-yet-refreshed library."""
 
-    project = resolved_path(project_root)
     official_packages = _official_packages_root(resources_root)
+    cached = os.path.join(package_cache_root(), OFFICIAL_REGISTRY_FILENAME)
+    use_cached = os.path.isfile(cached)
     document = _read_document(
-        os.path.join(official_packages, OFFICIAL_REGISTRY_FILENAME),
+        cached if use_cached else os.path.join(official_packages, OFFICIAL_REGISTRY_FILENAME),
         OFFICIAL_REGISTRY_SCHEMA,
         "packages",
     )
+    return _merge_official_registry(
+        resolved_path(project_root),
+        _catalog_entries(document, "" if use_cached else official_packages),
+    )
+
+
+def refresh_official_registry(
+    project_root: str, *, url: str = OFFICIAL_REGISTRY_URL,
+) -> tuple[dict[str, object], ...]:
+    """Explicit network refresh, with no package download or installed-pin mutation."""
+    try:
+        request = Request(url, headers={"User-Agent": "Infernux-Plugin-Catalog", "Accept": "application/json"})
+        with urlopen(request, timeout=30) as response:
+            payload = response.read(2 * 1024 * 1024 + 1)
+        if len(payload) > 2 * 1024 * 1024:
+            raise OfficialCatalogError("Official plugin catalog exceeds the metadata size limit")
+        document = _validate_document(json.loads(payload), OFFICIAL_REGISTRY_SCHEMA, "packages", url)
+    except (OSError, ValueError) as exc:
+        raise OfficialCatalogError(f"Official plugin catalog refresh failed: {exc}") from exc
+    entries = _catalog_entries(document, "")
+    # Validate all entries before publishing either shared discovery or project state.
+    cache_root = package_cache_root()
+    os.makedirs(cache_root, exist_ok=True)
+    write_document_text(
+        os.path.join(cache_root, OFFICIAL_REGISTRY_FILENAME),
+        json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+    )
+    return _merge_official_registry(resolved_path(project_root), entries)
+
+
+def _catalog_entries(document: Mapping[str, object], official_packages: str) -> tuple[dict[str, object], ...]:
     packages = document.get("packages")
     if not isinstance(packages, list):
         raise OfficialCatalogError(
@@ -117,7 +176,7 @@ def sync_official_registry(
         if not artifact or os.path.basename(artifact) != artifact:
             raise OfficialCatalogError("Official plugin registry entry is invalid")
         package_path = os.path.join(official_packages, artifact)
-        if os.path.isfile(package_path):
+        if official_packages and os.path.isfile(package_path):
             try:
                 preview = InxPackage.inspect(package_path)
             except Exception as exc:
@@ -148,7 +207,7 @@ def sync_official_registry(
             source["reference"] = reference
         repository = str(raw.get("repository", "")).strip()
         if repository:
-            source["repository"] = repository
+            source["repository"] = migrate_official_repository(reference, repository)
         dependencies = raw.get("dependencies", [])
         pages = raw.get("pages", [])
         intros = raw.get("intros", {})
@@ -191,7 +250,16 @@ def sync_official_registry(
                 "source": source,
             }
         )
+    references = [str(item["reference"]).casefold() for item in validated]
+    if len(set(references)) != len(references):
+        raise OfficialCatalogError("Official plugin catalog contains duplicate references")
+    try:
+        return tuple(PluginRegistry.build_package_entry(**item) for item in validated)
+    except ValueError as exc:
+        raise OfficialCatalogError(f"Invalid official plugin catalog entry: {exc}") from exc
 
+
+def _merge_official_registry(project: str, validated) -> tuple[dict[str, object], ...]:
     # Do not alter the project registry until every official artifact and
     # catalog entry has passed validation. Merge everything in memory and
     # write at most once: the previous strip-save plus per-package add_package
@@ -205,33 +273,18 @@ def sync_official_registry(
         if not (
             isinstance(item, Mapping)
             and isinstance(item.get("source"), Mapping)
-            and bool(item["source"].get("official", False))
+            and (
+                bool(item["source"].get("official", False))
+                or migrate_official_repository(str(item["reference"]), str(item["source"].get("location", "")))
+                != str(item["source"].get("location", ""))
+            )
         )
     ]
-    added = [
-        PluginRegistry.build_package_entry(
-            str(item["reference"]),
-            name=str(item["name"]),
-            version=str(item["version"]),
-            engine=str(item["engine"]),
-            dependencies=item["dependencies"],
-            intro=str(item["intro"]),
-            intros=item["intros"],
-            pages=item["pages"],
-            category=str(item["category"]),
-            targets=item["targets"],
-            source=item["source"],
-        )
-        for item in validated
-    ]
-    references = {str(entry["reference"]).casefold() for entry in added}
+    local_references = {str(entry["reference"]).casefold() for entry in kept}
+    added = [item for item in validated if str(item["reference"]).casefold() not in local_references]
     merged = sorted(
         [
-            *(
-                entry
-                for entry in kept
-                if str(entry.get("reference", "")).casefold() not in references
-            ),
+            *kept,
             *added,
         ],
         key=lambda entry: str(entry.get("reference", "")).casefold(),

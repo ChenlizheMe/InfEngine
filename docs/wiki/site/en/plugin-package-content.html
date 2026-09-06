@@ -282,6 +282,16 @@
 <p>Uninstall follows GUID ownership: moving or editing a file does not prevent removal while the package still owns it. Derived bytecode caches of removed scripts are cleaned in the same transaction. Shared files whose ownership has transferred to another package, newly authored files, and their caches are preserved.</p>
 <p>The import panel supports per-file selection. Reopening a package with the same version and full GUID member list lets you add previously unchecked files without uninstalling it. Existing user edits, ownership, and enabled state are preserved; Python dependencies are not reinstalled. A different version or member list remains a package replacement and is not silently applied. Conflicting destination GUIDs are reported, and failed writes roll back only the new additions, preserving the existing installation.</p>
 <h2 id="explicit-version-updates">Explicit version updates<a class="headerlink" href="#explicit-version-updates" title="Permanent link">&para;</a></h2>
+<p>Choose <strong>Refresh catalog</strong> in the Plugins toolbar to refresh official repository
+discovery without reinstalling the engine. This is a background metadata download,
+not an update of installed packages. The Hub shared plugin library stores the
+catalog, and later editor startups read it without network access. If no catalog
+has ever been downloaded, the engine's bundled snapshot supplies initial discovery.
+Download or validation failures leave the current catalog and installed versions intact.</p>
+<p>The official catalog is published independently on the engine repository's
+<code>codex/plugin-catalog</code> branch. The four former platform subdirectory sources resolve
+to their independent repositories; this compatibility mapping does not rewrite
+installed version locks or replace local author sources.</p>
 <p>For an installed GitHub package, open <strong>Versions</strong>, choose <strong>Check versions</strong>, then
 select a compatible release and <strong>Update to selected version</strong>. Checking and
 downloading do not change the installed version. Release notes belong to the

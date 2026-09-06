@@ -72,6 +72,18 @@ The import panel supports per-file selection. Reopening a package with the same 
 
 ## Explicit version updates
 
+Choose **Refresh catalog** in the Plugins toolbar to refresh official repository
+discovery without reinstalling the engine. This is a background metadata download,
+not an update of installed packages. The Hub shared plugin library stores the
+catalog, and later editor startups read it without network access. If no catalog
+has ever been downloaded, the engine's bundled snapshot supplies initial discovery.
+Download or validation failures leave the current catalog and installed versions intact.
+
+The official catalog is published independently on the engine repository's
+`codex/plugin-catalog` branch. The four former platform subdirectory sources resolve
+to their independent repositories; this compatibility mapping does not rewrite
+installed version locks or replace local author sources.
+
 For an installed GitHub package, open **Versions**, choose **Check versions**, then
 select a compatible release and **Update to selected version**. Checking and
 downloading do not change the installed version. Release notes belong to the

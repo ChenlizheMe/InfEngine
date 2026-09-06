@@ -793,6 +793,8 @@ class PluginManager:
         install_dependencies: bool = True,
         progress: _InstallProgress | None = None,
     ) -> PluginState:
+        if self.registry.installed_record(reference) is not None:
+            return self.reload(reference)
         record = self.registry.find(reference)
         if record is None:
             raise KeyError(
@@ -847,9 +849,13 @@ class PluginManager:
             # Older cache imports recorded the local archive as their location.
             # Their explicit repository still identifies the original publisher.
             location = str(source["repository"])
+        elif source.get("official") and source.get("repository"):
+            location = str(source["repository"])
         else:
             return ""
-        return location
+        from .official import migrate_official_repository
+
+        return migrate_official_repository(reference, location)
 
     def download_update(
         self, reference: str, release_tag: str, *, progress: _InstallProgress | None = None,
@@ -1805,7 +1811,7 @@ class PluginManager:
             name = candidate.split(";", 1)[0].split("@", 1)[0].strip()
             for marker in ("===", "==", ">=", "<=", "~=", "!=", ">", "<", "["):
                 name = name.split(marker, 1)[0].strip()
-        matched = self.registry.find(name)
+        matched = self.registry.installed_record(name) or self.registry.find(name)
         if matched is not None and parsed is not None and parsed.specifier:
             version = str(matched.get("version", "")).strip()
             if version and not parsed.specifier.contains(version, prereleases=True):

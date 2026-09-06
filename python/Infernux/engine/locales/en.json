@@ -1125,6 +1125,8 @@
   "plugins.import": "Import",
   "plugins.search": "Search plugins",
   "plugins.add": "Add Plugin",
+  "plugins.refresh_catalog": "Refresh catalog",
+  "plugins.catalog_refreshed": "Official catalog refreshed. Installed versions are unchanged.",
   "plugins.scope.all": "Packages: All",
   "plugins.scope.project": "Packages: In Project",
   "plugins.scope.registry": "Packages: Official Registry",

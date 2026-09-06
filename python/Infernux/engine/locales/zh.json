@@ -1125,6 +1125,8 @@
   "plugins.import": "导入",
   "plugins.search": "搜索插件",
   "plugins.add": "添加插件",
+  "plugins.refresh_catalog": "刷新官方列表",
+  "plugins.catalog_refreshed": "官方列表已刷新，已安装版本保持不变。",
   "plugins.scope.all": "包：全部",
   "plugins.scope.project": "包：项目中",
   "plugins.scope.registry": "包：官方注册表",

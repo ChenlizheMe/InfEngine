@@ -1,0 +1,43 @@
+name: Official Plugin Catalog
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - python/Infernux/resources/official_packages/official-registry.json
+      - .github/workflows/plugin-catalog.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: official-plugin-catalog
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish catalog metadata independently of engine artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'python/Infernux/resources/official_packages/official-registry.json';
+            const bytes = fs.readFileSync(path);
+            const catalog = JSON.parse(bytes);
+            if (catalog.$schema !== 'infernux.official_plugin_registry' || !Array.isArray(catalog.packages)) {
+              throw new Error('Invalid official plugin catalog');
+            }
+            const branch = 'codex/plugin-catalog';
+            const repo = context.repo;
+            const existing = await github.rest.repos.getContent({...repo, path, ref: branch});
+            if (existing.data.type !== 'file') throw new Error('Catalog channel target is not a file');
+            const content = bytes.toString('base64');
+            if (Buffer.from(existing.data.content, 'base64').equals(bytes)) return;
+            await github.rest.repos.createOrUpdateFileContents({
+              ...repo, path, branch, sha: existing.data.sha, content,
+              message: `Publish official plugin catalog from ${context.sha}`,
+            });

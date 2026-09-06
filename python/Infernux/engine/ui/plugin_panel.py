@@ -147,6 +147,9 @@ class PluginPanel(EditorPanel):
         ]
         ctx.set_next_item_width(_metric(ctx, 152.0))
         self._sort_index = ctx.combo("##plugins_sort", self._sort_index, sorts)
+        ctx.same_line()
+        if ctx.button(t("plugins.refresh_catalog") + "##plugins_refresh_catalog"):
+            self._refresh_catalog(manager)
         ctx.dummy(0.0, _metric(ctx, Theme.INSPECTOR_SECTION_GAP))
         ctx.set_next_item_width(-1.0)
         self._search = ctx.input_text_with_hint(
@@ -803,6 +806,24 @@ class PluginPanel(EditorPanel):
         if isinstance(source, Mapping) and str(source.get("type", "")).casefold() == "local":
             return t("plugins.available"), Theme.SUCCESS_TEXT
         return t("plugins.downloadable"), Theme.TEXT_DIM
+
+    def _refresh_catalog(self, manager: PluginManager) -> None:
+        from Infernux.plugins.official import refresh_official_registry
+        from .plugin_install_progress import PluginInstallProgressService
+
+        def complete(ok, result, message):
+            if ok:
+                manager.official_catalog_error = ""
+                self._message = t("plugins.catalog_refreshed")
+            else:
+                self._message = message
+
+        if not PluginInstallProgressService.instance().begin(
+            label=t("plugins.refresh_catalog"),
+            work=lambda report: refresh_official_registry(manager.project_root),
+            complete=complete,
+        ):
+            self._message = t("plugins.install_progress.busy")
 
     def _begin_reload(self, manager: PluginManager, references: tuple[str, ...]) -> None:
         if not references:
