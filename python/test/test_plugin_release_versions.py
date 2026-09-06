@@ -10,6 +10,31 @@ from Infernux.plugins import github_releases as releases
 from Infernux.plugins import PluginManager
 
 
+@pytest.mark.parametrize("kind", ["metadata", "package", "source"])
+def test_release_network_stall_preserves_destination(tmp_path, monkeypatch, kind):
+    destination = tmp_path / "download.inxpkg"
+    destination.write_bytes(b"previous complete download")
+
+    def stalled(request, *, timeout):
+        assert timeout == 30
+        raise TimeoutError("network stalled")
+
+    monkeypatch.setattr(releases.urllib.request, "urlopen", stalled)
+    with pytest.raises(TimeoutError, match="network stalled"):
+        if kind == "metadata":
+            releases._request_bytes("https://example.invalid/metadata", accept="application/json")
+        elif kind == "package":
+            releases._download_asset(
+                {"browser_download_url": "https://example.invalid/package"},
+                str(destination), progress=None,
+            )
+        else:
+            releases._download_file("https://example.invalid/source", str(destination),
+                                    progress=None, start=0, end=1)
+    assert destination.read_bytes() == b"previous complete download"
+    assert not list(tmp_path.glob("*.part"))
+
+
 def _release(version, *, engine=">=0.4,<0.5", prerelease=False):
     tag = f"v{version}"
     artifact = {"name": "vendor.plugin.inxpkg", "browser_download_url": f"https://example.invalid/{tag}/package"}

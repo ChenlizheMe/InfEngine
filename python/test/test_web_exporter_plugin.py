@@ -36,22 +36,6 @@ def _request(tmp_path: Path) -> BuildRequest:
     )
 
 
-def _probe_result(**overrides: object) -> dict[str, object]:
-    details: dict[str, object] = {
-        "detected_emscripten_version": "4.0.10",
-        "node_version": "v24.19.0",
-        "emcc": True,
-        "emdawn_port": True,
-        "python_wasm": True,
-        "python_data": True,
-        "python_library": True,
-        "glslang_validator": True,
-        "tint": True,
-    }
-    details.update(overrides)
-    return {"error": "", "code": "", "command": ["fixture"], "details": details}
-
-
 def test_web_exporter_contributes_only_webgpu_target(monkeypatch):
     module = _web_module(monkeypatch)
     targets = module.WebPlatformExporter().targets()
@@ -177,60 +161,123 @@ def test_webgpu_capability_inventory_rejects_required_open_parity_gate(monkeypat
         capability_module.validate_webgpu_capability_inventory(document)
 
 
-def test_web_doctor_accepts_pinned_toolchain(monkeypatch):
+def _installed_web_payload(tmp_path):
+    root = tmp_path / "installed-plugin"
+    player = root / "player"
+    player.mkdir(parents=True)
+    manifest = {"$schema": "infernux.web_player", "engine": "0.4.0",
+                "platform": "web", "architecture": "wasm32", "python_abi": "cp313",
+                "configuration": "Release"}
+    (player / "Player.inxmanifest").write_text(json.dumps(manifest), encoding="utf-8")
+    for suffix in ("js", "wasm", "data"):
+        (player / f"infernux-runtime.{suffix}").write_bytes(suffix.encode())
+    for host, suffix in (("windows-x64", ".exe"), ("linux-x64", "")):
+        tools = root / "tools" / host
+        tools.mkdir(parents=True)
+        for name in ("glslangValidator", "tint"):
+            (tools / f"{name}{suffix}").write_bytes(b"native tool")
+    return root
+
+
+def test_web_doctor_accepts_installed_payload_without_compilers(monkeypatch, tmp_path):
     module = _web_module(monkeypatch)
     doctor = importlib.import_module("infernux_web.doctor")
-    monkeypatch.setattr(doctor, "_run_toolchain_probe", lambda _values: _probe_result())
-
-    report = module.inspect_web_toolchain("web-wasm32", {})
-
+    root = _installed_web_payload(tmp_path)
+    monkeypatch.setattr(doctor, "__file__", str(root / "doctor.py"))
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv("INFERNUX_SOURCE_ROOT", raising=False)
+    report = module.inspect_web_toolchain("web-wasm32")
     assert report.available
     assert report.diagnostics == ()
-    assert report.details["python_series"] == "3.13"
+    assert report.details["player"]["python_abi"] == "cp313"
+    assert Path(report.details["tint"]).is_relative_to(root)
 
 
-def test_web_doctor_rejects_wrong_emscripten_version(monkeypatch):
+@pytest.mark.parametrize("missing", ["Player.inxmanifest", "infernux-runtime.wasm",
+                                     "infernux-runtime.data"])
+def test_web_doctor_reports_missing_payload(monkeypatch, tmp_path, missing):
     module = _web_module(monkeypatch)
     doctor = importlib.import_module("infernux_web.doctor")
-    monkeypatch.setattr(
-        doctor,
-        "_run_toolchain_probe",
-        lambda _values: _probe_result(detected_emscripten_version="5.0.0"),
-    )
-
-    report = module.inspect_web_toolchain("web-wasm32", {})
-
+    root = _installed_web_payload(tmp_path)
+    (root / "player" / missing).unlink()
+    monkeypatch.setattr(doctor, "__file__", str(root / "doctor.py"))
+    report = module.inspect_web_toolchain("web-wasm32")
     assert not report.available
-    assert [item.code for item in report.diagnostics] == ["web.emscripten.version"]
+    assert [item.code for item in report.diagnostics] == ["web.player.payload"]
 
 
-def test_web_doctor_reports_missing_runtime_parts(monkeypatch):
+def test_web_doctor_rejects_incompatible_engine(monkeypatch, tmp_path):
     module = _web_module(monkeypatch)
     doctor = importlib.import_module("infernux_web.doctor")
-    monkeypatch.setattr(
-        doctor,
-        "_run_toolchain_probe",
-        lambda _values: _probe_result(
-            emdawn_port=False,
-            python_wasm=False,
-            python_data=False,
-            python_library=False,
-            glslang_validator=False,
-            tint=False,
-        ),
-    )
-
-    report = module.inspect_web_toolchain("web-wasm32", {})
-
+    root = _installed_web_payload(tmp_path)
+    manifest = root / "player/Player.inxmanifest"
+    manifest.write_text(manifest.read_text().replace("0.4.0", "0.3.7"))
+    monkeypatch.setattr(doctor, "__file__", str(root / "doctor.py"))
+    report = module.inspect_web_toolchain("web-wasm32")
     assert not report.available
-    assert {item.code for item in report.diagnostics} == {
-        "web.webgpu.emdawn-port",
-        "web.python.runtime",
-        "web.python.stdlib",
-        "web.python.static-library",
-        "web.shader.glslang",
-        "web.shader.tint",
-    }
+    assert "does not match" in report.diagnostics[0].message
+
+
+@pytest.mark.parametrize("mode", ["windowed", "fullscreen_borderless"])
+def test_web_assembly_reuses_runtime_and_packs_project_without_compilation(
+    monkeypatch, tmp_path, mode
+):
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    pipeline = importlib.import_module("infernux_web.shader_pipeline")
+    from Infernux.engine.player_package_native import read_entry
+
+    root = _installed_web_payload(tmp_path)
+    request = _request(tmp_path)
+    staging = tmp_path / "staging"
+    assets = staging / "player-assets"
+    assets.mkdir(parents=True)
+    (assets / "包内文本.txt").write_text("button reads this content", encoding="utf-8")
+    branding = assets / "web-branding"
+    branding.mkdir()
+    for name in ("infernux-favicon.png", "infernux-icon-192.png", "infernux-icon-512.png",
+                 "infernux.webmanifest", "infernux-branding.js"):
+        (branding / name).write_bytes(b"branding")
+    exporter._stage_webgpu_capability_inventory(assets)
+    (staging / "shader-cook").mkdir()
+    compiler_calls = []
+
+    def compile_shaders(manifest, output, **tools):
+        compiler_calls.append(tools)
+        output.mkdir()
+        (output / "catalog.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(pipeline, "compile_shader_manifest", compile_shaders)
+    details = {"player_root": str(root / "player"),
+               "glslang": str(root / "tools/windows-x64/glslangValidator.exe"),
+               "tint": str(root / "tools/windows-x64/tint.exe")}
+    presentation = {"display_mode": mode, "window_width": 960, "window_height": 540}
+    exporter._assemble_web_host(
+        request, staging, assets, details, ROOT / "python/Infernux", presentation,
+        PLUGIN_EDITOR / "infernux_web/templates/host/shell.html", None,
+    )
+    artifacts, revision = exporter._publish_web_player(request, staging / "host-build", None)
+    output = Path(request.output_dir)
+    package = output / f"infernux-player.{revision}.inxpkg"
+    assert read_entry(package, "包内文本.txt").decode() == "button reads this content"
+    assert read_entry(package, "web-shaders/catalog.json") == b"{}"
+    assert not (output / "player-assets").exists()
+    assert not list(output.rglob("CMakeCache.txt"))
+    for suffix in ("js", "wasm", "data"):
+        assert (output / f"infernux-player.{revision}.{suffix}").read_bytes() == (
+            root / "player" / f"infernux-runtime.{suffix}"
+        ).read_bytes()
+    html = (output / "infernux-player.html").read_text(encoding="utf-8")
+    assert 'Module.infernuxPresentation = ' in html
+    assert f'"mode": "{mode}"' in html
+    assert f"fetch('infernux-player.{revision}.inxpkg')" in html
+    assert "addRunDependency('infernux-project-content')" in html
+    assert "Module.FS.writeFile" in html
+    assert "Module.abort(error.message)" in html
+    assert "@INFERNUX_WEB_" not in html
+    assert "{{{ SCRIPT }}}" not in html
+    assert len(compiler_calls) == 1
+    assert all(Path(item.path).is_relative_to(output) for item in artifacts)
 
 
 def test_web_exporter_plan_exposes_real_runtime_stages(monkeypatch, tmp_path):
@@ -242,7 +289,6 @@ def test_web_exporter_plan_exposes_real_runtime_stages(monkeypatch, tmp_path):
         "shaders",
         "imports",
         "runtime",
-        "webgpu",
         "package",
         "audit",
     ]
@@ -298,7 +344,7 @@ def test_web_template_uses_default_or_requires_complete_project_shell(
     )
 
 
-def test_web_staging_refresh_preserves_native_build_cache(monkeypatch, tmp_path):
+def test_web_staging_refresh_removes_obsolete_native_build_cache(monkeypatch, tmp_path):
     _web_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_web.exporter")
     staging = tmp_path / "web-staging"
@@ -312,39 +358,10 @@ def test_web_staging_refresh_preserves_native_build_cache(monkeypatch, tmp_path)
 
     exporter_module._prepare_web_staging(staging)
 
-    assert host_marker.read_text(encoding="utf-8") == "cache"
+    assert not host_marker.exists()
     assert not (staging / ".infernux-player-cook").exists()
     assert not (staging / "player-assets").exists()
     assert not (staging / "shader-cook").exists()
-
-
-def test_web_cmake_cache_is_discarded_only_when_plugin_source_moves(monkeypatch, tmp_path):
-    _web_module(monkeypatch)
-    exporter = importlib.import_module("infernux_web.exporter")
-    build_root = tmp_path / "host-build"
-    build_root.mkdir()
-    cache = build_root / "CMakeCache.txt"
-    cache.write_text(
-        "CMAKE_HOME_DIRECTORY:INTERNAL=/old/plugin/Editor/templates/host\n",
-        encoding="utf-8",
-    )
-
-    exporter._discard_mismatched_cmake_source(
-        build_root, "/repo/plugin/package/editor/templates/host"
-    )
-
-    assert not build_root.exists()
-
-    build_root.mkdir()
-    cache = build_root / "CMakeCache.txt"
-    cache.write_text(
-        "CMAKE_HOME_DIRECTORY:INTERNAL=/repo/plugin/package/editor/templates/host\n",
-        encoding="utf-8",
-    )
-    exporter._discard_mismatched_cmake_source(
-        build_root, "/repo/plugin/package/editor/templates/host"
-    )
-    assert cache.is_file()
 
 
 def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
@@ -433,13 +450,13 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
                 (
                     f"const assetRevision = '{revision}';",
                     f"infernux-player.{revision}.js",
-                    "'infernux-player.wasm': `infernux-player.${assetRevision}.wasm`,",
-                    "'infernux-player.data': `infernux-player.${assetRevision}.data`,",
+                    "'infernux-runtime.wasm': `infernux-player.${assetRevision}.wasm`,",
+                    "'infernux-runtime.data': `infernux-player.${assetRevision}.data`,",
                 )
             ),
             encoding="utf-8",
         )
-        for suffix in ("js", "wasm", "data"):
+        for suffix in ("js", "wasm", "data", "inxpkg"):
             (host_build / f"infernux-player.{revision}.{suffix}").write_bytes(
                 suffix.encode("ascii")
             )
@@ -458,7 +475,7 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
         )
         return ("host built",)
 
-    monkeypatch.setattr(exporter_module, "_configure_and_build_host", _build_host)
+    monkeypatch.setattr(exporter_module, "_assemble_web_host", _build_host)
 
     result = exporter.execute(request, exporter.create_plan(request))
 
@@ -469,6 +486,7 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
         "js",
         "wasm",
         "data",
+        "inxpkg",
         "png",
         "png",
         "png",
@@ -560,7 +578,7 @@ def test_web_branding_uses_cooked_project_icon_and_game_name(monkeypatch, tmp_pa
 
     branding = exporter_module._stage_web_branding(
         player_assets,
-        ROOT,
+        ROOT / "python/Infernux",
         "Branding Game",
     )
 
@@ -586,17 +604,7 @@ def test_web_branding_uses_cooked_project_icon_and_game_name(monkeypatch, tmp_pa
 
 def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     _web_module(monkeypatch)
-    host_templates = (
-        ROOT
-        / "external"
-        / "plugins"
-        / "infernux_web"
-        / "package"
-        / "editor"
-        / "infernux_web"
-        / "templates"
-        / "host"
-    )
+    host_templates = ROOT / "external/plugins/infernux_web/native"
     cmake = (host_templates / "CMakeLists.txt").read_text(encoding="utf-8")
     main = (host_templates / "main.cpp").read_text(encoding="utf-8")
     rhi_backend = (host_templates / "WebGpuRhiDevice.cpp").read_text(encoding="utf-8")
@@ -611,12 +619,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     fullscreen = (
         ROOT / "cpp" / "infernux" / "function" / "renderer" / "FullscreenRenderer.cpp"
     ).read_text(encoding="utf-8")
-    shell = (host_templates / "shell.html").read_text(encoding="utf-8")
+    shell = (PLUGIN_EDITOR / "infernux_web/templates/host/shell.html").read_text(encoding="utf-8")
     bootstrap = (host_templates / "bootstrap.py").read_text(encoding="utf-8")
     host_module = (host_templates / "InfernuxWebHostModule.cpp").read_text(encoding="utf-8")
-    revision_stamp = (host_templates / "stamp_asset_revision.cmake").read_text(
-        encoding="utf-8"
-    )
 
     assert "libpython3.13.a" in cmake
     assert "--use-port=emdawnwebgpu" in cmake
@@ -625,7 +630,9 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "TextureFormat::RGBA16Unorm" not in rhi_backend
     assert "TextureFormat::RGBA16Unorm" not in scene_renderer
     assert "TextureFormat::RGBA16Unorm" not in screen_ui_renderer
-    assert "infernux-webgpu-capabilities.json" in cmake
+    assert "prebuild_web_player" in cmake
+    assert "infernux-runtime" in cmake
+    assert "INFERNUX_WEB_PLAYER_ASSETS" not in cmake
     assert "-sSTACK_SIZE=2097152" in cmake
     assert "set(CROSS_PLATFORM_DETERMINISTIC ON" in cmake
     assert "target_link_libraries(${_web_jolt_consumer} PRIVATE Jolt)" in cmake
@@ -857,8 +864,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "@INFERNUX_WEB_DISPLAY_MODE@" in shell
     assert "@INFERNUX_WEB_CANVAS_WIDTH@" in shell
     assert "@INFERNUX_WEB_CANVAS_HEIGHT@" in shell
-    assert "copy_if_different" in revision_stamp
-    assert "infernux-player.${INFERNUX_WEB_ASSET_REVISION}.js" in revision_stamp
+    assert "copy_if_different" in cmake
+    assert 'OUTPUT_NAME "infernux-runtime"' in cmake
     assert "INFERNUX_WEB_PYTHON_ARCHIVE_INVALID" in main
     assert "infernux_web_input" in bootstrap
     assert "INFERNUX_WEB_CONTENT_INDEX_READY" in bootstrap
@@ -868,7 +875,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "infernux::inxpack::Extract" in host_module
     assert '"extract_package"' in host_module
     assert '"submit_screen_ui"' not in host_module
-    assert "INFERNUX_WEB_FIXED_CANVAS" in main
+    assert "InfernuxWebFixedCanvasWidth()" in main
     assert "g_screenUIRenderer.Render" in main
     assert "g_postProcessRenderer.SceneColorAttachmentView()" in main
     assert "colorAttachment.resolveTarget = g_postProcessRenderer.SceneColorView()" in main
@@ -992,10 +999,10 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert bootstrap.index("_process_screen_ui_events(delta_time)") < bootstrap.index(
         "_submit_screen_ui()", bootstrap.index("def infernux_web_tick")
     )
-    assert "INFERNUX_WEB_DISPLAY_MODE" in cmake
-    assert "INFERNUX_WEB_CANVAS_WIDTH" in cmake
-    assert "INFERNUX_WEB_CANVAS_HEIGHT" in cmake
-    assert "INFERNUX_WEB_SHELL_FILE" in cmake
+    assert "Module.infernuxPresentation" in main
+    assert "INFERNUX_WEB_DISPLAY_MODE" not in cmake
+    assert "INFERNUX_WEB_SHELL_FILE" not in cmake
+    assert main.index('inxpack::Extract("/infernux-project.inxpkg"') < main.index("if (!InitializePython())")
     assert "extract_package(package, data_root)" in bootstrap
     assert "INFERNUX_SINGLE_THREADED_RUNTIME=1" in cmake
     assert "register_shader" in host_module
@@ -1020,9 +1027,11 @@ def test_web_host_build_templates_are_editor_only():
         / "host"
     )
     assert not (plugin_root / "package" / "runtime" / "web").exists()
-    assert (host_templates / "CMakeLists.txt").is_file()
-    assert (host_templates / "main.cpp").is_file()
-    assert (host_templates / "shell.html").is_file()
+    assert (plugin_root / "native/CMakeLists.txt").is_file()
+    assert (plugin_root / "native/main.cpp").is_file()
+    assert not list((plugin_root / "package").rglob("CMakeLists.txt"))
+    assert not list((plugin_root / "package").rglob("*.cpp"))
+    assert (PLUGIN_EDITOR / "infernux_web/templates/host/shell.html").is_file()
     for path in host_templates.rglob("*"):
         if path.is_file():
             relative = path.relative_to(plugin_root / "package").as_posix()
@@ -1040,7 +1049,7 @@ def test_web_shader_stage_deduplicates_shared_particle_kernel(monkeypatch, tmp_p
     )
     request = _request(tmp_path)
     source_root = tmp_path / "source"
-    shader_dir = source_root / "python" / "Infernux" / "resources" / "shaders"
+    shader_dir = source_root / "resources" / "shaders"
     shader_dir.mkdir(parents=True)
     (shader_dir / "fullscreen_triangle.vert").write_text(
         "#version 450\nvoid main() {}\n", encoding="utf-8"
@@ -1101,16 +1110,6 @@ def test_web_shader_stage_deduplicates_shared_particle_kernel(monkeypatch, tmp_p
     assert len(catalog["kernels"]) == 1
     assert catalog["kernels"][0]["stable_ids"] == ["emitter-a", "emitter-b"]
     assert len(catalog["kernels"][0]["stages"]) == len(stage_names)
-
-def test_web_exporter_declares_one_shared_zstd_source(monkeypatch):
-    _web_module(monkeypatch)
-    exporter_module = importlib.import_module("infernux_web.exporter")
-
-    source = exporter_module._WEB_ZSTD_SOURCE
-    assert source.name == "zstd"
-    assert source.repository == "https://github.com/facebook/zstd.git"
-    assert source.revision == "794ea1b0afca0f020f4e57b6732332231fb23c70"
-
 
 def test_web_asset_revision_covers_content_runtime_and_shader_inputs(
     monkeypatch, tmp_path

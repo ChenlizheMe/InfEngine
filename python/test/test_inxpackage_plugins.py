@@ -1542,7 +1542,8 @@ def test_github_source_prefers_highest_compatible_protocol_release(
             self.offset += len(chunk)
             return chunk
 
-    def open_request(request):
+    def open_request(request, *, timeout):
+        assert timeout == 30
         url = request.full_url
         if url.startswith("https://api.github.com/"):
             return Response(json.dumps(releases).encode("utf-8"))
@@ -1623,7 +1624,8 @@ def test_github_source_snapshot_downloads_only_selected_subdirectory(
             self.offset += len(chunk)
             return chunk
 
-    def open_request(request):
+    def open_request(request, *, timeout):
+        assert timeout == 30
         if request.full_url.startswith("https://api.github.com/"):
             return Response(json.dumps({"sha": commit}).encode("utf-8"))
         if request.full_url.startswith("https://codeload.github.com/"):
@@ -1712,7 +1714,8 @@ def test_github_source_selects_reference_scoped_manifest_from_shared_release(
             self.offset += len(chunk)
             return chunk
 
-    def open_request(request):
+    def open_request(request, *, timeout):
+        assert timeout == 30
         url = request.full_url
         if url.startswith("https://api.github.com/"):
             return Response(json.dumps(releases).encode("utf-8"))
@@ -1843,7 +1846,8 @@ def test_official_release_downloads_to_project_cache_then_imports(
                 self.offset += len(chunk)
                 return chunk
 
-        def open_request(request):
+        def open_request(request, *, timeout):
+            assert timeout == 30
             url = request.full_url
             if url.startswith("https://api.github.com/"):
                 return Response(json.dumps(releases).encode("utf-8"))

@@ -83,6 +83,45 @@ Installed plugins have reload/uninstall actions but no version update operation.
 
 ## Iteration log
 
+### 2026-09-06: complete public Linux payload and Web runtime separation
+
+- Published Linux v0.2.0 with a 152,677,056-byte `.inxpkg` and its compatible-release
+  JSON. Downloaded the actual public package through engine release acquisition
+  and read its payload. This is publication/acquisition evidence, not a new Linux
+  physical-machine run.
+- Plugin HTTP operations now use a 30-second socket timeout, without additional
+  retries or source fallbacks. Failed downloads retain the previous complete file
+  and discard partial output. Focused package/release regression: 150 passed,
+  5 skipped; the complete public Linux download also succeeded.
+- Complete Windows and Android plugin build workflows passed at `2fa0dae` and
+  `5e1e8d6`. Their v0.2.0 public release workflows then passed and uploaded
+  complete `.inxpkg` assets: Windows 85,485,120 bytes; Android 883,289,792 bytes.
+  Both releases also contain their compatible-release JSON and are not drafts.
+- Main PR Android acceptance was blocked before APK assembly by setup-gradle
+  validating an unused SDL example wrapper. Exports invoke the pinned Gradle 8.12
+  distribution directly; disabled the unrelated wrapper scan, not distribution
+  integrity verification. Workflow regression: 20 passed, 2 skipped.
+- Moved Web C++/CMake/bootstrap sources out of the installable package. Removed
+  compiler, WSL and source-acquisition calls from normal export. A separate content
+  `.inxpkg` is loaded into browser memory before Python starts; presentation
+  settings no longer require native compile definitions.
+- Built the generic Release Web runtime and published it directly through its
+  owning CMake target: JS 191,822 bytes, WASM 13,684,652 bytes and CPython data
+  3,577,002 bytes. Web/Player bootstrap tests: 45 passed; standalone release tests:
+  4 passed. Native shader-tool builds, installed browser acceptance and the
+  complete Web public release remain open.
+- Linux shader-tool publication completed (glslang 3,145,112 bytes; Tint
+  9,086,064 bytes). Windows native compilation is still running. Local Windows
+  access to chromium.googlesource.com failed, and the upstream fetch script hid
+  the failures; the maintainer helper now refuses to cache incomplete dependencies.
+  For local compilation, explicitly selected the already populated WSL source
+  directory as the MSVC source input. No consumer WSL path was reintroduced.
+- The Windows PR failures exposed a separate staging issue: copying SwiftShader
+  beside development modules did not include it in the CMake-installed Python
+  payload used by the new precompiled Player publisher. Added an opt-in CI-only
+  CMake install hook for that software driver. Public platform releases do not
+  select the hook. The resulting Player/desktop CI rerun is still required.
+
 ### 2026-09-06: complete Android payload and compiler-free APK assembly
 
 - Removed native source acquisition, consumer CMake configuration, pybind11

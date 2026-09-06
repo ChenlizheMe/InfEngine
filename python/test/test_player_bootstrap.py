@@ -123,8 +123,7 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(
             run = bootstrap.run
         else:
             template = Path(__file__).resolve().parents[2] / (
-                "external/plugins/infernux_web/package/editor/infernux_web/"
-                "templates/host/bootstrap.py"
+                "external/plugins/infernux_web/native/bootstrap.py"
             )
             tree = ast.parse(template.read_text(encoding="utf-8"))
             function = next(

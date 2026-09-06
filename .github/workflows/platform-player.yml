@@ -145,7 +145,7 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --preset windows-msvc-release
+          cmake --preset windows-msvc-release "-DCMAKE_PROJECT_Infernux_INCLUDE=$PWD/scripts/acceptance/windows_software_vulkan.cmake"
           cmake --build --preset windows-msvc-release
           cmake --build --preset windows-msvc-player
 
@@ -321,6 +321,19 @@ jobs:
           echo "INFERNUX_EMSDK_ROOT=$INFERNUX_WEB_TOOLCHAIN_ROOT/emsdk" >> "$GITHUB_ENV"
           echo "INFERNUX_WEB_CPYTHON_ROOT=$INFERNUX_WEB_TOOLCHAIN_ROOT/src/Python-3.13.15" >> "$GITHUB_ENV"
           echo "INFERNUX_WEB_TINT=$INFERNUX_WEB_TOOLCHAIN_ROOT/build/dawn-tint-31e25af254ab572c77054edec4946d2244e184dd/tint" >> "$GITHUB_ENV"
+
+      - name: Publish the precompiled Web plugin payload
+        run: |
+          conda activate infernux
+          source "$INFERNUX_EMSDK_ROOT/emsdk_env.sh"
+          python external/plugins/infernux_web/native/build.py \
+            --emsdk "$INFERNUX_EMSDK_ROOT" \
+            --cpython-source "$INFERNUX_WEB_CPYTHON_ROOT" \
+            --build-root "$INFERNUX_WEB_BUILD_CACHE/player"
+          cmake -S external/plugins/infernux_web/native/tools \
+            -B "$INFERNUX_WEB_BUILD_CACHE/shader-tools" -G Ninja \
+            "-DINFERNUX_DAWN_SOURCE=$INFERNUX_WEB_TOOLCHAIN_ROOT/src/dawn-31e25af254ab572c77054edec4946d2244e184dd"
+          cmake --build "$INFERNUX_WEB_BUILD_CACHE/shader-tools" --target prebuild_web_tools --parallel 2
 
       - name: Build Web Player fixture
         run: |
@@ -529,6 +542,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.12"
+          # Exports invoke this pinned Gradle installation, not the unrelated
+          # wrappers in SDL/Jolt example projects.
+          validate-wrappers: false
 
       - name: Publish the precompiled Android plugin payload
         run: |

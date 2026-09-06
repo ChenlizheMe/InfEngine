@@ -114,6 +114,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.12"
+          # Hub kits contain the pinned distribution, not an upstream example wrapper.
+          validate-wrappers: false
 
       - name: Install the pinned Android build SDK
         shell: bash

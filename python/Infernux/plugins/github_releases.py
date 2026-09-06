@@ -55,7 +55,7 @@ def _request_bytes(url: str, *, accept: str) -> bytes:
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(request) as response:
+    with urllib.request.urlopen(request, timeout=30) as response:
         return response.read()
 
 
@@ -156,7 +156,7 @@ def _download_asset(
     )
     partial = destination + f".{uuid.uuid4().hex}.part"
     try:
-        with urllib.request.urlopen(request) as response, open(partial, "wb") as stream:
+        with urllib.request.urlopen(request, timeout=30) as response, open(partial, "wb") as stream:
             total = int(response.headers.get("Content-Length", "0") or 0)
             received = 0
             while True:
@@ -206,7 +206,7 @@ def _download_file(
     )
     partial = destination + f".{uuid.uuid4().hex}.part"
     try:
-        with urllib.request.urlopen(request) as response, open(partial, "wb") as stream:
+        with urllib.request.urlopen(request, timeout=30) as response, open(partial, "wb") as stream:
             total = int(response.headers.get("Content-Length", "0") or 0)
             received = 0
             while True:

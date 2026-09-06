@@ -22,6 +22,38 @@ def _android_driver_text() -> str:
     return ANDROID_DRIVER.read_text(encoding="utf-8")
 
 
+def test_android_ci_uses_pinned_gradle_without_unrelated_example_wrappers():
+    text = _text()
+    setup = text.split("- uses: gradle/actions/setup-gradle@v4", 1)[1].split("- name:", 1)[0]
+    assert 'gradle-version: "8.12"' in setup
+    assert "validate-wrappers: false" in setup
+    assert "gradlew" not in _android_driver_text()
+
+
+def test_ci_software_driver_is_included_in_the_staged_wheel(tmp_path):
+    cmake = shutil.which("cmake")
+    if cmake is None:
+        pytest.skip("CMake is required to exercise its install hook")
+    project = tmp_path / "project"
+    driver = project / "out/toolchains/windows-swiftshader/runtime/vk_swiftshader.dll"
+    driver.parent.mkdir(parents=True)
+    driver.write_bytes(b"software driver fixture")
+    (project / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.25)\n"
+        "project(Infernux LANGUAGES NONE)\n"
+        'set(INFERNUX_PYTHON_INSTALL_COMPONENT "PythonWheel")\n',
+        encoding="utf-8",
+    )
+    build = tmp_path / "build"
+    hook = ROOT / "scripts/acceptance/windows_software_vulkan.cmake"
+    subprocess.run([cmake, "-S", str(project), "-B", str(build),
+                    f"-DCMAKE_PROJECT_Infernux_INCLUDE={hook}"], check=True, capture_output=True)
+    destination = tmp_path / "wheel-source"
+    subprocess.run([cmake, "--install", str(build), "--prefix", str(destination),
+                    "--component", "PythonWheel"], check=True, capture_output=True)
+    assert (destination / "python/Infernux/lib/vulkan-1.dll").read_bytes() == driver.read_bytes()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="Android CI driver runs on Linux")
 @pytest.mark.parametrize("explicit", (False, True))
 def test_android_driver_shares_tool_state_between_player_and_instrumentation(
@@ -134,6 +166,11 @@ def test_windows_native_build_can_load_the_vulkan_linked_module():
     )
     assert "runtime\\vk_swiftshader_icd.json" in text[loader_step:build_step]
     assert "VK_DRIVER_FILES=$swiftShaderManifest" in text[loader_step:build_step]
+    assert "CMAKE_PROJECT_Infernux_INCLUDE=$PWD/scripts/acceptance/windows_software_vulkan.cmake" in text
+    install_rule = (ROOT / "scripts/acceptance/windows_software_vulkan.cmake").read_text()
+    assert 'DESTINATION "python/Infernux/lib"' in install_rule
+    assert 'RENAME "vulkan-1.dll"' in install_rule
+    assert "COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}" in install_rule
 
 
 def test_windows_publisher_has_a_system_loader_independent_of_sdk_cache():

@@ -84,7 +84,7 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --preset windows-msvc-release
+          cmake --preset windows-msvc-release "-DCMAKE_PROJECT_Infernux_INCLUDE=$PWD/scripts/acceptance/windows_software_vulkan.cmake"
 
       - name: Provide pinned software Vulkan for build and tests
         shell: pwsh
